@@ -1,0 +1,16 @@
+换一个方法，第几个td，是很容易明确的，但一个td中有很多内容，如果再用顺序来描述，会很繁琐，所以我觉得可以在td中去用class查找，更容易
+1 第一个td中查找class="shrink-0 t-subtitle1" ，精确匹配，这个span里面的text，就是币的名字
+2 第二个td
+<span class="flex items-center gap-0.5"><span>
+3.6M</span></span>，其中最里面显示
+3.6M</span></span>，其中最里面显示
+3.6M，是一个span，然后外面的span才有class="flex items-center gap-0.5"，这个需要你注意，这是流动性
+3 第三个td 不需要
+4 第四个td，<span class="flex items-center text-[--color-PrimaryYellow]"><span>
+9.65B</span></span>这里显示的是市值<spanclass="t−caption1text−[−−color−PrimaryText]">
+9.65B</span></span>这里显示的是市值<spanclass="t−caption1text−[−−color−PrimaryText]">
+1.20716</span> 这里显示的是价格
+
+5 第五个td，涨跌幅，<span class="text-[--color-Buy]">+5.18%</span>
+6 第六个td，交易笔数，<div aria-describedby="bn-tooltips-qNg2xDI1" class="bn-tooltips-ele flex flex-col items-start"><span>3.28K</span></div>
+7 第七个td，成交金额，<span class="text-[--color-PrimaryYellow]">$2M</span>
