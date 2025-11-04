@@ -1,15 +1,15 @@
 // hotlist.js
-// hotlist.js (v18: 终极时序解决方案 V2 - 并行巡逻)
+// (v21: 采用“智能处理”模型，主流程清晰健壮)
 
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
-const { initializePage } = require('./pageInitializer.js');
+const { initializePage } = require('./pageInitializer.js'); // 👈 引用新的 initializePage
 const { applyVolumeFilter } = require('./filterManager.js');
 
 chromium.use(stealth);
 
 // ==============================================================================
-// --- ⚙️ 配置区 (无变化) ---
+// --- ⚙️ 配置区 (移除了 PATROL_DURATION_SECONDS) ---
 // ==============================================================================
 const SCRIPT_DURATION_SECONDS = 180;
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
@@ -58,11 +58,11 @@ async function main() {
     await page.goto(targetUrl, { waitUntil: 'load', timeout: 90000 });
 
     // ==============================================================================
-    // --- ✨ 并行巡逻策略 ---
+    // --- ✨ 智能并行初始化策略 ---
     // ==============================================================================
-    // 步骤 1: 立即派遣“初始化巡逻兵”到后台执行，但不等待它完成。
+    // 步骤 1: 立即派遣“智能处理程序”到后台执行，但不等待它完成。
     // 这将返回一个 Promise，我们将其存起来。
-    console.log('🚀 [Patrol] 已派遣初始化程序在后台开始巡逻...');
+    console.log('🚀 [Init] 已派遣智能处理程序在后台开始工作...');
     const initializationPromise = initializePage(page);
 
     // 步骤 2: “主部队”继续前进，等待自己的核心目标——数据表格。
@@ -70,11 +70,11 @@ async function main() {
     await page.waitForSelector(SELECTORS.tableBody);
     console.log('✅ [Main] 核心数据表格已出现.');
 
-    // 步骤 3: 在进行下一步交互（过滤）之前，我们必须确保“巡逻兵”已完成清场。
+    // 步骤 3: 在进行下一步交互（过滤）之前，我们必须确保“智能处理程序”已完成清场。
     // 在这里等待之前保存的 Promise。
-    console.log('🤝 [Sync] 等待后台巡逻兵完成所有弹窗清理...');
+    console.log('🤝 [Sync] 等待后台的弹窗处理程序完成任务...');
     await initializationPromise;
-    console.log('👍 [Sync] 巡逻兵报告：所有弹窗已处理完毕，环境安全。');
+    console.log('👍 [Sync] 所有弹窗已处理完毕，环境安全。');
 
     // 步骤 4: 现在环境干净了，安全地应用过滤器。
     await applyVolumeFilter(page, MIN_VOLUME_FILTER);
@@ -84,7 +84,6 @@ async function main() {
     await page.evaluate((selectors) => {
       const targetNode = document.querySelector(selectors.tableBody);
       if (!targetNode) return;
-      // ... (内部代码无变化)
       const observer = new MutationObserver((mutationsList) => {
         const updatedRows = new Set();
         for (const mutation of mutationsList) {
