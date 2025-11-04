@@ -1,10 +1,10 @@
 // hotlist.js
-// (v50: 最终版 - 回归极致简单，采用经验证的高频纯轮询方案)
+// (v60: 终极版 - 精确抖动器，模拟“划入/划出”强制刷新渲染队列)
 
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const { handleGuidePopup, checkAndClickCookieBanner } = require('./pageInitializer.js');
-const { applyVolumeFilter } = require('./filterManager.js'); // 必须是 v29 版本
+const { applyVolumeFilter } = require('./filterManager.js');
 const { log } = require('./logger.js');
 
 chromium.use(stealth);
@@ -13,12 +13,12 @@ chromium.use(stealth);
 // --- ⚙️ 配置区 ---
 // ==============================================================================
 const SCRIPT_DURATION_SECONDS = 180;
-const POLLING_INTERVAL_MS = 200; // 激进的200毫秒轮询间隔
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIN_VOLUME_FILTER = 200;
+const JIGGLE_INTERVAL_MS = 500; // 每4秒执行一次精确抖动
 
 const SELECTORS = {
-  rows:           'div.markets-table > table > tbody > tr', 
+  stableContainer: '#__APP div.markets-table', 
   symbol:         'td:nth-child(1) .shrink-0.t-subtitle1',
   price:          'td:nth-child(4) .t-caption1.text-\\[--color-PrimaryText\\]',
   volume1h:       'td:nth-child(7) .text-\\[--color-PrimaryYellow\\]',
@@ -26,38 +26,35 @@ const SELECTORS = {
 };
 // ==============================================================================
 
-/**
- * 在浏览器页面上执行的函数，用于抓取所有可见行的数据。
- */
-function scrapeDataInBrowser(selectors) {
-  const rows = Array.from(document.querySelectorAll(selectors.rows));
-  const results = [];
-  for (const rowElement of rows) {
-    try {
-      const data = {};
-      const dataSelectors = { ...selectors };
-      delete dataSelectors.rows;
-      for (const key in dataSelectors) {
-        const cell = rowElement.querySelector(dataSelectors[key]);
-        data[key] = cell ? cell.textContent.trim() : null;
-      }
-      if (data.symbol) {
-        results.push(data);
-      }
-    } catch (e) {}
-  }
-  return results;
+function scrapeAllDataInBrowser(selectors) {
+    // ... (代码不变)
+    const rows = Array.from(document.querySelectorAll(selectors.stableContainer + ' table tbody tr'));
+    const results = [];
+    for (const rowElement of rows) {
+        try {
+            const data = {};
+            const cellSelectors = { ...selectors };
+            delete cellSelectors.stableContainer;
+            for (const key in cellSelectors) {
+                const cell = rowElement.querySelector(cellSelectors[key]);
+                data[key] = cell ? cell.textContent.trim() : null;
+            }
+            if (data.symbol) {
+                results.push(data);
+            }
+        } catch (e) {}
+    }
+    return results;
 }
-
 
 async function main() {
   let browser;
-  let pollingInterval;
-  log('🚀 [High-Freq Polling v50] 最终版脚本启动...');
+  let isJigglerActive = true;
+  log(`🚀 [Observer v60 - Precise Jiggler] 脚本启动...`);
   try {
     browser = await chromium.launch({ 
       executablePath: MY_CHROME_PATH, 
-      headless: false, 
+      headless: true, 
       proxy: { server: 'socks5://127.0.0.1:1080' },
       args: ['--start-maximized']
     });
@@ -65,60 +62,100 @@ async function main() {
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
 
-    const targetUrl = 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc';
-    log(`🧭 正在导航到: ${targetUrl}`);
-    await page.goto(targetUrl, { waitUntil: 'load', timeout: 90000 });
-
+    await page.goto('https://web3.binance.com/zh-CN/markets/trending?chain=bsc', { waitUntil: 'load', timeout: 90000 });
     await handleGuidePopup(page);
     await checkAndClickCookieBanner(page);
-    log('✅ 所有弹窗已清理完毕，页面就绪。');
-
     await applyVolumeFilter(page, MIN_VOLUME_FILTER);
+    
+    const handleRowUpdate = (updatedRow, duration) => {
+      // ... (代码不变)
+      if (!updatedRow || !updatedRow.symbol) return;
+      log(
+        `  🔄 [ROW UPDATE: ${updatedRow.symbol.padEnd(8)}] ` +
+        `价格: ${(updatedRow.price || 'N/A').padEnd(10)} | ` +
+        `1h成交额: ${(updatedRow.volume1h || 'N.A').padEnd(10)} | ` +
+        `1h涨跌: ${(updatedRow.change1h || 'N/A').padEnd(8)} | ` +
+        `(耗时: ${duration}ms)`
+      );
+    };
+    await page.exposeFunction('onRowUpdated', handleRowUpdate);
 
-    let lastDataState = '';
-    let isFirstRun = true;
-
-    pollingInterval = setInterval(async () => {
-      try {
-        const startTime = performance.now(); // Node.js 端计时
-        const currentData = await page.evaluate(scrapeDataInBrowser, SELECTORS);
-        const endTime = performance.now();
-        const duration = endTime - startTime;
-        
-        const currentState = JSON.stringify(currentData);
-        
-        if (currentState !== lastDataState && currentData.length > 0) {
-          log(`\n[⚡️ DATA REFRESH - ${new Date().toLocaleTimeString()} | Took ${duration.toFixed(2)}ms]`);
-          currentData.forEach(item => {
-            log(
-              `  [${(item.symbol || 'N/A').padEnd(8)}] ` +
-              `价格: ${(item.price || 'N/A').padEnd(10)} | ` +
-              `1h成交额: ${(item.volume1h || 'N/A').padEnd(10)} | ` +
-              `1h涨跌: ${item.change1h || 'N/A'}`
-            );
-          });
-          lastDataState = currentState;
-        } else if (isFirstRun && currentData.length > 0) {
-          // 确保第一次运行时即使数据不变也能打印
-          log(`\n[✅ INITIAL DATA - ${new Date().toLocaleTimeString()} | Took ${duration.toFixed(2)}ms]`);
-          currentData.forEach(item => {log(/* ... */);});
-          lastDataState = currentState;
-          isFirstRun = false;
+    // ... (v58的单一健壮观察者代码完全不变) ...
+    await page.evaluate((selectors) => {
+      const stableContainer = document.querySelector(selectors.stableContainer);
+      if (!stableContainer) { console.error(`[Observer] 致命错误: 无法找到根容器: ${selectors.stableContainer}`); return; }
+      const scrapeSingleRow = (rowElement) => {
+        try {
+          const data = {};
+          const cellSelectors = { ...selectors };
+          delete cellSelectors.stableContainer;
+          for (const key in cellSelectors) {
+            const cell = rowElement.querySelector(cellSelectors[key]);
+            data[key] = cell ? cell.textContent.trim() : null;
+          }
+          return data.symbol ? data : null;
+        } catch (e) { return null; }
+      };
+      const robustObserver = new MutationObserver((mutationsList) => {
+        const startTime = performance.now();
+        const rowsToUpdate = new Set();
+        for (const mutation of mutationsList) {
+          const targetRow = mutation.target.closest('tr');
+          if (targetRow && stableContainer.contains(targetRow)) rowsToUpdate.add(targetRow);
         }
+        rowsToUpdate.forEach(rowElement => {
+          const rowData = scrapeSingleRow(rowElement);
+          if (rowData) {
+            const duration = (performance.now() - startTime).toFixed(2);
+            window.onRowUpdated(rowData, duration);
+          }
+        });
+      });
+      robustObserver.observe(stableContainer, { childList: true, subtree: true, characterData: true });
+      console.log(`✅ [Observer] 单一健壮观察者已启动，正在监控: ${selectors.stableContainer}`);
+    }, SELECTORS);
 
-      } catch (e) {
-        // 在高频轮询中，偶尔的错误可以被容忍和忽略
-        // log(`- [Polling Error] ${e.message}`);
+    log('✨ 监听体系已建立，正在等待数据变化...');
+
+    // --- 核心升级: 精确抖动器 ---
+    const runPreciseJiggler = async () => {
+      while (isJigglerActive) {
+        await new Promise(resolve => setTimeout(resolve, JIGGLE_INTERVAL_MS));
+        if (!isJigglerActive) break;
+
+        try {
+          log('🐭 [Jiggler] 正在模拟 "划入/划出" 表格以强制刷新...');
+          const tableContainer = page.locator(SELECTORS.stableContainer);
+          const box = await tableContainer.boundingBox();
+
+          if (box) {
+            // 移动到表格中心，触发 mouseenter
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+            // 短暂暂停，确保事件被处理
+            await page.waitForTimeout(50); 
+            // 移动到页面左上角，触发 mouseleave
+            await page.mouse.move(0, 0);
+          } else {
+            log('- [Jiggler] 警告: 未找到表格容器，跳过本次抖动。');
+          }
+        } catch (e) {
+          log(`- [Jiggler] 抖动时出错: ${e.message}`);
+        }
       }
-    }, POLLING_INTERVAL_MS);
+    };
+    runPreciseJiggler();
 
-    log(`\n✨ 高频轮询已启动 (每 ${POLLING_INTERVAL_MS}ms 一次). (将运行 ${SCRIPT_DURATION_SECONDS} 秒)`);
+    const initialData = await page.evaluate(scrapeAllDataInBrowser, SELECTORS);
+    log(`\n[✅ INITIAL DATA - ${new Date().toLocaleTimeString()}]`);
+    initialData.forEach(item => handleRowUpdate(item, 'N/A'));
+    
+    log(`\n👍 脚本现在以精确抖动模式运行 (将持续 ${SCRIPT_DURATION_SECONDS} 秒)`);
     await new Promise(resolve => setTimeout(resolve, SCRIPT_DURATION_SECONDS * 1000));
 
   } catch (error) {
-    log(`❌ 脚本执行时发生错误: ${error.stack}`); 
+    log(`❌ 脚本执行时发生严重错误: ${error.stack}`); 
   } finally {
-    if (pollingInterval) clearInterval(pollingInterval);
+    isJigglerActive = false;
     if (browser) {
       log('\n🏁 脚本结束，关闭浏览器.');
       await browser.close();
