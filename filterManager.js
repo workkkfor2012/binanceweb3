@@ -1,7 +1,7 @@
 // filterManager.js
-// (v28: 引入带时间戳的日志记录)
+// (v29: 增加等待网络空闲的逻辑，以应对导航式刷新)
 
-const { log } = require('./logger.js'); // 👈 引入日志工具
+const { log } = require('./logger.js');
 
 /**
  * 应用成交金额过滤器。
@@ -26,9 +26,12 @@ async function applyVolumeFilter(page, minVolume) {
     await page.getByRole('button', { name: '应用' }).click();
     log('  ✅ [Filter] 已点击 "应用" 按钮.');
     
-    await page.waitForTimeout(1000); 
-
-    log('👍 [Filter] 成交金额过滤器已成功应用.');
+    // --- 🚀 【最终驱魔代码】 ---
+    // 等待导航触发的网络请求全部完成并进入空闲状态
+    log('  -> [Filter] 等待导航和网络请求稳定...');
+    await page.waitForLoadState('networkidle', { timeout: 30000 });
+    
+    log('👍 [Filter] 过滤器已成功应用，页面已完全稳定.');
 
   } catch (error) {
     log(`❌ [Filter] 应用成交金额过滤器时发生错误: ${error.message}`);
