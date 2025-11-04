@@ -1,5 +1,5 @@
 // hotlist.js
-// (v60: 终极版 - 精确抖动器，模拟“划入/划出”强制刷新渲染队列)
+// (v63: 终极版 - Node.js可靠驱动 + 浏览器高效批处理)
 
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
@@ -15,7 +15,8 @@ chromium.use(stealth);
 const SCRIPT_DURATION_SECONDS = 180;
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIN_VOLUME_FILTER = 200;
-const JIGGLE_INTERVAL_MS = 500; // 每4秒执行一次精确抖动
+const JIGGLE_INTERVAL_MS = 200;
+const CALLBACK_BATCH_DEBOUNCE_MS = 50;
 
 const SELECTORS = {
   stableContainer: '#__APP div.markets-table', 
@@ -50,7 +51,7 @@ function scrapeAllDataInBrowser(selectors) {
 async function main() {
   let browser;
   let isJigglerActive = true;
-  log(`🚀 [Observer v60 - Precise Jiggler] 脚本启动...`);
+  log(`🚀 [Observer v63 - Robust Driver & Batch Callback] 脚本启动...`);
   try {
     browser = await chromium.launch({ 
       executablePath: MY_CHROME_PATH, 
@@ -67,23 +68,38 @@ async function main() {
     await checkAndClickCookieBanner(page);
     await applyVolumeFilter(page, MIN_VOLUME_FILTER);
     
-    const handleRowUpdate = (updatedRow, duration) => {
-      // ... (代码不变)
-      if (!updatedRow || !updatedRow.symbol) return;
-      log(
-        `  🔄 [ROW UPDATE: ${updatedRow.symbol.padEnd(8)}] ` +
-        `价格: ${(updatedRow.price || 'N/A').padEnd(10)} | ` +
-        `1h成交额: ${(updatedRow.volume1h || 'N.A').padEnd(10)} | ` +
-        `1h涨跌: ${(updatedRow.change1h || 'N/A').padEnd(8)} | ` +
-        `(耗时: ${duration}ms)`
-      );
-    };
-    await page.exposeFunction('onRowUpdated', handleRowUpdate);
+    // --- 核心优化: 采用悬浮激活，而非滚动 ---
+    log('🖱️ [Activation] 正在悬浮表格以激活所有行的实时更新...');
+    const tableContainerLocator = page.locator(SELECTORS.stableContainer);
+    await tableContainerLocator.hover(); // 模拟鼠标悬停
+    await page.mouse.move(0, 0);         // 立即移开，完成一次完整的“进出”
+    await page.waitForTimeout(500);      // 等待前端响应
+    log('  ✅ 所有可见行应已被激活。');
 
-    // ... (v58的单一健壮观察者代码完全不变) ...
-    await page.evaluate((selectors) => {
+    const handleRowsUpdate = (updatedRows) => {
+      // ... (代码不变)
+      if (!updatedRows || updatedRows.length === 0) return;
+      log(`\n[⚡️ BATCH REFRESH - ${new Date().toLocaleTimeString()} | ${updatedRows.length} rows updated]`);
+      for (const row of updatedRows) {
+        if (!row.data) continue;
+        log(
+            `  🔄 [${(row.data.symbol || 'N/A').padEnd(8)}] ` +
+            `价格: ${(row.data.price || 'N/A').padEnd(10)} | ` +
+            `1h成交额: ${(row.data.volume1h || 'N.A').padEnd(10)} | ` +
+            `1h涨跌: ${(row.data.change1h || 'N/A').padEnd(8)} | ` +
+            `(耗时: ${row.duration}ms)`
+        );
+      }
+    };
+    await page.exposeFunction('onRowsUpdated', handleRowsUpdate);
+
+    // --- 核心回归: 浏览器端只负责监听和批处理，不再自治抖动 ---
+    await page.evaluate(({ selectors, batchDebounce }) => {
       const stableContainer = document.querySelector(selectors.stableContainer);
       if (!stableContainer) { console.error(`[Observer] 致命错误: 无法找到根容器: ${selectors.stableContainer}`); return; }
+
+      let batch = [];
+      let debounceTimeout = null;
       const scrapeSingleRow = (rowElement) => {
         try {
           const data = {};
@@ -106,53 +122,55 @@ async function main() {
         rowsToUpdate.forEach(rowElement => {
           const rowData = scrapeSingleRow(rowElement);
           if (rowData) {
-            const duration = (performance.now() - startTime).toFixed(2);
-            window.onRowUpdated(rowData, duration);
+            batch.push({ data: rowData, duration: (performance.now() - startTime).toFixed(2) });
           }
         });
+        if (rowsToUpdate.size > 0) {
+          clearTimeout(debounceTimeout);
+          debounceTimeout = setTimeout(() => {
+            if (batch.length > 0) {
+              window.onRowsUpdated(batch);
+              batch = [];
+            }
+          }, batchDebounce);
+        }
       });
       robustObserver.observe(stableContainer, { childList: true, subtree: true, characterData: true });
-      console.log(`✅ [Observer] 单一健壮观察者已启动，正在监控: ${selectors.stableContainer}`);
-    }, SELECTORS);
+      console.log(`✅ [Observer] 高效批处理观察者已启动。`);
+    }, { 
+        selectors: SELECTORS, 
+        batchDebounce: CALLBACK_BATCH_DEBOUNCE_MS
+    });
 
-    log('✨ 监听体系已建立，正在等待数据变化...');
+    log('✨ 高性能监听体系已建立，正在等待数据变化...');
 
-    // --- 核心升级: 精确抖动器 ---
-    const runPreciseJiggler = async () => {
+    // --- 核心回归: 在Node.js端运行可靠的抖动器 ---
+    const runRobustJiggler = async () => {
       while (isJigglerActive) {
         await new Promise(resolve => setTimeout(resolve, JIGGLE_INTERVAL_MS));
         if (!isJigglerActive) break;
 
         try {
-          log('🐭 [Jiggler] 正在模拟 "划入/划出" 表格以强制刷新...');
-          const tableContainer = page.locator(SELECTORS.stableContainer);
-          const box = await tableContainer.boundingBox();
-
-          if (box) {
-            // 移动到表格中心，触发 mouseenter
-            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-            // 短暂暂停，确保事件被处理
-            await page.waitForTimeout(50); 
-            // 移动到页面左上角，触发 mouseleave
-            await page.mouse.move(0, 0);
-          } else {
-            log('- [Jiggler] 警告: 未找到表格容器，跳过本次抖动。');
-          }
+          // 👈 增加你要求的日志
+          log('🐭 [Jiggler] 正在从 Node.js 发起 "划入/划出" 动作...');
+          await tableContainerLocator.hover({ timeout: 1000 }); // 使用 locator.hover() 更稳定
+          await page.mouse.move(0, 0, { steps: 5 });        // 平滑移开
         } catch (e) {
           log(`- [Jiggler] 抖动时出错: ${e.message}`);
         }
       }
     };
-    runPreciseJiggler();
+    runRobustJiggler();
 
     const initialData = await page.evaluate(scrapeAllDataInBrowser, SELECTORS);
     log(`\n[✅ INITIAL DATA - ${new Date().toLocaleTimeString()}]`);
-    initialData.forEach(item => handleRowUpdate(item, 'N/A'));
+    handleRowsUpdate(initialData.map(item => ({ data: item, duration: 'N/A' })));
     
-    log(`\n👍 脚本现在以精确抖动模式运行 (将持续 ${SCRIPT_DURATION_SECONDS} 秒)`);
+    log(`\n👍 脚本现在以可靠驱动模式运行 (将持续 ${SCRIPT_DURATION_SECONDS} 秒)`);
     await new Promise(resolve => setTimeout(resolve, SCRIPT_DURATION_SECONDS * 1000));
 
-  } catch (error) {
+  } catch (error)
+ {
     log(`❌ 脚本执行时发生严重错误: ${error.stack}`); 
   } finally {
     isJigglerActive = false;
