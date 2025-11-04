@@ -1,5 +1,5 @@
 // hotlist.js
-// hotlist.js (v16: 优化加载时机，先等核心内容再处理弹窗)
+// hotlist.js (v18: 终极时序解决方案 V2 - 并行巡逻)
 
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
@@ -9,11 +9,11 @@ const { applyVolumeFilter } = require('./filterManager.js');
 chromium.use(stealth);
 
 // ==============================================================================
-// --- ⚙️ 配置区 ---
+// --- ⚙️ 配置区 (无变化) ---
 // ==============================================================================
 const SCRIPT_DURATION_SECONDS = 180;
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const MIN_VOLUME_FILTER = 10000;
+const MIN_VOLUME_FILTER = 1000;
 
 const SELECTORS = {
   tableBody: 'div.bn-web-table-body tbody',
@@ -58,31 +58,33 @@ async function main() {
     await page.goto(targetUrl, { waitUntil: 'load', timeout: 90000 });
 
     // ==============================================================================
-    // --- ✨ 新的、更可靠的执行顺序 ---
+    // --- ✨ 并行巡逻策略 ---
     // ==============================================================================
-    // 步骤 1: 首先等待页面的核心元素（数据表格）出现。
-    // 这标志着主应用已经加载完成。
-    console.log(`⏳ 正在等待核心数据表格 (${SELECTORS.tableBody}) 出现...`);
+    // 步骤 1: 立即派遣“初始化巡逻兵”到后台执行，但不等待它完成。
+    // 这将返回一个 Promise，我们将其存起来。
+    console.log('🚀 [Patrol] 已派遣初始化程序在后台开始巡逻...');
+    const initializationPromise = initializePage(page);
+
+    // 步骤 2: “主部队”继续前进，等待自己的核心目标——数据表格。
+    console.log(`⏳ [Main] 主流程开始等待核心数据表格 (${SELECTORS.tableBody}) 出现...`);
     await page.waitForSelector(SELECTORS.tableBody);
-    console.log('✅ 核心数据表格已出现.');
+    console.log('✅ [Main] 核心数据表格已出现.');
 
-    // 步骤 2: 此时再进行页面初始化，处理可能出现的弹窗。
-    // 因为主应用已加载，弹窗有很大概率已经或即将出现。
-    await initializePage(page);
+    // 步骤 3: 在进行下一步交互（过滤）之前，我们必须确保“巡逻兵”已完成清场。
+    // 在这里等待之前保存的 Promise。
+    console.log('🤝 [Sync] 等待后台巡逻兵完成所有弹窗清理...');
+    await initializationPromise;
+    console.log('👍 [Sync] 巡逻兵报告：所有弹窗已处理完毕，环境安全。');
 
-    // 步骤 3: 应用过滤器
+    // 步骤 4: 现在环境干净了，安全地应用过滤器。
     await applyVolumeFilter(page, MIN_VOLUME_FILTER);
     // ==============================================================================
     
-    // 因为我们前面已经等待过表格了，所以这里的 waitForSelector 其实是多余的，
-    // 但保留也无妨，它会立刻通过。为了代码整洁，我们也可以直接开始 evaluate。
-    // console.log(`⏳ 正在等待数据表格 (${SELECTORS.tableBody}) 出现...`);
-    // await page.waitForSelector(SELECTORS.tableBody);
-    // console.log('✅ 数据表格已出现.');
-
+    // ... 后续的 page.evaluate 和 MutationObserver 逻辑保持不变 ...
     await page.evaluate((selectors) => {
       const targetNode = document.querySelector(selectors.tableBody);
       if (!targetNode) return;
+      // ... (内部代码无变化)
       const observer = new MutationObserver((mutationsList) => {
         const updatedRows = new Set();
         for (const mutation of mutationsList) {

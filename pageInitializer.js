@@ -1,88 +1,55 @@
-// hotlist.js
-// hotlist.js (V19: 采用“大等待”+“大扫除”策略，确保时序正确)
+// pageInitializer.js
+// (v19: 采用 Promise.all 实现真正的并行、顺序无关的弹窗处理)
 
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
-const { initializePage } = require('./pageInitializer.js');
-const { applyVolumeFilter } = require('./filterManager.js');
+/**
+ * 辅助函数：单个“巡逻兵”的行为逻辑。
+ * 通过轮询方式，点击所有包含指定文本的按钮，直到页面上再也找不到为止。
+ * @param {import('playwright').Page} page Playwright Page 对象
+ * @param {string} textToClick 要点击的按钮的精确文本
+ * @returns {Promise<void>}
+ */
+async function clickAllByText(page, textToClick) {
+  const CLICK_TIMEOUT = 2000; 
+  let clickCount = 0;
 
-chromium.use(stealth);
-
-// --- ⚙️ 配置区 (无变化) ---
-const SCRIPT_DURATION_SECONDS = 180;
-const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const MIN_VOLUME_FILTER = 1000;
-const SELECTORS = { /* ... */ };
-
-async function main() {
-  let browser;
-  try {
-    browser = await chromium.launch({ 
-      executablePath: MY_CHROME_PATH, 
-      headless: false, 
-      proxy: { server: 'socks5://127.0.0.1:1080' },
-      args: ['--start-maximized']
-    });
-    
-    const context = await browser.newContext({ viewport: null });
-    const page = await context.newPage();
-
-    // ... exposeFunction (无变化) ...
-    await page.exposeFunction('onRowDataChanged', (data) => { /* ... */ });
-
-    const targetUrl = 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc';
-    console.log(`🧭 正在导航到: ${targetUrl}`);
-    await page.goto(targetUrl, { waitUntil: 'load', timeout: 90000 });
-
-    // ==============================================================================
-    // --- ✨ “大等待” + “大扫除” 策略 ---
-    // ==============================================================================
-    
-    // 步骤 1: “大等待” - 等待第一个可交互迹象出现
-    console.log('⏳ [Grand Wait] 正在等待页面的第一个交互迹象 (引导窗 或 核心表格)...');
+  console.log(`  -> [Patrol Squad for "${textToClick}"] 已出发，开始巡逻...`);
+  
+  while (true) {
     try {
-      await Promise.race([
-        // 等待“下一步”按钮
-        page.waitForSelector('text="下一步"', { timeout: 30000 }),
-        // 等待“Cookie”按钮
-        page.waitForSelector('text="接受所有 Cookie"', { timeout: 30000 }),
-        // 等待核心表格
-        page.waitForSelector(SELECTORS.tableBody, { timeout: 30000 })
-      ]);
-      console.log('✅ [Grand Wait] 页面已“苏醒”，至少一个关键元素已出现。');
-    } catch (e) {
-      console.error('❌ [Grand Wait] 页面在30秒内未加载任何关键内容，脚本终止。');
-      throw e; // 抛出错误，终止后续执行
-    }
-
-    // 步骤 2: “大扫除” - 现在页面已激活，执行完整的、并行的清理程序
-    // 我们在这里完整地 await 它，给它足够的时间来处理所有可能陆续出现的弹窗。
-    console.log('🧹 [Cleanup] 开始对页面进行全面清理...');
-    await initializePage(page);
-    console.log('👍 [Cleanup] 页面清理完毕。');
-
-    // 步骤 3: 现在环境绝对干净了，安全地应用过滤器。
-    await applyVolumeFilter(page, MIN_VOLUME_FILTER);
-    
-    // ==============================================================================
-    
-    // ... 后续的 page.evaluate 和 MutationObserver 逻辑保持不变 ...
-    // 注意：我们不再需要在这里单独等待 tableBody，因为“大等待”和后续流程已确保其存在。
-    console.log('✅ 核心逻辑开始执行，数据表格已就绪。');
-
-    await page.evaluate((selectors) => { /* ... */ });
-
-    console.log(`\n✨ 已启动 MutationObserver... (将运行 ${SCRIPT_DURATION_SECONDS} 秒)`);
-    await new Promise(resolve => setTimeout(resolve, SCRIPT_DURATION_SECONDS * 1000));
-
-  } catch (error) {
-    console.error(`❌ 脚本执行时发生错误: ${error.message}`);
-  } finally {
-    if (browser) {
-      console.log('\n🏁 脚本结束，关闭浏览器.');
-      await browser.close();
+      await page.getByText(textToClick, { exact: true }).click({ timeout: CLICK_TIMEOUT });
+      clickCount++;
+      console.log(`     ✅ [Patrol Squad for "${textToClick}"] 发现并处理了第 ${clickCount} 个目标.`);
+      await page.waitForTimeout(500); 
+    } catch (error) {
+      if (clickCount > 0) {
+        console.log(`  👍 [Patrol Squad for "${textToClick}"] 报告：区域内目标已全部清除 (共 ${clickCount} 个).`);
+      } else {
+        // 这一条可以不打印，避免日志过于杂乱
+        // console.log(`  ℹ️ [Patrol Squad for "${textToClick}"] 报告：巡逻完毕，未发现目标.`);
+      }
+      break; 
     }
   }
 }
 
-main();
+/**
+ * 初始化页面总指挥：同时派遣多个“巡逻兵”，并等待他们全部完成任务。
+ * @param {import('playwright').Page} page - Playwright 的 Page 对象。
+ * @returns {Promise<void>}
+ */
+async function initializePage(page) {
+  console.log('🔍 [Commander] 正在派遣三支巡逻队，进行并行清理...');
+  
+  // Promise.all 接收一个 Promise 数组。
+  // clickAllByText 本身就是一个返回 Promise 的 async 函数。
+  // 我们同时启动这三个任务，Promise.all 会等待它们全部执行完毕。
+  await Promise.all([
+    clickAllByText(page, '下一步'),
+    clickAllByText(page, '我已知晓'),
+    clickAllByText(page, '接受所有 Cookie')
+  ]);
+  
+  console.log('👍 [Commander] 所有巡逻队均已报告任务完成！');
+}
+
+module.exports = { initializePage };
