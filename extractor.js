@@ -1,6 +1,7 @@
 // extractor.js
-// (Final Version v3.3: Hijack-Proof Console)
-// 目标：通过 addInitScript 确保我们的浏览器日志能正常输出，绕过网站对 console.log 的覆盖。
+
+// (Final Version v3.5: Concise Symbol-Only Logging)
+// 目标：当数据发生变化时，只打印变化的品种symbol列表，避免日志刷屏。
 
 const fs = require('fs').promises;
 const path = require('path');
@@ -41,7 +42,7 @@ async function main() {
   logger.init();
   let browser;
   
-  logger.log('🚀 [Diffing Extractor v3.3] 脚本启动...', logger.LOG_LEVELS.INFO);
+  logger.log('🚀 [Diffing Extractor v3.5] 脚本启动...', logger.LOG_LEVELS.INFO);
   
   try {
     const browserScript = await fs.readFile(path.join(__dirname, 'browser-script.js'), 'utf-8');
@@ -56,11 +57,9 @@ async function main() {
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
 
-    // ✨ ================== 核心变更：在页面所有脚本执行前，保存原始 console ==================
     await page.addInitScript({
       content: 'window.originalConsoleLog = console.log;'
     });
-    // ✨ =================================================================================
 
     await page.goto('https://web3.binance.com/zh-CN/markets/trending?chain=bsc', { waitUntil: 'load', timeout: 90000 });
     await handleGuidePopup(page);
@@ -70,24 +69,36 @@ async function main() {
     logger.log('✅ 页面初始化完成，准备注入智能提取器...', logger.LOG_LEVELS.INFO);
 
     const handleExtractedData = (result) => {
-      const { data, path, duration, cacheHit, type } = result;
-      if (!data || data.length === 0) return;
+      const { 
+        type, data, path, cacheHit,
+        duration, readDuration, diffDuration, 
+        totalCount, changedCount 
+      } = result;
       
       const cacheStatus = cacheHit ? 'CACHE HIT' : 'CACHE MISS';
-      const updateType = type === 'snapshot' ? '首次快照' : '增量更新';
+      const timeStamp = `[${new Date().toLocaleTimeString()}]`;
 
-      logger.log(`\n========== [ ${updateType} at ${new Date().toLocaleTimeString()} | ${data.length} 条变更 | ${duration} ms | ${cacheStatus} ] ==========`, logger.LOG_LEVELS.INFO);
+      if (type === 'no-change') {
+        const perfString = `Read: ${totalCount} items | Total: ${duration}ms (Read: ${readDuration}ms, Diff: ${diffDuration}ms) | ${cacheStatus}`;
+        process.stdout.write(`\r${timeStamp} Tick checked. No changes. [Perf: ${perfString}]      `);
+        return;
+      }
+
+      if (!data || data.length === 0) return;
+      
+      const updateType = type === 'snapshot' ? '首次快照' : '增量更新';
+      const summary = `Read: ${totalCount} | Changed: ${changedCount} | Time -> Total: ${duration}ms (Read: ${readDuration}ms, Diff: ${diffDuration}ms) | ${cacheStatus}`;
+
+      logger.log(`\n========== [ ${updateType} at ${new Date().toLocaleTimeString()} ] ==========`, logger.LOG_LEVELS.INFO);
+      logger.log(`   📊 SUMMARY: ${summary}`, logger.LOG_LEVELS.INFO);
       if(path) logger.log(`   📍 SOURCE PATH: ${path}`, logger.LOG_LEVELS.INFO);
       
-      data.forEach((item, index) => {
-        logger.log(`\n--- Change #${index + 1} | Symbol: ${item.symbol} ---`, logger.LOG_LEVELS.INFO);
-        for (const field of DESIRED_FIELDS) {
-          const value = item[field] !== null && item[field] !== undefined ? item[field] : 'N/A';
-          const fieldNamePadded = field.padEnd(18, ' ');
-          logger.log(`   ${fieldNamePadded}: ${value}`, logger.LOG_LEVELS.INFO);
-        }
-      });
-       logger.log('='.repeat(80), logger.LOG_LEVELS.INFO);
+      // ✨ ================== 核心变更：只打印变化的 Symbol 列表 ==================
+      const changedSymbols = data.map(item => item.symbol).join(', ');
+      logger.log(`   🔄 CHANGED SYMBOLS: ${changedSymbols}`, logger.LOG_LEVELS.INFO);
+      // ✨ =======================================================================
+      
+      logger.log('='.repeat(80), logger.LOG_LEVELS.INFO);
     };
     await page.exposeFunction('onDataExtracted', handleExtractedData);
 

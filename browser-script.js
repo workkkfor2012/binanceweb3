@@ -1,8 +1,9 @@
 // browser-script.js
-// (v3.6: Price-Only Logging)
+
+// (v3.7: Detailed Performance Logging)
 
 /**
- * v3.6: 简化浏览器控制台日志，只打印第一个品种的价格，方便观察变化。
+ * v3.7: 增加详细的性能日志，拆分读取和Diff耗时，并统计处理数量。
  */
 function initializeExtractor(options) {
   const { selectors, interval, config, desiredFields } = options;
@@ -82,11 +83,6 @@ function initializeExtractor(options) {
   // --- 辅助函数结束 ---
 
   const extractData = async () => {
-    const nowTick = new Date();
-    const tickTimestamp = `[${String(nowTick.getMinutes()).padStart(2, '0')}:${String(nowTick.getSeconds()).padStart(2, '0')}.${String(nowTick.getMilliseconds()).padStart(3, '0')}]`;
-    // 不再打印 Tick 日志到浏览器，避免干扰，只在 Node 端看 Tick 即可
-    // safeLog(`${tickTimestamp} [Tick] Running data extraction...`);
-    
     const startTime = performance.now();
     
     const targetElement = document.querySelector(selectors.stableContainer);
@@ -127,23 +123,21 @@ function initializeExtractor(options) {
         depth++;
       }
     }
-
-    const endTime = performance.now();
-    const duration = (endTime - startTime).toFixed(2);
+    
+    // ✨ ================== 核心变更：增加时间点和性能指标 ==================
+    const readEndTime = performance.now();
 
     if (dataArray && dataArray.length > 0) {
-      
-      // ✨ ================== 核心变更：只打印价格 ==================
       const firstItem = dataArray[0];
       if (firstItem && firstItem.price !== undefined) {
         const nowData = new Date();
         const dataTimestamp = `[${String(nowData.getMinutes()).padStart(2, '0')}:${String(nowData.getSeconds()).padStart(2, '0')}.${String(nowData.getMilliseconds()).padStart(3, '0')}]`;
         safeLog(`%c${dataTimestamp} [Price Read] ${firstItem.symbol}:`, 'color: cyan;', firstItem.price);
       }
-      // ✨ =======================================================
       
       const changedData = [];
       const isFirstRun = Object.keys(dataStateCache).length === 0;
+      const totalCount = dataArray.length; // 记录读取总数
 
       for (const item of dataArray) {
         const uniqueId = item.contractAddress;
@@ -159,15 +153,33 @@ function initializeExtractor(options) {
         }
       }
 
-      if (changedData.length > 0) {
-        window.onDataExtracted({ 
-          data: changedData, 
-          path: foundPath, 
-          duration: duration, 
-          cacheHit: cacheHit,
-          type: isFirstRun ? 'snapshot' : 'update'
-        });
+      const diffEndTime = performance.now();
+      const changedCount = changedData.length; // 记录变更数
+
+      // 计算各阶段耗时
+      const readDuration = (readEndTime - startTime).toFixed(2);
+      const diffDuration = (diffEndTime - readEndTime).toFixed(2);
+      const totalDuration = (diffEndTime - startTime).toFixed(2);
+      
+      const payload = {
+        path: foundPath, 
+        duration: totalDuration,
+        readDuration,
+        diffDuration,
+        totalCount,
+        changedCount,
+        cacheHit: cacheHit,
+      };
+
+      if (changedCount > 0) {
+        payload.data = changedData;
+        payload.type = isFirstRun ? 'snapshot' : 'update';
+        window.onDataExtracted(payload);
+      } else {
+        payload.type = 'no-change';
+        window.onDataExtracted(payload);
       }
+      // ✨ ====================================================================
     }
   };
 
@@ -179,7 +191,7 @@ function initializeExtractor(options) {
     }
   };
 
-  safeLog(`✅ Smart Async Extractor initialized. Price logging to browser console is ENABLED.`);
+  safeLog(`✅ Smart Async Extractor initialized (v3.7). Performance logging to Node.js console is ENABLED.`);
   
   (async () => {
     await extractData();
