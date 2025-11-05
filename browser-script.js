@@ -1,15 +1,17 @@
 // browser-script.js
-// (v2: Performance Timing & Cache Logic)
+// (v3.0: Diffing Observer)
 
 /**
  * 这是一个在浏览器环境中执行的脚本。
- * 它实现了一个带路径缓存、自动回退和性能计时的智能数据提取器。
- * @param {object} options - 包含配置的对象
+ * 它实现了一个带路径缓存、自动回退和性能计时的智能数据提取器，
+ * 并加入了变更检测（Diffing）逻辑，只在数据变化时才发送更新。
  */
 function initializeExtractor(options) {
-  const { selectors, interval, desiredFields, config } = options;
+  const { selectors, interval, config, desiredFields } = options;
 
   let cachedPath = null;
+  // ✨ 核心变更：用于存储数据状态的缓存，键为合约地址，值为上一次的数据对象
+  let dataStateCache = {};
 
   const getReactFiber = (element) => {
     const key = Object.keys(element).find(key => key.startsWith('__reactFiber$'));
@@ -51,8 +53,18 @@ function initializeExtractor(options) {
     return null;
   };
 
+  // ✨ 新增辅助函数：比较两个对象指定的字段是否不同
+  const areObjectsDifferent = (oldObj, newObj) => {
+    for (const field of desiredFields) {
+      if (oldObj[field] !== newObj[field]) {
+        return true; // 只要有一个字段不同，就认为对象已改变
+      }
+    }
+    return false;
+  };
+
   const extractData = () => {
-    const startTime = performance.now(); // ✨ 开始计时
+    const startTime = performance.now();
     
     const targetElement = document.querySelector(selectors.stableContainer);
     if (!targetElement) return;
@@ -61,21 +73,19 @@ function initializeExtractor(options) {
 
     let dataArray = null;
     let foundPath = null;
-    let cacheHit = false; // ✨ 默认缓存未命中
+    let cacheHit = false;
 
-    // 1. 尝试使用缓存路径
     if (cachedPath) {
       const potentialData = getNestedValue(rootFiber, cachedPath);
       if (isMarketDataArray(potentialData)) {
         dataArray = potentialData;
         foundPath = cachedPath;
-        cacheHit = true; // ✨ 标记缓存命中
+        cacheHit = true;
       } else {
         cachedPath = null;
       }
     }
 
-    // 2. 如果缓存无效，执行启发式搜索
     if (!dataArray) {
       let currentFiber = rootFiber;
       let depth = 0;
@@ -88,7 +98,6 @@ function initializeExtractor(options) {
           dataArray = result.data;
           foundPath = result.path.replace(/^fiber\./, '');
           cachedPath = foundPath;
-          console.log(`[Extractor] Path cache MISS. New path found and cached: ${cachedPath}`);
           break;
         }
         currentFiber = currentFiber.return;
@@ -96,24 +105,47 @@ function initializeExtractor(options) {
       }
     }
 
-    const endTime = performance.now(); // ✨ 结束计时
-    const duration = (endTime - startTime).toFixed(2); // 计算耗时，保留两位小数
+    const endTime = performance.now();
+    const duration = (endTime - startTime).toFixed(2);
 
-    // 3. 发送数据和性能信息
     if (dataArray) {
-      const filteredData = dataArray.map(item => {
-        const newItem = {};
-        for (const field of desiredFields) {
-          newItem[field] = item[field];
+      // ✨ 核心变更：执行变更检测 (Diffing)
+      const changedData = [];
+      const isFirstRun = Object.keys(dataStateCache).length === 0;
+
+      for (const item of dataArray) {
+        // 使用 contractAddress 作为唯一标识符
+        const uniqueId = item.contractAddress;
+        if (!uniqueId) continue;
+
+        const oldItem = dataStateCache[uniqueId];
+
+        // 如果是首次运行，或者数据发生了变化，则记录
+        if (isFirstRun || !oldItem || areObjectsDifferent(oldItem, item)) {
+          const filteredItem = {};
+          for (const field of desiredFields) {
+            filteredItem[field] = item[field];
+          }
+          changedData.push(filteredItem);
+          dataStateCache[uniqueId] = item; // 更新状态缓存
         }
-        return newItem;
-      });
-      // ✨ 发送包含耗时和缓存状态的完整结果
-      window.onDataExtracted({ data: filteredData, path: foundPath, duration: duration, cacheHit: cacheHit });
+      }
+
+      // 只有当有数据变化时才发送
+      if (changedData.length > 0) {
+        window.onDataExtracted({ 
+          data: changedData, 
+          path: foundPath, 
+          duration: duration, 
+          cacheHit: cacheHit,
+          // ✨ 新增字段，告知接收方这是首次快照还是增量更新
+          type: isFirstRun ? 'snapshot' : 'update'
+        });
+      }
     }
   };
 
   setInterval(extractData, interval);
-  console.log(`✅ Smart Extractor initialized. Interval: ${interval}ms. Caching & Timing enabled.`);
-  extractData();
+  console.log(`✅ Smart Diffing Extractor initialized. Interval: ${interval}ms. Change detection enabled.`);
+  extractData(); // 立即执行一次以获取初始快照
 }
