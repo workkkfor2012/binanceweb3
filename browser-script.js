@@ -1,18 +1,27 @@
 // browser-script.js
-// (v3.0: Diffing Observer)
+// (v3.6: Price-Only Logging)
 
 /**
- * 这是一个在浏览器环境中执行的脚本。
- * 它实现了一个带路径缓存、自动回退和性能计时的智能数据提取器，
- * 并加入了变更检测（Diffing）逻辑，只在数据变化时才发送更新。
+ * v3.6: 简化浏览器控制台日志，只打印第一个品种的价格，方便观察变化。
  */
 function initializeExtractor(options) {
   const { selectors, interval, config, desiredFields } = options;
 
-  let cachedPath = null;
-  // ✨ 核心变更：用于存储数据状态的缓存，键为合约地址，值为上一次的数据对象
-  let dataStateCache = {};
+  // 定义一个安全的日志函数
+  const safeLog = (...args) => {
+    if (window.originalConsoleLog) {
+      window.originalConsoleLog(...args);
+    } else {
+      console.log(...args);
+    }
+  };
 
+  let cachedPath = null;
+  let dataStateCache = {};
+  let lastExecutionTime = 0;
+  const YIELD_THRESHOLD = 200;
+
+  // --- 辅助函数 (内容不变) ---
   const getReactFiber = (element) => {
     const key = Object.keys(element).find(key => key.startsWith('__reactFiber$'));
     return element[key];
@@ -34,18 +43,27 @@ function initializeExtractor(options) {
     }
   };
 
-  const deepSearchForArray = (obj, path, visited) => {
+  const asyncDeepSearchForArray = async (obj, path, visited) => {
     if (!obj || typeof obj !== 'object' || visited.has(obj)) return null;
     visited.add(obj);
-    for (const key in obj) {
+
+    let yieldCounter = 0;
+    const keys = Object.keys(obj);
+
+    for (const key of keys) {
       if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        if (++yieldCounter > YIELD_THRESHOLD) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+          yieldCounter = 0;
+        }
+
         const value = obj[key];
         const newPath = `${path}.${key}`;
         if (isMarketDataArray(value)) {
           return { data: value, path: newPath };
         }
         if (typeof value === 'object') {
-          const result = deepSearchForArray(value, newPath, visited);
+          const result = await asyncDeepSearchForArray(value, newPath, visited);
           if (result) return result;
         }
       }
@@ -53,17 +71,22 @@ function initializeExtractor(options) {
     return null;
   };
 
-  // ✨ 新增辅助函数：比较两个对象指定的字段是否不同
   const areObjectsDifferent = (oldObj, newObj) => {
     for (const field of desiredFields) {
       if (oldObj[field] !== newObj[field]) {
-        return true; // 只要有一个字段不同，就认为对象已改变
+        return true;
       }
     }
     return false;
   };
+  // --- 辅助函数结束 ---
 
-  const extractData = () => {
+  const extractData = async () => {
+    const nowTick = new Date();
+    const tickTimestamp = `[${String(nowTick.getMinutes()).padStart(2, '0')}:${String(nowTick.getSeconds()).padStart(2, '0')}.${String(nowTick.getMilliseconds()).padStart(3, '0')}]`;
+    // 不再打印 Tick 日志到浏览器，避免干扰，只在 Node 端看 Tick 即可
+    // safeLog(`${tickTimestamp} [Tick] Running data extraction...`);
+    
     const startTime = performance.now();
     
     const targetElement = document.querySelector(selectors.stableContainer);
@@ -91,8 +114,8 @@ function initializeExtractor(options) {
       let depth = 0;
       while (currentFiber && depth < config.maxFiberTreeDepth) {
         const fiberPathPrefix = 'fiber' + (depth > 0 ? '.return'.repeat(depth) : '');
-        const result = deepSearchForArray(currentFiber.memoizedProps, `${fiberPathPrefix}.memoizedProps`, new Set()) ||
-                       deepSearchForArray(currentFiber.memoizedState, `${fiberPathPrefix}.memoizedState`, new Set());
+        const result = (await asyncDeepSearchForArray(currentFiber.memoizedProps, `${fiberPathPrefix}.memoizedProps`, new Set())) ||
+                       (await asyncDeepSearchForArray(currentFiber.memoizedState, `${fiberPathPrefix}.memoizedState`, new Set()));
         
         if (result) {
           dataArray = result.data;
@@ -108,44 +131,58 @@ function initializeExtractor(options) {
     const endTime = performance.now();
     const duration = (endTime - startTime).toFixed(2);
 
-    if (dataArray) {
-      // ✨ 核心变更：执行变更检测 (Diffing)
+    if (dataArray && dataArray.length > 0) {
+      
+      // ✨ ================== 核心变更：只打印价格 ==================
+      const firstItem = dataArray[0];
+      if (firstItem && firstItem.price !== undefined) {
+        const nowData = new Date();
+        const dataTimestamp = `[${String(nowData.getMinutes()).padStart(2, '0')}:${String(nowData.getSeconds()).padStart(2, '0')}.${String(nowData.getMilliseconds()).padStart(3, '0')}]`;
+        safeLog(`%c${dataTimestamp} [Price Read] ${firstItem.symbol}:`, 'color: cyan;', firstItem.price);
+      }
+      // ✨ =======================================================
+      
       const changedData = [];
       const isFirstRun = Object.keys(dataStateCache).length === 0;
 
       for (const item of dataArray) {
-        // 使用 contractAddress 作为唯一标识符
         const uniqueId = item.contractAddress;
         if (!uniqueId) continue;
-
         const oldItem = dataStateCache[uniqueId];
-
-        // 如果是首次运行，或者数据发生了变化，则记录
         if (isFirstRun || !oldItem || areObjectsDifferent(oldItem, item)) {
           const filteredItem = {};
           for (const field of desiredFields) {
             filteredItem[field] = item[field];
           }
           changedData.push(filteredItem);
-          dataStateCache[uniqueId] = item; // 更新状态缓存
+          dataStateCache[uniqueId] = item;
         }
       }
 
-      // 只有当有数据变化时才发送
       if (changedData.length > 0) {
         window.onDataExtracted({ 
           data: changedData, 
           path: foundPath, 
           duration: duration, 
           cacheHit: cacheHit,
-          // ✨ 新增字段，告知接收方这是首次快照还是增量更新
           type: isFirstRun ? 'snapshot' : 'update'
         });
       }
     }
   };
 
-  setInterval(extractData, interval);
-  console.log(`✅ Smart Diffing Extractor initialized. Interval: ${interval}ms. Change detection enabled.`);
-  extractData(); // 立即执行一次以获取初始快照
+  const extractionLoop = async (currentTime) => {
+    requestAnimationFrame(extractionLoop);
+    if (currentTime - lastExecutionTime > interval) {
+      lastExecutionTime = currentTime;
+      await extractData();
+    }
+  };
+
+  safeLog(`✅ Smart Async Extractor initialized. Price logging to browser console is ENABLED.`);
+  
+  (async () => {
+    await extractData();
+    requestAnimationFrame(extractionLoop);
+  })();
 }

@@ -1,6 +1,6 @@
 // extractor.js
-// (Final Version v3.1: Expanded Fields)
-// 目标：加载实现了变更检测的浏览器脚本，监控并打印一组扩展的字段。
+// (Final Version v3.3: Hijack-Proof Console)
+// 目标：通过 addInitScript 确保我们的浏览器日志能正常输出，绕过网站对 console.log 的覆盖。
 
 const fs = require('fs').promises;
 const path = require('path');
@@ -29,15 +29,10 @@ const HEURISTIC_CONFIG = {
   requiredKeys: ['symbol', 'price', 'volume24h', 'marketCap', 'priceChange24h'],
 };
 
-// ✨ 核心变更：在这里添加了5个价格变动字段
 const DESIRED_FIELDS = [
-  // 基础信息
   'chainId', 'contractAddress', 'symbol', 'icon', 
-  // 核心指标
   'marketCap', 'price', 
-  // 成交额 (多周期)
   'volume1m', 'volume5m', 'volume1h', 'volume4h', 'volume24h',
-  // 价格变动 (多周期)
   'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h', 'priceChange24h'
 ];
 // ==============================================================================
@@ -46,7 +41,7 @@ async function main() {
   logger.init();
   let browser;
   
-  logger.log('🚀 [Diffing Extractor v3.1] 脚本启动...', logger.LOG_LEVELS.INFO);
+  logger.log('🚀 [Diffing Extractor v3.3] 脚本启动...', logger.LOG_LEVELS.INFO);
   
   try {
     const browserScript = await fs.readFile(path.join(__dirname, 'browser-script.js'), 'utf-8');
@@ -60,6 +55,12 @@ async function main() {
 
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
+
+    // ✨ ================== 核心变更：在页面所有脚本执行前，保存原始 console ==================
+    await page.addInitScript({
+      content: 'window.originalConsoleLog = console.log;'
+    });
+    // ✨ =================================================================================
 
     await page.goto('https://web3.binance.com/zh-CN/markets/trending?chain=bsc', { waitUntil: 'load', timeout: 90000 });
     await handleGuidePopup(page);
@@ -100,7 +101,7 @@ async function main() {
       })});
     `);
 
-    logger.log(`\n👍 脚本进入高频变更检测模式 (${EXTRACTION_INTERVAL_MS}ms)。按 CTRL+C 停止。`, logger.LOG_LEVELS.INFO);
+    logger.log(`\n👍 脚本进入高频变更检测模式 (${EXTRACTION_INTERVAL_MS}ms)。请在浏览器窗口按F12查看高频日志。`, logger.LOG_LEVELS.INFO);
     await new Promise(() => {});
 
   } catch (error) {
