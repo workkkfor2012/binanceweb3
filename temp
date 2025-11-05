@@ -1,0 +1,2 @@
+const fiber11 = fiber10.return
+fiber11.memoizedProps

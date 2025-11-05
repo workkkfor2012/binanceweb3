@@ -1,0 +1,2 @@
+node .\extractor.js
+pause
