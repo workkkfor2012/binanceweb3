@@ -17,8 +17,8 @@ chromium.use(stealth);
 // --- ⚙️ 配置区 ---
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const MIN_VOLUME_FILTER = 100;
-const EXTRACTION_INTERVAL_MS = 200;
+const MIN_VOLUME_FILTER = 1;
+const EXTRACTION_INTERVAL_MS = 1000;
 
 const SELECTORS = {
   stableContainer: '#__APP div.markets-table',
