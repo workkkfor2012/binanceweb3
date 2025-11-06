@@ -1,15 +1,23 @@
-// browser-script.js
+// packages/extractor/src/browser-script.ts
+/// <reference path="./global.d.ts" />
 
-// (v3.7: Detailed Performance Logging)
+import type { MarketItem, ExtractedDataPayload } from 'shared-types';
 
-/**
- * v3.7: 增加详细的性能日志，拆分读取和Diff耗时，并统计处理数量。
- */
-function initializeExtractor(options) {
+interface ExtractorOptions {
+  selectors: { stableContainer: string };
+  interval: number;
+  config: {
+    minArrayLength: number;
+    requiredKeys: string[];
+    maxFiberTreeDepth: number;
+  };
+  desiredFields: string[];
+}
+
+function initializeExtractor(options: ExtractorOptions): void {
   const { selectors, interval, config, desiredFields } = options;
 
-  // 定义一个安全的日志函数
-  const safeLog = (...args) => {
+  const safeLog = (...args: any[]): void => {
     if (window.originalConsoleLog) {
       window.originalConsoleLog(...args);
     } else {
@@ -17,18 +25,17 @@ function initializeExtractor(options) {
     }
   };
 
-  let cachedPath = null;
-  let dataStateCache = {};
+  let cachedPath: string | null = null;
+  let dataStateCache: { [key: string]: any } = {};
   let lastExecutionTime = 0;
   const YIELD_THRESHOLD = 200;
 
-  // --- 辅助函数 (内容不变) ---
-  const getReactFiber = (element) => {
+  const getReactFiber = (element: Element): any | null => {
     const key = Object.keys(element).find(key => key.startsWith('__reactFiber$'));
-    return element[key];
+    return key ? (element as any)[key] : null;
   };
 
-  const isMarketDataArray = (arr) => {
+  const isMarketDataArray = (arr: any): arr is MarketItem[] => {
     if (!Array.isArray(arr) || arr.length < config.minArrayLength) return false;
     const item = arr[0];
     if (typeof item !== 'object' || item === null) return false;
@@ -36,7 +43,7 @@ function initializeExtractor(options) {
     return config.requiredKeys.every(key => keys.includes(key));
   };
 
-  const getNestedValue = (obj, path) => {
+  const getNestedValue = (obj: any, path: string): any | null => {
     try {
       return path.split('.').reduce((acc, key) => acc && acc[key], obj);
     } catch (e) {
@@ -44,7 +51,11 @@ function initializeExtractor(options) {
     }
   };
 
-  const asyncDeepSearchForArray = async (obj, path, visited) => {
+  const asyncDeepSearchForArray = async (
+    obj: any,
+    path: string,
+    visited: Set<any>
+  ): Promise<{ data: any[]; path: string } | null> => {
     if (!obj || typeof obj !== 'object' || visited.has(obj)) return null;
     visited.add(obj);
 
@@ -72,7 +83,7 @@ function initializeExtractor(options) {
     return null;
   };
 
-  const areObjectsDifferent = (oldObj, newObj) => {
+  const areObjectsDifferent = (oldObj: MarketItem, newObj: MarketItem): boolean => {
     for (const field of desiredFields) {
       if (oldObj[field] !== newObj[field]) {
         return true;
@@ -80,18 +91,17 @@ function initializeExtractor(options) {
     }
     return false;
   };
-  // --- 辅助函数结束 ---
 
-  const extractData = async () => {
+  const extractData = async (): Promise<void> => {
     const startTime = performance.now();
     
-    const targetElement = document.querySelector(selectors.stableContainer);
+    const targetElement = document.querySelector<HTMLElement>(selectors.stableContainer);
     if (!targetElement) return;
     let rootFiber = getReactFiber(targetElement);
     if (!rootFiber) return;
 
-    let dataArray = null;
-    let foundPath = null;
+    let dataArray: MarketItem[] | null = null;
+    let foundPath: string | null = null;
     let cacheHit = false;
 
     if (cachedPath) {
@@ -124,44 +134,35 @@ function initializeExtractor(options) {
       }
     }
     
-    // ✨ ================== 核心变更：增加时间点和性能指标 ==================
     const readEndTime = performance.now();
 
     if (dataArray && dataArray.length > 0) {
-      const firstItem = dataArray[0];
-      if (firstItem && firstItem.price !== undefined) {
-        const nowData = new Date();
-        const dataTimestamp = `[${String(nowData.getMinutes()).padStart(2, '0')}:${String(nowData.getSeconds()).padStart(2, '0')}.${String(nowData.getMilliseconds()).padStart(3, '0')}]`;
-        safeLog(`%c${dataTimestamp} [Price Read] ${firstItem.symbol}:`, 'color: cyan;', firstItem.price);
-      }
-      
-      const changedData = [];
+      const changedData: MarketItem[] = [];
       const isFirstRun = Object.keys(dataStateCache).length === 0;
-      const totalCount = dataArray.length; // 记录读取总数
+      const totalCount = dataArray.length;
 
       for (const item of dataArray) {
         const uniqueId = item.contractAddress;
         if (!uniqueId) continue;
         const oldItem = dataStateCache[uniqueId];
         if (isFirstRun || !oldItem || areObjectsDifferent(oldItem, item)) {
-          const filteredItem = {};
+          const filteredItem: { [key: string]: any } = {};
           for (const field of desiredFields) {
             filteredItem[field] = item[field];
           }
-          changedData.push(filteredItem);
+          changedData.push(filteredItem as MarketItem);
           dataStateCache[uniqueId] = item;
         }
       }
 
       const diffEndTime = performance.now();
-      const changedCount = changedData.length; // 记录变更数
+      const changedCount = changedData.length;
 
-      // 计算各阶段耗时
       const readDuration = (readEndTime - startTime).toFixed(2);
       const diffDuration = (diffEndTime - readEndTime).toFixed(2);
       const totalDuration = (diffEndTime - startTime).toFixed(2);
       
-      const payload = {
+      const payload: ExtractedDataPayload = {
         path: foundPath, 
         duration: totalDuration,
         readDuration,
@@ -169,6 +170,7 @@ function initializeExtractor(options) {
         totalCount,
         changedCount,
         cacheHit: cacheHit,
+        type: 'no-change',
       };
 
       if (changedCount > 0) {
@@ -179,11 +181,10 @@ function initializeExtractor(options) {
         payload.type = 'no-change';
         window.onDataExtracted(payload);
       }
-      // ✨ ====================================================================
     }
   };
 
-  const extractionLoop = async (currentTime) => {
+  const extractionLoop = async (currentTime: number): Promise<void> => {
     requestAnimationFrame(extractionLoop);
     if (currentTime - lastExecutionTime > interval) {
       lastExecutionTime = currentTime;
@@ -191,7 +192,7 @@ function initializeExtractor(options) {
     }
   };
 
-  safeLog(`✅ Smart Async Extractor initialized (v3.7). Performance logging to Node.js console is ENABLED.`);
+  safeLog(`✅ Smart Async Extractor initialized (TS). Performance logging to Node.js console is ENABLED.`);
   
   (async () => {
     await extractData();

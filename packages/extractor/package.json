@@ -2,10 +2,11 @@
   "name": "extractor",
   "version": "1.0.0",
   "description": "Playwright data extractor script",
-  "main": "extractor.js",
+  "main": "dist/extractor.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node extractor.js"
+    "build": "tsc",
+    "start": "npm run build && node dist/extractor.js"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +15,11 @@
     "playwright": "^1.44.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "socket.io-client": "^4.7.5"
+    "socket.io-client": "^4.7.5",
+    "shared-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "typescript": "^5.9.3"
   }
 }

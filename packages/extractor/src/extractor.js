@@ -1,25 +1,20 @@
-// packages/extractor/extractor.js
-// (Final Version v5.0: Monorepo & Fastify Integration)
-// 目标：作为独立包运行，并将数据发送到 Fastify 后端。
+// packages/extractor/src/extractor.ts
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { chromium, Browser } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
+import { handleGuidePopup, checkAndClickCookieBanner } from './pageInitializer';
+import { applyVolumeFilter } from './filterManager';
+import * as logger from './logger';
+import { io, Socket } from 'socket.io-client';
+import type { ExtractedDataPayload } from 'shared-types';
 
-const fs = require('fs').promises;
-const path = require('path');
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
-const { handleGuidePopup, checkAndClickCookieBanner } = require('./pageInitializer.js');
-const { applyVolumeFilter } = require('./filterManager.js');
-const logger = require('./logger.js');
-const { io } = require('socket.io-client');
+chromium.use(stealth());
 
-chromium.use(stealth);
-
-// ==============================================================================
 // --- ⚙️ 配置区 ---
-// ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIN_VOLUME_FILTER = 1;
 const EXTRACTION_INTERVAL_MS = 1000;
-// ✨ 核心变更：服务器地址指向新的 Fastify 后端
 const SERVER_URL = 'http://localhost:3001';
 
 const SELECTORS = {
@@ -40,21 +35,22 @@ const DESIRED_FIELDS = [
 ];
 // ==============================================================================
 
-async function main() {
+async function main(): Promise<void> {
     logger.init();
-    let browser;
+    let browser: Browser | undefined;
 
-    const socket = io(SERVER_URL);
+    const socket: Socket = io(SERVER_URL);
     socket.on('connect', () => {
         logger.log(`✅ [Socket.IO] 成功连接到 Fastify 服务器: ${SERVER_URL}`, logger.LOG_LEVELS.INFO);
     });
-    socket.on('connect_error', (err) => {
+    socket.on('connect_error', (err: Error) => {
         logger.log(`❌ [Socket.IO] 连接失败: ${err.message}. 请确认后端服务 (npm run dev:backend) 已运行.`, logger.LOG_LEVELS.ERROR);
     });
 
-    logger.log('🚀 [Extractor v5.0] 脚本启动...', logger.LOG_LEVELS.INFO);
+    logger.log('🚀 [Extractor v5.0 TS] 脚本启动...', logger.LOG_LEVELS.INFO);
 
     try {
+        // 关键：读取编译后的 browser-script.js
         const browserScript = await fs.readFile(path.join(__dirname, 'browser-script.js'), 'utf-8');
 
         browser = await chromium.launch({
@@ -78,7 +74,7 @@ async function main() {
 
         logger.log('✅ 页面初始化完成，准备注入智能提取器...', logger.LOG_LEVELS.INFO);
 
-        const handleExtractedData = (result) => {
+        const handleExtractedData = (result: ExtractedDataPayload): void => {
             const {
                 type, data,
                 duration, readDuration, diffDuration,
@@ -113,7 +109,7 @@ async function main() {
         logger.log(`\n👍 脚本进入高频变更检测模式 (${EXTRACTION_INTERVAL_MS}ms)。`, logger.LOG_LEVELS.INFO);
         await new Promise(() => { });
 
-    } catch (error) {
+    } catch (error: any) {
         logger.log(`❌ 脚本执行时发生严重错误: ${error.stack}`, logger.LOG_LEVELS.ERROR);
     } finally {
         socket.disconnect();

@@ -1,12 +1,12 @@
-// pageInitializer.js
-
-const { log, LOG_LEVELS } = require('./logger.js'); // 引入 log 和 LOG_LEVELS
+// packages/extractor/src/pageInitializer.ts
+import { Page } from 'playwright';
+import { log, LOG_LEVELS } from './logger';
 
 const GUIDE_POPUP_SELECTOR = '#__APP > div.bn-trans.data-show.bn-mask.bn-modal > div';
 const COOKIE_BANNER_SELECTOR = '#onetrust-banner-sdk';
 const GUIDE_POPUP_WAIT_TIMEOUT = 45000;
 
-async function handleGuidePopup(page) {
+export async function handleGuidePopup(page: Page): Promise<void> {
   try {
     log(`⏳ [Main-Wait] 正在等待核心事件：引导弹窗出现...`, LOG_LEVELS.INFO);
     const container = page.locator(GUIDE_POPUP_SELECTOR);
@@ -33,7 +33,7 @@ async function handleGuidePopup(page) {
   }
 }
 
-async function checkAndClickCookieBanner(page) {
+export async function checkAndClickCookieBanner(page: Page): Promise<void> {
   log(`  -> [Quick-Check] 正在快速检查Cookie横幅...`, LOG_LEVELS.INFO);
   const banner = page.locator(COOKIE_BANNER_SELECTOR);
   
@@ -50,8 +50,3 @@ async function checkAndClickCookieBanner(page) {
     log('     ℹ️ 未发现Cookie横幅，跳过.', LOG_LEVELS.INFO);
   }
 }
-
-module.exports = { 
-  handleGuidePopup,
-  checkAndClickCookieBanner
-};

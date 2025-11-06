@@ -1,4 +1,4 @@
-// packages/frontend/src/index.jsx
+// packages/frontend/src/index.tsx
 /* @refresh reload */
 import { render } from 'solid-js/web';
 
@@ -13,4 +13,4 @@ if (import.meta.env.DEV && !(root instanceof HTMLElement)) {
   );
 }
 
-render(() => <App />, root);
+render(() => <App />, root!);

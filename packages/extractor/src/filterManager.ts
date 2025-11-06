@@ -1,14 +1,8 @@
-// filterManager.js
+// packages/extractor/src/filterManager.ts
+import { Page } from 'playwright';
+import { log, LOG_LEVELS } from './logger';
 
-const { log, LOG_LEVELS } = require('./logger.js'); // 引入 log 和 LOG_LEVELS
-
-/**
- * 应用成交金额过滤器。
- * @param {import('playwright').Page} page - Playwright 的 Page 对象。
- * @param {number|string} minVolume - 要设置的最小成交金额。
- * @returns {Promise<void>}
- */
-async function applyVolumeFilter(page, minVolume) {
+export async function applyVolumeFilter(page: Page, minVolume: number | string): Promise<void> {
   log(`🔍 [Filter] 准备应用成交金额过滤器，最小金额设置为: ${minVolume}`, LOG_LEVELS.INFO);
 
   try {
@@ -30,10 +24,8 @@ async function applyVolumeFilter(page, minVolume) {
     
     log('👍 [Filter] 过滤器已成功应用，页面已完全稳定.', LOG_LEVELS.INFO);
 
-  } catch (error) {
+  } catch (error: any) {
     log(`❌ [Filter] 应用成交金额过滤器时发生错误: ${error.message}`, LOG_LEVELS.ERROR);
     throw error; 
   }
 }
-
-module.exports = { applyVolumeFilter };
