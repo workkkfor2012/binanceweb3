@@ -1,0 +1,88 @@
+// packages/frontend/src/index.css
+/* A clean, light theme */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #f4f7f9; /* Light gray background */
+    color: #333; /* Dark gray text for readability */
+    line-height: 1.6;
+    margin: 0;
+    padding: 20px;
+}
+
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+h1 {
+    text-align: center;
+    color: #007bff; /* A nice blue for the title */
+}
+
+.stats {
+    display: flex;
+    justify-content: space-around;
+    background-color: #ffffff;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    max-width: 800px;
+    margin-left: auto;
+    margin-right: auto;
+    border: 1px solid #e1e4e8;
+}
+
+.stats p {
+    margin: 0;
+    font-size: 0.9em;
+}
+
+.stats span.connecting { color: #f0ad4e; } /* Orange for connecting */
+.stats span.connected { color: #5cb85c; font-weight: bold; } /* Green for connected */
+.stats span.disconnected { color: #d9534f; font-weight: bold; } /* Red for disconnected */
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    background-color: #fff;
+    border-radius: 8px;
+    overflow: hidden; /* Ensures border-radius is respected by children */
+}
+
+th, td {
+    padding: 12px 15px;
+    text-align: left;
+    border-bottom: 1px solid #e1e4e8; /* Lighter border */
+}
+
+thead tr {
+    background-color: #007bff;
+    color: #ffffff;
+    font-weight: bold;
+}
+
+tbody tr:nth-of-type(even) {
+    background-color: #f8f9fa; /* Zebra striping for rows */
+}
+
+tbody tr:hover {
+    background-color: #e9ecef; /* Hover effect */
+}
+
+.icon {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+    margin-right: 8px;
+    border-radius: 50%;
+}
+
+.positive {
+    color: #28a745; /* Bootstrap green */
+}
+
+.negative {
+    color: #dc3545; /* Bootstrap red */
+}

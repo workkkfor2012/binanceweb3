@@ -1,0 +1,19 @@
+{
+  "name": "extractor",
+  "version": "1.0.0",
+  "description": "Playwright data extractor script",
+  "main": "extractor.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node extractor.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.44.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "socket.io-client": "^4.7.5"
+  }
+}

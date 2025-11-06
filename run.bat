@@ -1,2 +1,0 @@
-node .\hotlist.js
-pause

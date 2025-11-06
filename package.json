@@ -1,19 +1,23 @@
 {
-  "name": "binanceweb3",
+  "name": "realtime-monitor",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "A modern real-time data monitoring system with Vite, SolidJS, and Fastify.",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "bootstrap": "npm install",
+    "dev": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:full": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\" \"npm:start:extractor\"",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:backend": "npm run dev -w backend",
+    "start:extractor": "npm start -w extractor"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "playwright": "^1.56.1",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "webcrack": "^2.15.1"
+    "concurrently": "^8.2.2"
   }
 }
