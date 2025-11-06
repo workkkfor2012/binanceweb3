@@ -5,9 +5,9 @@
     "module": "Node16",
     "outDir": "./dist",
     "rootDir": "./src",
-    // 核心：只生成声明文件，因为这个包只提供类型
+    // 核心：生成声明文件，让其他包能进行类型检查
     "declaration": true,
-    "emitDeclarationOnly": true,
+    // "emitDeclarationOnly": true, // <-- 关键修改：移除此行，允许生成 .js 文件来导出常量
     "composite": true
   },
   "include": ["src/**/*.ts"]

@@ -9,6 +9,8 @@ import { applyVolumeFilter } from './filterManager';
 import * as logger from './logger';
 import { io, Socket } from 'socket.io-client';
 import type { ExtractedDataPayload } from 'shared-types';
+// ✨ 核心修改: 从 shared-types 导入 DESIRED_FIELDS
+import { DESIRED_FIELDS } from 'shared-types';
 
 chromium.use(stealth());
 
@@ -30,12 +32,7 @@ const HEURISTIC_CONFIG = {
     requiredKeys: ['symbol', 'price', 'volume24h', 'marketCap', 'priceChange24h'],
 };
 
-const DESIRED_FIELDS = [
-    'chainId', 'contractAddress', 'symbol', 'icon',
-    'marketCap', 'price',
-    'volume1m', 'volume5m', 'volume1h', 'volume4h', 'volume24h',
-    'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h', 'priceChange24h'
-];
+// ✨ 核心修改: 本地的 DESIRED_FIELDS 定义已被移除
 // ==============================================================================
 
 /**

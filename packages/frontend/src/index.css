@@ -10,8 +10,10 @@ body {
 }
 
 #root {
-  max-width: 1280px;
+  max-width: 100%; /* 允许根元素使用全部宽度 */
   margin: 0 auto;
+  padding: 0 10px; /* 添加一些内边距 */
+  box-sizing: border-box;
 }
 
 h1 {
@@ -42,25 +44,42 @@ h1 {
 .stats span.connected { color: #5cb85c; font-weight: bold; } /* Green for connected */
 .stats span.disconnected { color: #d9534f; font-weight: bold; } /* Red for disconnected */
 
+/* 表格容器样式，用于横向滚动 */
+.table-container {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch; /* for smooth scrolling on mobile */
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    border: 1px solid #e1e4e8;
+    margin-bottom: 20px;
+}
+
 table {
     width: 100%;
     border-collapse: collapse;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     background-color: #fff;
-    border-radius: 8px;
-    overflow: hidden; /* Ensures border-radius is respected by children */
 }
 
 th, td {
     padding: 12px 15px;
     text-align: left;
     border-bottom: 1px solid #e1e4e8; /* Lighter border */
+    white-space: nowrap; /* 核心：防止单元格内容换行 */
 }
 
 thead tr {
     background-color: #007bff;
     color: #ffffff;
     font-weight: bold;
+}
+
+/* 让表头在滚动时保持在顶部 */
+thead th {
+    position: sticky;
+    top: 0;
+    background-color: #007bff;
+    z-index: 1;
 }
 
 tbody tr:nth-of-type(even) {
@@ -75,7 +94,6 @@ tbody tr:hover {
     width: 24px;
     height: 24px;
     vertical-align: middle;
-    margin-right: 8px;
     border-radius: 50%;
 }
 
@@ -85,4 +103,9 @@ tbody tr:hover {
 
 .negative {
     color: #dc3545; /* Bootstrap red */
+}
+
+.na {
+    color: #999;
+    font-style: italic;
 }

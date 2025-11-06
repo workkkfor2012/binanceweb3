@@ -4,8 +4,9 @@ import { Server, Socket } from 'socket.io';
 import cors from '@fastify/cors';
 import { request as fetch, ProxyAgent } from 'undici';
 import { Buffer } from 'buffer';
-// 从共享包导入类型!
+// ✨ 核心修改: 同时导入类型和 DESIRED_FIELDS 常量
 import type { MarketItem, DataPayload } from 'shared-types';
+import { DESIRED_FIELDS } from 'shared-types';
 
 // --- 类型定义 ---
 // 图片缓存的条目结构
@@ -30,6 +31,15 @@ fastify.register(cors, {
   origin: "http://localhost:15173",
   methods: ["GET", "POST"],
 });
+
+// ✨ 新增API端点: 为前端提供当前监控的字段列表
+fastify.get('/desired-fields', async (
+  request: FastifyRequest,
+  reply: FastifyReply
+) => {
+  return reply.send(DESIRED_FIELDS);
+});
+
 
 fastify.get('/image-proxy', async (
   request: FastifyRequest<{ Querystring: ImageProxyQuery }>,

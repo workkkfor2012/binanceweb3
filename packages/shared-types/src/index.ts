@@ -1,4 +1,5 @@
 // packages/shared-types/src/index.ts
+// packages/shared-types/src/index.ts
 
 /**
  * 核心的市场数据项结构
@@ -37,3 +38,14 @@ export interface ExtractedDataPayload {
   changedCount: number;
   cacheHit: boolean;
 }
+
+/**
+ * 定义了从目标网站提取并推送到前端的具体数据字段
+ * 这是整个系统监控字段的“单一事实来源”
+ */
+export const DESIRED_FIELDS = [
+    'chainId', 'contractAddress', 'symbol', 'icon',
+    'marketCap', 'price',
+    'volume1m', 'volume5m', 'volume1h', 'volume4h', 'volume24h',
+    'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h', 'priceChange24h'
+];
