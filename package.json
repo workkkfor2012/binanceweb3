@@ -7,13 +7,13 @@
     "packages/*"
   ],
   "scripts": {
-    "bootstrap": "npm install",
-    "dev": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\"",
-    "dev:full": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\" \"npm:start:extractor\"",
-    "dev:frontend": "npm run dev -w frontend",
-    "dev:backend": "npm run dev -w backend",
-    "start:extractor": "npm start -w extractor",
-    "build": "npm run build -w shared-types && npm run build -w backend && npm run build -w extractor && npm run build -w frontend"
+    "bootstrap": "pnpm install",
+    "dev": "concurrently \"pnpm dev:backend\" \"pnpm dev:frontend\"",
+    "dev:full": "concurrently \"pnpm dev:backend\" \"pnpm dev:frontend\" \"pnpm start:extractor\"",
+    "dev:frontend": "pnpm --filter frontend dev",
+    "dev:backend": "pnpm --filter backend dev",
+    "start:extractor": "pnpm --filter extractor start",
+    "build": "pnpm --filter shared-types build && pnpm --filter backend build && pnpm --filter extractor build && pnpm --filter frontend build"
   },
   "keywords": [],
   "author": "",

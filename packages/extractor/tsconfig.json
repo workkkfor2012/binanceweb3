@@ -1,12 +1,15 @@
+// packages/extractor/tsconfig.json
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "module": "CommonJS",
+    "module": "Node16",
     "outDir": "./dist",
-    "rootDir": "./src",
-    "moduleResolution": "node"
+    "rootDir": "./src"
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "src/global.d.ts" // <--- ✨ 核心修改：将全局声明文件加入编译范围
+, "src/browser-script.js"  ],
   "exclude": ["node_modules"],
   "references": [
     { "path": "../shared-types" }

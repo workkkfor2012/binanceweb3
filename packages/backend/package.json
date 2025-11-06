@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "npm run build && node dist/server.js"
+    "start": "tsc && node dist/server.js"
   },
   "keywords": [],
   "author": "",
@@ -22,7 +22,6 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.2",
-    "tsx": "^4.11.2",
-    "typescript": "^5.9.3"
+    "tsx": "^4.11.2"
   }
 }

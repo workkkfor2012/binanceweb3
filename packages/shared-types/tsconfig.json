@@ -1,12 +1,14 @@
+// packages/shared-types/tsconfig.json
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "module": "CommonJS",
+    "module": "Node16",
     "outDir": "./dist",
     "rootDir": "./src",
     // 核心：只生成声明文件，因为这个包只提供类型
     "declaration": true,
-    "emitDeclarationOnly": true
+    "emitDeclarationOnly": true,
+    "composite": true
   },
   "include": ["src/**/*.ts"]
 }

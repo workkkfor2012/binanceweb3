@@ -5,8 +5,8 @@
   "main": "dist/extractor.js",
   "type": "commonjs",
   "scripts": {
-    "build": "tsc",
-    "start": "npm run build && node dist/extractor.js"
+    "build": "tsc -b",
+    "start": "tsc -b && node dist/extractor.js"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +19,6 @@
     "shared-types": "workspace:^1.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.14.2",
-    "typescript": "^5.9.3"
+    "@types/node": "^20.14.2"
   }
 }

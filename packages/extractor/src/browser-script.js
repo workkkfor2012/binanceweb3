@@ -1,28 +1,45 @@
-// packages/extractor/src/browser-script.ts
-/// <reference path="./global.d.ts" />
+// packages/extractor/src/browser-script.js
+/**
+ * @typedef {object} MarketItem
+ * @property {string} contractAddress
+ * @property {string} symbol
+ * @property {string} icon
+ * @property {number} price
+ * @property {string} priceChange24h
+ * @property {number} volume24h
+ * @property {number} marketCap
+ */
 
-// 使用 'import type' 确保在编译为 JS 时这些导入被完全擦除
-import type { MarketItem, ExtractedDataPayload } from 'shared-types';
+/**
+ * @typedef {object} ExtractedDataPayload
+ * @property {'snapshot' | 'update' | 'no-change'} type
+ * @property {MarketItem[]} [data]
+ * @property {string | null} path
+ * @property {string} duration
+ * @property {string} readDuration
+ * @property {string} diffDuration
+ * @property {number} totalCount
+ * @property {number} changedCount
+ * @property {boolean} cacheHit
+ */
 
-interface ExtractorOptions {
-  selectors: { stableContainer: string };
-  interval: number;
-  config: {
-    minArrayLength: number;
-    requiredKeys: string[];
-    maxFiberTreeDepth: number;
-  };
-  desiredFields: string[];
-}
+/**
+ * @typedef {object} ExtractorOptions
+ * @property {{ stableContainer: string }} selectors
+ * @property {number} interval
+ * @property {{ minArrayLength: number, requiredKeys: string[], maxFiberTreeDepth: number }} config
+ * @property {string[]} desiredFields
+ */
 
 /**
  * 初始化并运行数据提取器。
- * 此函数将在浏览器的上下文中执行。
+ * 此函数将在浏览器的上下文中执行，并挂载到 window 对象上。
+ * @param {ExtractorOptions} options
  */
-function initializeExtractor(options: ExtractorOptions): void {
+window.initializeExtractor = function(options) {
   const { selectors, interval, config, desiredFields } = options;
 
-  const safeLog = (...args: any[]): void => {
+  const safeLog = (...args) => {
     if (window.originalConsoleLog) {
       window.originalConsoleLog(...args);
     } else {
@@ -30,18 +47,18 @@ function initializeExtractor(options: ExtractorOptions): void {
     }
   };
 
-  let cachedPath: string | null = null;
-  let dataStateCache: { [key: string]: any } = {};
+  let cachedPath = null;
+  let dataStateCache = {};
   let lastExecutionTime = 0;
   const YIELD_THRESHOLD = 200;
 
   // --- 辅助函数 ---
-  const getReactFiber = (element: Element): any | null => {
+  const getReactFiber = (element) => {
     const key = Object.keys(element).find(key => key.startsWith('__reactFiber$'));
-    return key ? (element as any)[key] : null;
+    return key ? element[key] : null;
   };
 
-  const isMarketDataArray = (arr: any): arr is MarketItem[] => {
+  const isMarketDataArray = (arr) => {
     if (!Array.isArray(arr) || arr.length < config.minArrayLength) return false;
     const item = arr[0];
     if (typeof item !== 'object' || item === null) return false;
@@ -49,7 +66,7 @@ function initializeExtractor(options: ExtractorOptions): void {
     return config.requiredKeys.every(key => keys.includes(key));
   };
 
-  const getNestedValue = (obj: any, path: string): any | null => {
+  const getNestedValue = (obj, path) => {
     try {
       return path.split('.').reduce((acc, key) => acc && acc[key], obj);
     } catch (e) {
@@ -58,10 +75,10 @@ function initializeExtractor(options: ExtractorOptions): void {
   };
 
   const asyncDeepSearchForArray = async (
-    obj: any,
-    path: string,
-    visited: Set<any>
-  ): Promise<{ data: any[]; path: string } | null> => {
+    obj,
+    path,
+    visited
+  ) => {
     if (!obj || typeof obj !== 'object' || visited.has(obj)) return null;
     visited.add(obj);
 
@@ -89,7 +106,7 @@ function initializeExtractor(options: ExtractorOptions): void {
     return null;
   };
 
-  const areObjectsDifferent = (oldObj: MarketItem, newObj: MarketItem): boolean => {
+  const areObjectsDifferent = (oldObj, newObj) => {
     for (const field of desiredFields) {
       if (oldObj[field] !== newObj[field]) {
         return true;
@@ -99,16 +116,16 @@ function initializeExtractor(options: ExtractorOptions): void {
   };
   // --- 辅助函数结束 ---
 
-  const extractData = async (): Promise<void> => {
+  const extractData = async () => {
     const startTime = performance.now();
     
-    const targetElement = document.querySelector<HTMLElement>(selectors.stableContainer);
+    const targetElement = document.querySelector(selectors.stableContainer);
     if (!targetElement) return;
     let rootFiber = getReactFiber(targetElement);
     if (!rootFiber) return;
 
-    let dataArray: MarketItem[] | null = null;
-    let foundPath: string | null = null;
+    let dataArray = null;
+    let foundPath = null;
     let cacheHit = false;
 
     if (cachedPath) {
@@ -144,7 +161,7 @@ function initializeExtractor(options: ExtractorOptions): void {
     const readEndTime = performance.now();
 
     if (dataArray && dataArray.length > 0) {
-      const changedData: MarketItem[] = [];
+      const changedData = [];
       const isFirstRun = Object.keys(dataStateCache).length === 0;
       const totalCount = dataArray.length;
 
@@ -153,11 +170,11 @@ function initializeExtractor(options: ExtractorOptions): void {
         if (!uniqueId) continue;
         const oldItem = dataStateCache[uniqueId];
         if (isFirstRun || !oldItem || areObjectsDifferent(oldItem, item)) {
-          const filteredItem: { [key: string]: any } = {};
+          const filteredItem = {};
           for (const field of desiredFields) {
             filteredItem[field] = item[field];
           }
-          changedData.push(filteredItem as MarketItem);
+          changedData.push(filteredItem);
           dataStateCache[uniqueId] = item;
         }
       }
@@ -169,7 +186,8 @@ function initializeExtractor(options: ExtractorOptions): void {
       const diffDuration = (diffEndTime - readEndTime).toFixed(2);
       const totalDuration = (diffEndTime - startTime).toFixed(2);
       
-      const payload: ExtractedDataPayload = {
+      /** @type {ExtractedDataPayload} */
+      const payload = {
         path: foundPath, 
         duration: totalDuration,
         readDuration,
@@ -191,7 +209,7 @@ function initializeExtractor(options: ExtractorOptions): void {
     }
   };
 
-  const extractionLoop = (currentTime: number): void => {
+  const extractionLoop = (currentTime) => {
     requestAnimationFrame(extractionLoop);
     if (currentTime - lastExecutionTime > interval) {
       lastExecutionTime = currentTime;
@@ -199,7 +217,7 @@ function initializeExtractor(options: ExtractorOptions): void {
     }
   };
 
-  safeLog(`✅ Smart Async Extractor initialized (TS version).`);
+  safeLog(`✅ Smart Async Extractor initialized (JS version).`);
   
   // 立即执行一次以获取快照，然后启动循环
   extractData().then(() => {
