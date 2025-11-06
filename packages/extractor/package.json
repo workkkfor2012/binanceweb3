@@ -16,7 +16,7 @@
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "socket.io-client": "^4.7.5",
-    "shared-types": "workspace:*"
+    "shared-types": "workspace:^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.2",

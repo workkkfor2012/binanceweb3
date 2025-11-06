@@ -17,7 +17,7 @@
     "@fastify/http-proxy": "^11.3.0",
     "fastify": "^4.28.0",
     "socket.io": "^4.7.5",
-    "shared-types": "workspace:*",
+    "shared-types": "workspace:^1.0.0",
     "undici": "^6.19.2"
   },
   "devDependencies": {
