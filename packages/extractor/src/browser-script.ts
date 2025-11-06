@@ -1,6 +1,7 @@
 // packages/extractor/src/browser-script.ts
 /// <reference path="./global.d.ts" />
 
+// 使用 'import type' 确保在编译为 JS 时这些导入被完全擦除
 import type { MarketItem, ExtractedDataPayload } from 'shared-types';
 
 interface ExtractorOptions {
@@ -14,6 +15,10 @@ interface ExtractorOptions {
   desiredFields: string[];
 }
 
+/**
+ * 初始化并运行数据提取器。
+ * 此函数将在浏览器的上下文中执行。
+ */
 function initializeExtractor(options: ExtractorOptions): void {
   const { selectors, interval, config, desiredFields } = options;
 
@@ -30,6 +35,7 @@ function initializeExtractor(options: ExtractorOptions): void {
   let lastExecutionTime = 0;
   const YIELD_THRESHOLD = 200;
 
+  // --- 辅助函数 ---
   const getReactFiber = (element: Element): any | null => {
     const key = Object.keys(element).find(key => key.startsWith('__reactFiber$'));
     return key ? (element as any)[key] : null;
@@ -91,6 +97,7 @@ function initializeExtractor(options: ExtractorOptions): void {
     }
     return false;
   };
+  // --- 辅助函数结束 ---
 
   const extractData = async (): Promise<void> => {
     const startTime = performance.now();
@@ -170,7 +177,7 @@ function initializeExtractor(options: ExtractorOptions): void {
         totalCount,
         changedCount,
         cacheHit: cacheHit,
-        type: 'no-change',
+        type: 'no-change', // default
       };
 
       if (changedCount > 0) {
@@ -178,24 +185,24 @@ function initializeExtractor(options: ExtractorOptions): void {
         payload.type = isFirstRun ? 'snapshot' : 'update';
         window.onDataExtracted(payload);
       } else {
-        payload.type = 'no-change';
+        // 即使没有变更，也发送性能数据
         window.onDataExtracted(payload);
       }
     }
   };
 
-  const extractionLoop = async (currentTime: number): Promise<void> => {
+  const extractionLoop = (currentTime: number): void => {
     requestAnimationFrame(extractionLoop);
     if (currentTime - lastExecutionTime > interval) {
       lastExecutionTime = currentTime;
-      await extractData();
+      extractData();
     }
   };
 
-  safeLog(`✅ Smart Async Extractor initialized (TS). Performance logging to Node.js console is ENABLED.`);
+  safeLog(`✅ Smart Async Extractor initialized (TS version).`);
   
-  (async () => {
-    await extractData();
-    requestAnimationFrame(extractionLoop);
-  })();
+  // 立即执行一次以获取快照，然后启动循环
+  extractData().then(() => {
+      requestAnimationFrame(extractionLoop);
+  });
 }

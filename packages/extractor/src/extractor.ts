@@ -11,7 +11,9 @@ import type { ExtractedDataPayload } from 'shared-types';
 
 chromium.use(stealth());
 
+// ==============================================================================
 // --- ⚙️ 配置区 ---
+// ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const MIN_VOLUME_FILTER = 1;
 const EXTRACTION_INTERVAL_MS = 1000;
@@ -50,7 +52,8 @@ async function main(): Promise<void> {
     logger.log('🚀 [Extractor v5.0 TS] 脚本启动...', logger.LOG_LEVELS.INFO);
 
     try {
-        // 关键：读取编译后的 browser-script.js
+        // 关键：当此脚本被编译并从 dist/ 目录运行时, __dirname 会指向 dist/
+        // 因此它会正确地读取一同被编译到 dist/ 的 browser-script.js
         const browserScript = await fs.readFile(path.join(__dirname, 'browser-script.js'), 'utf-8');
 
         browser = await chromium.launch({
