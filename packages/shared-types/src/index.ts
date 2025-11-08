@@ -1,10 +1,9 @@
 // packages/shared-types/src/index.ts
-// packages/shared-types/src/index.ts
-
 /**
  * 核心的市场数据项结构
  */
 export interface MarketItem {
+  chain: string; 
   contractAddress: string;
   symbol: string;
   icon: string;
@@ -12,7 +11,6 @@ export interface MarketItem {
   priceChange24h: string;
   volume24h: number;
   marketCap: number;
-  // 保留索引签名以允许其他未明确定义的字段
   [key: string]: any;
 }
 
@@ -44,7 +42,7 @@ export interface ExtractedDataPayload {
  * 这是整个系统监控字段的“单一事实来源”
  */
 export const DESIRED_FIELDS = [
-    'chainId', 'contractAddress', 'symbol', 'icon',
+    'chain', 'chainId', 'contractAddress', 'symbol', 'icon',
     'marketCap', 'price',
     'volume1m', 'volume5m', 'volume1h', 'volume4h', 'volume24h',
     'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h', 'priceChange24h'

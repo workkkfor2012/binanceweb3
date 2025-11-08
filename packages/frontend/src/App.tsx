@@ -1,20 +1,21 @@
 // packages/frontend/src/App.tsx
-import { createSignal, onMount, onCleanup, For, Component, JSX } from 'solid-js';
+import { createSignal, onMount, onCleanup, For, Component, JSX, createMemo } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { io, Socket } from 'socket.io-client';
-// 从共享包导入类型!
 import type { MarketItem, DataPayload } from 'shared-types';
 
 const BACKEND_URL = 'http://localhost:3001';
 
-// --- 辅助函数区 ---
+// ✨ 新增: 定义可用的链，用于生成按钮
+const CHAINS = ['BSC', 'Base', 'Solana'];
 
-// 将程序化的字段名转换为更友好的中文表头
+// --- 辅助函数区 (无变动) ---
 const FIELD_DISPLAY_NAMES: Record<string, string> = {
   icon: '图标',
   symbol: '品种',
   price: '价格',
   marketCap: '市值',
+  chain: '链',
   chainId: '链 ID',
   contractAddress: '合约地址',
   volume1m: '成交量 (1m)',
@@ -28,42 +29,35 @@ const FIELD_DISPLAY_NAMES: Record<string, string> = {
   priceChange4h: '价格变化 (4h)',
   priceChange24h: '价格变化 (24h)',
 };
-
-// 格式化价格
 const formatPrice = (price: number | null | undefined): string => {
   if (price === null || price === undefined) return 'N/A';
   if (price < 0.001) return price.toPrecision(4);
   return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 };
-
-// 格式化百分比变化
 const formatPercentage = (change: string | number | null | undefined): JSX.Element => {
   if (change === null || change === undefined) return <span class="na">N/A</span>;
   const value = parseFloat(String(change));
   const changeClass = value >= 0 ? 'positive' : 'negative';
   return <span class={changeClass}>{`${value.toFixed(2)}%`}</span>;
 };
-
-// 格式化成交量或市值
 const formatVolumeOrMarketCap = (num: number | null | undefined): string => {
   if (num === null || num === undefined) return 'N/A';
   return `$${num.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 };
 
-// --- “全功能” MarketRow 组件 ---
-// 这个组件显式渲染所有16个字段
+// --- MarketRow 组件 (无变动) ---
+// 依然显示所有字段
 interface MarketRowProps {
   item: MarketItem;
 }
-
 const MarketRow: Component<MarketRowProps> = (props) => {
   const { item } = props;
   const proxiedIconUrl = () => `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}`;
-
   return (
     <tr>
       <td><img src={proxiedIconUrl()} alt={item.symbol} class="icon" /></td>
       <td>{item.symbol}</td>
+      <td>{item.chain}</td>
       <td>{formatPrice(item.price)}</td>
       <td>{formatPercentage(item.priceChange24h)}</td>
       <td>{formatVolumeOrMarketCap(item.volume24h)}</td>
@@ -82,64 +76,61 @@ const MarketRow: Component<MarketRowProps> = (props) => {
   );
 };
 
-
 const App: Component = () => {
   const [status, setStatus] = createSignal<'connecting...' | 'connected' | 'disconnected'>('connecting...');
   const [lastUpdate, setLastUpdate] = createSignal('N/A');
+  // marketData 现在是“数据仓库”，存储所有链的数据
   const [marketData, setMarketData] = createStore<MarketItem[]>([]);
-  // desiredFields 仍用于动态生成表头
   const [desiredFields, setDesiredFields] = createSignal<string[]>([]);
+  
+  // ✨ 核心修改 1: 添加一个 signal 来追踪当前选择的链，默认为第一个
+  const [selectedChain, setSelectedChain] = createSignal<string>(CHAINS[0]);
+
+  // ✨ 核心修改 2: 创建一个 memoized 派生状态，用于存储过滤后的数据
+  // 这非常高效，只在 marketData 或 selectedChain 变化时才重新计算
+  const filteredData = createMemo(() => 
+    marketData.filter(item => item.chain === selectedChain())
+  );
 
   onMount(() => {
-    // 获取被监控的字段列表
     const fetchDesiredFields = async () => {
       try {
         const response = await fetch(`${BACKEND_URL}/desired-fields`);
         if (!response.ok) throw new Error('Network response was not ok');
         const fields: string[] = await response.json();
-        
-        // 我们可以控制字段的显示顺序，以确保关键信息在前
         const preferredOrder = [
-            'icon', 'symbol', 'price', 'priceChange24h', 'volume24h', 'marketCap', 
+            'icon', 'symbol', 'chain', 'price', 'priceChange24h', 'volume24h', 'marketCap', 
             'chainId', 'contractAddress',
             'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h',
             'volume1m', 'volume5m', 'volume1h', 'volume4h'
         ];
-        
-        // 使用 Set 来确保唯一性，并按照 preferredOrder 排序
         const orderedFields = [...new Set([...preferredOrder, ...fields.filter(f => preferredOrder.includes(f))])];
         setDesiredFields(orderedFields);
-
       } catch (error) {
         console.error("Failed to fetch desired fields:", error);
       }
     };
-    
     fetchDesiredFields();
 
     const socket: Socket = io(BACKEND_URL);
-
     socket.on('connect', () => setStatus('connected'));
     socket.on('disconnect', () => setStatus('disconnected'));
 
+    // on 'data-broadcast' 的逻辑保持不变，它只负责填充我们的“数据仓库”
     socket.on('data-broadcast', (payload: DataPayload) => {
       const { type, data } = payload;
       if (!data || data.length === 0) return;
 
-      if (type === 'snapshot') {
-        setMarketData(data);
-      } else if (type === 'update') {
-        setMarketData(produce(currentData => {
-          for (const item of data) {
-            const index = currentData.findIndex(d => d.contractAddress === item.contractAddress);
-            if (index > -1) {
-              Object.assign(currentData[index], item);
-            } else {
-              currentData.push(item);
-            }
+      setMarketData(produce(currentData => {
+        for (const item of data) {
+          const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
+          if (index > -1) {
+            Object.assign(currentData[index], item);
+          } else {
+            currentData.push(item);
           }
-        }));
-      }
+        }
+      }));
       setLastUpdate(new Date().toLocaleTimeString());
     });
 
@@ -152,22 +143,36 @@ const App: Component = () => {
       <div class="stats">
         <p>状态: <span class={status()}>{status()}</span></p>
         <p>最后更新: <span>{lastUpdate()}</span></p>
-        <p>品种总数: <span>{marketData.length}</span></p>
+        {/* ✨ 核心修改 3: 总数显示过滤后的数据量 */}
+        <p>当前链品种总数: <span>{filteredData().length}</span></p>
+      </div>
+
+      {/* ✨ 核心修改 4: 添加链选择按钮 */}
+      <div class="chain-selector">
+        <For each={CHAINS}>
+          {(chain) => (
+            <button
+              class={selectedChain() === chain ? 'active' : ''}
+              onClick={() => setSelectedChain(chain)}
+            >
+              {chain}
+            </button>
+          )}
+        </For>
       </div>
 
       <div class="table-container">
         <table>
           <thead>
             <tr>
-              {/* 表头仍然是动态的，以确保与 MarketRow 的列顺序一致 */}
               <For each={desiredFields()}>
                 {(field) => <th>{FIELD_DISPLAY_NAMES[field] || field}</th>}
               </For>
             </tr>
           </thead>
           <tbody>
-            {/* 使用我们新的、全功能的 MarketRow 组件 */}
-            <For each={marketData} fallback={<tr><td colspan={desiredFields().length || 1}>等待数据...</td></tr>}>
+            {/* ✨ 核心修改 5: 表格渲染过滤后的数据 filteredData() */}
+            <For each={filteredData()} fallback={<tr><td colspan={desiredFields().length || 1}>等待数据...</td></tr>}>
               {(item) => <MarketRow item={item} />}
             </For>
           </tbody>
