@@ -3,11 +3,11 @@ import { createSignal, onMount, onCleanup, For, Component, JSX, createMemo } fro
 import { createStore, produce } from 'solid-js/store';
 import { io, Socket } from 'socket.io-client';
 import type { MarketItem, DataPayload } from 'shared-types';
+import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
 
 const BACKEND_URL = 'http://localhost:3001';
-
-// ✨ 新增: 定义可用的链，用于生成按钮
 const CHAINS = ['BSC', 'Base', 'Solana'];
+const MAX_LOG_ENTRIES = 50;
 
 // --- 辅助函数区 (无变动) ---
 const FIELD_DISPLAY_NAMES: Record<string, string> = {
@@ -46,7 +46,6 @@ const formatVolumeOrMarketCap = (num: number | null | undefined): string => {
 };
 
 // --- MarketRow 组件 (无变动) ---
-// 依然显示所有字段
 interface MarketRowProps {
   item: MarketItem;
 }
@@ -76,21 +75,41 @@ const MarketRow: Component<MarketRowProps> = (props) => {
   );
 };
 
+interface LogEntry {
+  timestamp: string;
+  message: string;
+}
+
 const App: Component = () => {
   const [status, setStatus] = createSignal<'connecting...' | 'connected' | 'disconnected'>('connecting...');
   const [lastUpdate, setLastUpdate] = createSignal('N/A');
-  // marketData 现在是“数据仓库”，存储所有链的数据
   const [marketData, setMarketData] = createStore<MarketItem[]>([]);
   const [desiredFields, setDesiredFields] = createSignal<string[]>([]);
-  
-  // ✨ 核心修改 1: 添加一个 signal 来追踪当前选择的链，默认为第一个
   const [selectedChain, setSelectedChain] = createSignal<string>(CHAINS[0]);
+  
+  const [volumeLogs, setVolumeLogs] = createSignal<LogEntry[]>([]);
+  const [priceLogs, setPriceLogs] = createSignal<LogEntry[]>([]);
 
-  // ✨ 核心修改 2: 创建一个 memoized 派生状态，用于存储过滤后的数据
-  // 这非常高效，只在 marketData 或 selectedChain 变化时才重新计算
   const filteredData = createMemo(() => 
     marketData.filter(item => item.chain === selectedChain())
   );
+  
+  const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
+    // ✨ --- 日志修改: 增加UI更新日志 --- ✨
+    console.log(`[UIFlow] handleNewAlert: 即将更新 "${alertType}" 类型的UI日志, 内容: "${logMessage}"`);
+    // --- 日志修改结束 ---
+
+    const newLog: LogEntry = {
+      timestamp: new Date().toLocaleTimeString(),
+      message: logMessage,
+    };
+    if (alertType === 'volume') {
+      setVolumeLogs(prev => [newLog, ...prev].slice(0, MAX_LOG_ENTRIES));
+    } else {
+      setPriceLogs(prev => [newLog, ...prev].slice(0, MAX_LOG_ENTRIES));
+    }
+  };
+
 
   onMount(() => {
     const fetchDesiredFields = async () => {
@@ -104,10 +123,11 @@ const App: Component = () => {
             'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h',
             'volume1m', 'volume5m', 'volume1h', 'volume4h'
         ];
-        const orderedFields = [...new Set([...preferredOrder, ...fields.filter(f => preferredOrder.includes(f))])];
-        setDesiredFields(orderedFields);
+        const orderedFields = [...new Set([...preferredOrder, ...fields])];
+        const finalFields = orderedFields.filter(f => fields.includes(f));
+        setDesiredFields(finalFields);
       } catch (error) {
-        console.error("Failed to fetch desired fields:", error);
+        console.error("无法获取监控字段列表:", error);
       }
     };
     fetchDesiredFields();
@@ -116,11 +136,20 @@ const App: Component = () => {
     socket.on('connect', () => setStatus('connected'));
     socket.on('disconnect', () => setStatus('disconnected'));
 
-    // on 'data-broadcast' 的逻辑保持不变，它只负责填充我们的“数据仓库”
     socket.on('data-broadcast', (payload: DataPayload) => {
       const { type, data } = payload;
       if (!data || data.length === 0) return;
 
+      // ✨ --- 核心修正 --- ✨
+      // 步骤 1: 先执行副作用（检查提醒）
+      for (const newItem of data) {
+        const oldItem = marketData.find(d => d.contractAddress === newItem.contractAddress && d.chain === newItem.chain);
+        if (oldItem) {
+          checkAndTriggerAlerts(newItem, oldItem, handleNewAlert);
+        }
+      }
+
+      // 步骤 2: 再更新状态
       setMarketData(produce(currentData => {
         for (const item of data) {
           const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
@@ -131,23 +160,55 @@ const App: Component = () => {
           }
         }
       }));
+      // ✨ --- 修正结束 --- ✨
+
       setLastUpdate(new Date().toLocaleTimeString());
     });
+
+    initializeVoices();
 
     onCleanup(() => socket.disconnect());
   });
 
   return (
     <>
-      <h1>实时市场数据监控 (SolidJS + Vite + TS)</h1>
-      <div class="stats">
-        <p>状态: <span class={status()}>{status()}</span></p>
-        <p>最后更新: <span>{lastUpdate()}</span></p>
-        {/* ✨ 核心修改 3: 总数显示过滤后的数据量 */}
-        <p>当前链品种总数: <span>{filteredData().length}</span></p>
+      <h1>实时市场数据监控</h1>
+      <div class="stats-and-logs">
+        <div class="stats">
+          <p>状态: <span class={status()}>{status()}</span></p>
+          <p>最后更新: <span>{lastUpdate()}</span></p>
+          <p>当前链品种: <span>{filteredData().length}</span></p>
+        </div>
+        
+        <div class="alert-logs">
+          <h2>成交金额提醒</h2>
+          <ul>
+            <For each={volumeLogs()} fallback={<li>暂无提醒</li>}>
+              {(log) => (
+                <li>
+                  <span class="timestamp">[{log.timestamp}]</span>
+                  <span class="message">{log.message}</span>
+                </li>
+              )}
+            </For>
+          </ul>
+        </div>
+
+        <div class="alert-logs">
+          <h2>价格幅度提醒</h2>
+          <ul>
+            <For each={priceLogs()} fallback={<li>暂无提醒</li>}>
+              {(log) => (
+                <li>
+                  <span class="timestamp">[{log.timestamp}]</span>
+                  <span class="message">{log.message}</span>
+                </li>
+              )}
+            </For>
+          </ul>
+        </div>
       </div>
 
-      {/* ✨ 核心修改 4: 添加链选择按钮 */}
       <div class="chain-selector">
         <For each={CHAINS}>
           {(chain) => (
@@ -171,7 +232,6 @@ const App: Component = () => {
             </tr>
           </thead>
           <tbody>
-            {/* ✨ 核心修改 5: 表格渲染过滤后的数据 filteredData() */}
             <For each={filteredData()} fallback={<tr><td colspan={desiredFields().length || 1}>等待数据...</td></tr>}>
               {(item) => <MarketRow item={item} />}
             </For>
