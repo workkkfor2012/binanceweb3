@@ -42,8 +42,49 @@ const formatPercentage = (change: string | number | null | undefined): JSX.Eleme
 };
 const formatVolumeOrMarketCap = (num: number | null | undefined): string => {
   if (num === null || num === undefined) return 'N/A';
-  return `$${num.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  if (num > 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
+  if (num > 1_000) return `$${(num / 1_000).toFixed(2)}K`;
+  return `$${num.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 };
+
+// --- ✨ 新增: 排行榜组件 ---
+interface RankingListProps {
+  data: MarketItem[];
+  rankBy: keyof MarketItem;
+  title: string;
+  count: number;
+  formatter: (value: any) => string | JSX.Element;
+}
+
+const RankingList: Component<RankingListProps> = (props) => {
+  const rankedData = createMemo(() => {
+    const sorted = [...props.data].sort((a, b) => {
+      const valA = a[props.rankBy] ?? -Infinity;
+      const valB = b[props.rankBy] ?? -Infinity;
+      const numA = typeof valA === 'string' ? parseFloat(valA) : valA;
+      const numB = typeof valB === 'string' ? parseFloat(valB) : valB;
+      return numB - numA;
+    });
+    return sorted.slice(0, props.count);
+  });
+
+  return (
+    <div class="ranking-list">
+      <h3>{props.title}</h3>
+      <ol>
+        <For each={rankedData()} fallback={<li>-</li>}>
+          {(item) => (
+            <li>
+              <span class="symbol" title={item.symbol}>{item.symbol}</span>
+              <span class="value">{props.formatter(item[props.rankBy])}</span>
+            </li>
+          )}
+        </For>
+      </ol>
+    </div>
+  );
+};
+
 
 // --- MarketRow 组件 (无变动) ---
 interface MarketRowProps {
@@ -80,6 +121,23 @@ interface LogEntry {
   message: string;
 }
 
+// --- ✨ 新增: 排行榜配置 ---
+const RANKING_COUNT = 9;
+const VOLUME_RANKINGS = [
+  { field: 'volume1m', title: '1m 成交额' },
+  { field: 'volume5m', title: '5m 成交额' },
+  { field: 'volume1h', title: '1h 成交额' },
+  { field: 'volume4h', title: '4h 成交额' },
+  { field: 'volume24h', title: '24h 成交额' },
+];
+const PRICE_CHANGE_RANKINGS = [
+  { field: 'priceChange1m', title: '1m 涨幅' },
+  { field: 'priceChange5m', title: '5m 涨幅' },
+  { field: 'priceChange1h', title: '1h 涨幅' },
+  { field: 'priceChange4h', title: '4h 涨幅' },
+  { field: 'priceChange24h', title: '24h 涨幅' },
+];
+
 const App: Component = () => {
   const [status, setStatus] = createSignal<'connecting...' | 'connected' | 'disconnected'>('connecting...');
   const [lastUpdate, setLastUpdate] = createSignal('N/A');
@@ -95,9 +153,7 @@ const App: Component = () => {
   );
   
   const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
-    // ✨ --- 日志修改: 增加UI更新日志 --- ✨
     console.log(`[UIFlow] handleNewAlert: 即将更新 "${alertType}" 类型的UI日志, 内容: "${logMessage}"`);
-    // --- 日志修改结束 ---
 
     const newLog: LogEntry = {
       timestamp: new Date().toLocaleTimeString(),
@@ -140,8 +196,6 @@ const App: Component = () => {
       const { type, data } = payload;
       if (!data || data.length === 0) return;
 
-      // ✨ --- 核心修正 --- ✨
-      // 步骤 1: 先执行副作用（检查提醒）
       for (const newItem of data) {
         const oldItem = marketData.find(d => d.contractAddress === newItem.contractAddress && d.chain === newItem.chain);
         if (oldItem) {
@@ -149,7 +203,6 @@ const App: Component = () => {
         }
       }
 
-      // 步骤 2: 再更新状态
       setMarketData(produce(currentData => {
         for (const item of data) {
           const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
@@ -160,7 +213,6 @@ const App: Component = () => {
           }
         }
       }));
-      // ✨ --- 修正结束 --- ✨
 
       setLastUpdate(new Date().toLocaleTimeString());
     });
@@ -177,6 +229,7 @@ const App: Component = () => {
         <div class="stats">
           <p>状态: <span class={status()}>{status()}</span></p>
           <p>最后更新: <span>{lastUpdate()}</span></p>
+          <p>总品种数: <span>{marketData.length}</span></p>
           <p>当前链品种: <span>{filteredData().length}</span></p>
         </div>
         
@@ -208,6 +261,42 @@ const App: Component = () => {
           </ul>
         </div>
       </div>
+
+      {/* --- ✨ 新增: 排行榜区域 --- */}
+      <div class="rankings-container">
+        <h2>成交额排名</h2>
+        <div class="rankings-grid">
+          <For each={VOLUME_RANKINGS}>
+            {(ranking) => (
+              <RankingList
+                data={marketData}
+                rankBy={ranking.field as keyof MarketItem}
+                title={ranking.title}
+                count={RANKING_COUNT}
+                formatter={(v) => formatVolumeOrMarketCap(v as number)}
+              />
+            )}
+          </For>
+        </div>
+      </div>
+
+      <div class="rankings-container">
+        <h2>价格涨幅排名</h2>
+        <div class="rankings-grid">
+          <For each={PRICE_CHANGE_RANKINGS}>
+            {(ranking) => (
+              <RankingList
+                data={marketData}
+                rankBy={ranking.field as keyof MarketItem}
+                title={ranking.title}
+                count={RANKING_COUNT}
+                formatter={(v) => formatPercentage(v as string)}
+              />
+            )}
+          </For>
+        </div>
+      </div>
+
 
       <div class="chain-selector">
         <For each={CHAINS}>

@@ -47,9 +47,13 @@ h1 {
     font-size: 0.9em;
 }
 
+.stats span {
+    font-weight: bold;
+}
+
 .stats span.connecting { color: #f0ad4e; }
-.stats span.connected { color: #5cb85c; font-weight: bold; }
-.stats span.disconnected { color: #d9534f; font-weight: bold; }
+.stats span.connected { color: #5cb85c; }
+.stats span.disconnected { color: #d9534f; }
 
 /* 提醒日志面板样式 (可被两个面板复用) */
 .alert-logs {
@@ -98,6 +102,89 @@ h1 {
 
 .alert-logs .message {
     font-weight: 600;
+}
+
+/* --- ✨ 新增: 排行榜样式 --- */
+.rankings-container {
+    background-color: #ffffff;
+    padding: 15px 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    border: 1px solid #e1e4e8;
+    margin-bottom: 20px;
+}
+
+.rankings-container h2 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    font-size: 1.3em;
+    text-align: center;
+    color: #333;
+}
+
+.rankings-grid {
+    display: flex;
+    gap: 20px;
+    justify-content: space-around;
+    flex-wrap: wrap; /* 在小屏幕上换行 */
+}
+
+.ranking-list {
+    flex: 1;
+    min-width: 160px; /* 保证每个榜单的最小宽度 */
+    max-width: 200px;
+}
+
+.ranking-list h3 {
+    font-size: 1em;
+    font-weight: bold;
+    color: #333;
+    margin-top: 0;
+    margin-bottom: 8px;
+    text-align: center;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 4px;
+}
+
+.ranking-list ol {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 0.85em;
+    counter-reset: ranking-counter;
+}
+
+.ranking-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 3px 2px;
+    border-bottom: 1px solid #f9f9f9;
+    counter-increment: ranking-counter;
+}
+
+.ranking-list li::before {
+    content: counter(ranking-counter);
+    font-weight: bold;
+    color: #888;
+    margin-right: 8px;
+    min-width: 15px;
+    text-align: right;
+}
+
+.ranking-list .symbol {
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-right: 5px;
+    flex-shrink: 1;
+}
+
+.ranking-list .value {
+    font-family: 'Courier New', Courier, monospace;
+    white-space: nowrap;
+    font-weight: bold;
 }
 
 
