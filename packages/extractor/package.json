@@ -6,17 +6,22 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc -b",
-    "start": "tsc -b && node dist/extractor.js"
+    "start": "tsc -b && node dist/extractor.js",
+    "investigate": "tsc -b && node dist/kline-investigator.js",
+    "start:kline-client": "tsc -b && node dist/kline-client.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "playwright": "^1.44.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "shared-types": "workspace:^1.0.0",
     "socket.io-client": "^4.7.5",
-    "shared-types": "workspace:^1.0.0"
+    "socks-proxy-agent": "^8.0.5",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^20.14.2"
