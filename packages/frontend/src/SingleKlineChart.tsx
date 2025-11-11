@@ -28,10 +28,9 @@ const SingleKlineChart: Component = () => {
         if (klineManager) klineManager.stop();
         if (chart) chart.remove();
 
-        // 确保容器存在
         if (!chartContainer) return;
 
-        setStatus(`Loading ${addr.substring(0, 6)}...`);
+        setStatus(`Loading ${ch}:${addr.substring(0, 6)}...`);
 
         chart = createChart(chartContainer, {
             width: chartContainer.clientWidth,
@@ -42,14 +41,10 @@ const SingleKlineChart: Component = () => {
             },
             grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
             timeScale: {
-                borderColor: '#cccccc',
-                timeVisible: true,
-                secondsVisible: false,
+                borderColor: '#cccccc', timeVisible: true, secondsVisible: false,
             },
             priceScale: { borderColor: '#cccccc' },
-            // 优化小图表的边距
-            rightPriceScale: { visible: true, scaleMargins: { top: 0.1, bottom: 0.1 } },
-            timeScale: { scaleMargins: { top: 0, bottom: 0 } },
+            rightPriceScale: { scaleMargins: { top: 0.1, bottom: 0.1 } },
         });
 
         candlestickSeries = chart.addSeries(CandlestickSeries, {
@@ -64,7 +59,7 @@ const SingleKlineChart: Component = () => {
         klineManager.on('data', (initialData: LightweightChartKline[]) => {
             if (candlestickSeries) {
                 candlestickSeries.setData(initialData as CandlestickData<number>[]);
-                setStatus(`${ch}: ${addr.substring(0, 6)}...`);
+                setStatus(`Live: ${ch.toUpperCase()} / ${addr.substring(0, 6)}...`);
                 chart?.timeScale().fitContent();
             }
         });

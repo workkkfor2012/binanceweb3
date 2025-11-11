@@ -7,9 +7,11 @@ const MultiChartGrid = () => {
   const charts = Array.from({ length: 9 });
 
   return (
-    <For each={charts}>
-      {() => <SingleKlineChart />}
-    </For>
+    <div id="chart-grid-container">
+      <For each={charts}>
+        {() => <SingleKlineChart />}
+      </For>
+    </div>
   );
 };
 

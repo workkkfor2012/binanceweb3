@@ -1,4 +1,4 @@
-/*  packages/frontend/src/index.css*/
+// packages/frontend/src/index.css
 /* A clean, light theme */
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -6,13 +6,13 @@ body {
     color: #333; /* Dark gray text for readability */
     line-height: 1.6;
     margin: 0;
-    padding: 20px;
+    padding: 0; /* Let containers handle padding */
 }
 
 #root {
   max-width: 100%;
   margin: 0 auto;
-  padding: 0 10px;
+  padding: 20px; /* Padding for the main app container */
   box-sizing: border-box;
 }
 
@@ -21,7 +21,27 @@ h1 {
     color: #007bff;
 }
 
-/* 顶部容器，用于并排显示状态和日志 */
+h2 {
+    text-align: center;
+    color: #333;
+    font-size: 1.2em;
+    margin-top: 0;
+    margin-bottom: 10px;
+}
+
+/* --- Utility Classes --- */
+.positive { color: #28a745; }
+.negative { color: #dc3545; }
+.na { color: #999; font-style: italic; }
+
+
+/*
+========================================
+Main Monitoring Page (App.tsx) Styles
+========================================
+*/
+
+/* Top container for stats and logs */
 .stats-and-logs {
     display: flex;
     gap: 20px;
@@ -31,15 +51,15 @@ h1 {
 
 .stats {
     display: flex;
-    flex-direction: column; /* 让状态垂直排列 */
-    gap: 8px; /* 状态项之间的间距 */
+    flex-direction: column;
+    gap: 8px;
     background-color: #ffffff;
     padding: 15px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     border: 1px solid #e1e4e8;
-    flex-basis: 300px; /* 给一个基础宽度 */
-    flex-shrink: 0; /* 防止被压缩 */
+    flex-basis: 300px;
+    flex-shrink: 0;
 }
 
 .stats p {
@@ -55,15 +75,15 @@ h1 {
 .stats span.connected { color: #5cb85c; }
 .stats span.disconnected { color: #d9534f; }
 
-/* 提醒日志面板样式 (可被两个面板复用) */
+/* Alert log panel styles */
 .alert-logs {
-    flex-grow: 1; /* 占据剩余的所有空间 */
+    flex-grow: 1;
     background-color: #fff;
     border: 1px solid #e1e4e8;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     padding: 15px;
-    height: 180px; /* 固定高度 */
+    height: 180px;
     display: flex;
     flex-direction: column;
 }
@@ -81,7 +101,7 @@ h1 {
     list-style: none;
     padding: 0;
     margin: 0;
-    overflow-y: auto; /* 超出高度时显示滚动条 */
+    overflow-y: auto;
     flex-grow: 1;
 }
 
@@ -104,7 +124,7 @@ h1 {
     font-weight: 600;
 }
 
-/* --- ✨ 新增: 排行榜样式 --- */
+/* --- Ranking List Styles (App.tsx) --- */
 .rankings-container {
     background-color: #ffffff;
     padding: 15px 20px;
@@ -126,12 +146,12 @@ h1 {
     display: flex;
     gap: 20px;
     justify-content: space-around;
-    flex-wrap: wrap; /* 在小屏幕上换行 */
+    flex-wrap: wrap;
 }
 
 .ranking-list {
     flex: 1;
-    min-width: 160px; /* 保证每个榜单的最小宽度 */
+    min-width: 160px;
     max-width: 200px;
 }
 
@@ -188,7 +208,7 @@ h1 {
 }
 
 
-/* 链选择器样式 */
+/* Chain selector styles */
 .chain-selector {
     display: flex;
     justify-content: center;
@@ -219,7 +239,7 @@ h1 {
 }
 
 
-/* 表格容器样式 */
+/* Table container styles */
 .table-container {
     width: 100%;
     overflow-x: auto;
@@ -266,92 +286,147 @@ tbody tr:hover {
     border-radius: 50%;
 }
 
-.positive { color: #28a745; }
-.negative { color: #dc3545; }
-.na { color: #999; font-style: italic; }
 
-.kline-chart-page {
-    background-color: #ffffff;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    border: 1px solid #e1e4e8;
-    max-width: 1200px;
-    margin: 20px auto;
+/*
+=====================================================
+Chart Dashboard Page (ChartPageLayout.tsx) Styles
+=====================================================
+*/
+
+/* --- 🌟 Full page layout for chart dashboard --- */
+.chart-page-container {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+    padding: 8px;
+    box-sizing: border-box;
+    gap: 10px;
 }
 
-.kline-chart-page h1 {
-    margin-top: 0;
+.left-sidebar {
+    width: 450px; /* Wider to accommodate icons and two columns */
+    flex-shrink: 0;
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    border: 1px solid #e1e4e8;
+    padding: 10px;
+    overflow-y: auto;
+}
+
+.right-chart-grid {
+    flex-grow: 1;
+    min-width: 0;
+}
+
+
+/* --- 🌟 Left sidebar ranking list container --- */
+.update-timestamp {
     text-align: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    font-size: 0.9em;
+}
+
+.update-timestamp span {
+    color: #666;
+    margin-right: 8px;
+}
+
+.update-timestamp strong {
+    font-family: 'Courier New', Courier, monospace;
     color: #007bff;
 }
 
-.kline-chart-page .status {
-    text-align: center;
-    font-style: italic;
-    color: #666;
-    margin-bottom: 20px;
-    word-wrap: break-word;
-}
-
-.chart-container {
-    width: 100%;
-    border: 1px solid #e1e4e8;
-    border-radius: 4px;
-}
-.controls {
+.compact-ranking-list-container {
     display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 20px;
-    padding: 10px;
-    background-color: #f8f9fa;
-    border-radius: 6px;
+    flex-direction: column;
 }
 
-.controls input[type="text"] {
-    width: 350px;
-    padding: 8px 12px;
-    font-size: 14px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    font-family: 'Courier New', Courier, monospace;
+/* Two-column layout for ranking sections */
+.ranking-columns {
+    display: flex;
+    gap: 15px; /* Spacing between the two columns */
 }
 
-.controls select {
-    padding: 8px 12px;
-    font-size: 14px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
+.ranking-section {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 15px; /* Vertical spacing between ranking lists */
 }
 
-.controls button {
-    padding: 8px 16px;
-    font-size: 14px;
+.ranking-section h2 {
+    font-size: 1.1em;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+    margin-bottom: 0;
+}
+
+/* Compact ranking list styles */
+.compact-ranking-list h3 {
+    font-size: 0.9em;
     font-weight: bold;
-    color: #fff;
-    background-color: #007bff;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background-color 0.2s;
+    color: #555;
+    margin: 0 0 5px 0;
+    text-align: center;
 }
 
-.controls button:hover {
-    background-color: #0056b3;
+.compact-ranking-list ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
 }
 
-/* --- 🌟 新增: 九图网格样式 --- */
+.compact-ranking-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center; /* Vertically center items */
+    padding: 4px 5px;
+    font-size: 0.9em;
+    border-bottom: 1px dotted #f0f0f0;
+    transition: background-color 0.1s;
+}
+
+.compact-ranking-list li:last-child {
+    border-bottom: none;
+}
+
+/* Container for icon and symbol */
+.symbol-and-icon {
+    display: flex;
+    align-items: center;
+    gap: 8px; /* Space between icon and text */
+    min-width: 0; /* Prevents overflow in flex container */
+}
+
+.symbol-compact {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.value-compact {
+    flex-shrink: 0;
+    font-family: 'Courier New', Courier, monospace;
+    font-weight: bold;
+    margin-left: 8px;
+}
+.value-compact .positive { color: #28a745; }
+.value-compact .negative { color: #dc3545; }
+
+
+/* --- 🌟 9-Grid Chart Styles --- */
 #chart-grid-container {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   gap: 8px;
-  padding: 8px;
-  box-sizing: border-box;
 }
 
 .single-chart-wrapper {
@@ -362,43 +437,53 @@ tbody tr:hover {
   padding: 8px;
   display: flex;
   flex-direction: column;
-  min-width: 0; /* 解决flex/grid布局中的子元素溢出问题 */
+  min-width: 0;
   min-height: 0;
 }
 
 .single-chart-wrapper .controls {
-  padding: 4px;
-  margin-bottom: 4px;
+  display: flex;
   gap: 4px;
-  flex-shrink: 0; /* 防止控制栏被压缩 */
+  margin-bottom: 4px;
 }
 
 .single-chart-wrapper .controls input[type="text"] {
-    width: 100%; /* 输入框自适应宽度 */
+    flex-grow: 1;
+    min-width: 50px;
     font-size: 12px;
     padding: 4px 6px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
 }
 
 .single-chart-wrapper .controls select,
 .single-chart-wrapper .controls button {
     font-size: 12px;
     padding: 4px 8px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background-color: #f8f9fa;
+}
+
+.single-chart-wrapper .controls button {
+    border: 1px solid #007bff;
+    background-color: #007bff;
+    color: white;
+    cursor: pointer;
 }
 
 .single-chart-wrapper .status {
     font-size: 11px;
-    margin-bottom: 4px;
+    margin: 0 0 4px 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     text-align: center;
-    flex-shrink: 0;
+    color: #666;
 }
 
 .single-chart-wrapper .chart-container {
   width: 100%;
-  height: 100%; /* 占满剩余空间 */
+  height: 100%;
   flex-grow: 1;
-  border: none;
-  border-radius: 0;
 }
