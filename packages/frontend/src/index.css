@@ -1,4 +1,4 @@
-// packages/frontend/src/index.css
+/*  packages/frontend/src/index.css*/
 /* A clean, light theme */
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -340,4 +340,65 @@ tbody tr:hover {
 
 .controls button:hover {
     background-color: #0056b3;
+}
+
+/* --- 🌟 新增: 九图网格样式 --- */
+#chart-grid-container {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  width: 100vw;
+  height: 100vh;
+  gap: 8px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+.single-chart-wrapper {
+  background-color: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+  border: 1px solid #e1e4e8;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0; /* 解决flex/grid布局中的子元素溢出问题 */
+  min-height: 0;
+}
+
+.single-chart-wrapper .controls {
+  padding: 4px;
+  margin-bottom: 4px;
+  gap: 4px;
+  flex-shrink: 0; /* 防止控制栏被压缩 */
+}
+
+.single-chart-wrapper .controls input[type="text"] {
+    width: 100%; /* 输入框自适应宽度 */
+    font-size: 12px;
+    padding: 4px 6px;
+}
+
+.single-chart-wrapper .controls select,
+.single-chart-wrapper .controls button {
+    font-size: 12px;
+    padding: 4px 8px;
+}
+
+.single-chart-wrapper .status {
+    font-size: 11px;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.single-chart-wrapper .chart-container {
+  width: 100%;
+  height: 100%; /* 占满剩余空间 */
+  flex-grow: 1;
+  border: none;
+  border-radius: 0;
 }

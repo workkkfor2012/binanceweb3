@@ -2,14 +2,16 @@
 /* @refresh reload */
 import { render } from 'solid-js/web';
 import './index.css';
-import KlineChart from './KlineChart';
+import MultiChartGrid from './MultiChartGrid';
 
-const root = document.getElementById('root');
+// 渲染到新的容器 ID
+const gridContainer = document.getElementById('chart-grid-container');
 
-if (import.meta.env.DEV && !(root instanceof HTMLElement)) {
+if (import.meta.env.DEV && !(gridContainer instanceof HTMLElement)) {
   throw new Error(
-    'Root element not found in chart.html. Or maybe the id attribute got misspelled?',
+    'Grid container #chart-grid-container not found in chart.html. Or maybe the id attribute got misspelled?',
   );
 }
 
-render(() => <KlineChart />, root!);
+// 渲染网格组件
+render(() => <MultiChartGrid />, gridContainer!);

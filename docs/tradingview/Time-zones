@@ -1,0 +1,102 @@
+Skip to main content
+Getting Started
+Tutorials
+API Reference
+5.0
+GitHub
+
+Getting started
+Series
+Chart types
+Price scale
+Time scale
+Panes
+Time zones
+Plugins
+Migrations
+iOS
+Android
+Release Notes
+Time zones
+Version: 5.0
+Time zones
+Overview
+Lightweight Charts™ does not natively support time zones. If necessary, you should handle time zone adjustments manually.
+
+The library processes all date and time values in UTC. To support time zones, adjust each bar's timestamp in your dataset based on the appropriate time zone offset. Therefore, a UTC timestamp should correspond to the local time in the target time zone.
+
+Consider the example. A data point has the 2021-01-01T10:00:00.000Z timestamp in UTC. You want to display it in the Europe/Moscow time zone, which has the UTC+03:00 offset according to the IANA time zone database. To do this, adjust the original UTC timestamp by adding 3 hours. Therefore, the new timestamp should be 2021-01-01T13:00:00.000Z.
+
+info
+When converting time zones, consider the following:
+
+Adding a time zone offset could change not only the time but the date as well.
+An offset may vary due to DST (Daylight Saving Time) or other regional adjustments.
+If your data is measured in business days and does not include a time component, in most cases, you should not adjust it to a time zone.
+Approaches
+Consider the approaches below to convert time values to the required time zone.
+
+Using pure JavaScript
+For more information on this approach, refer to StackOverflow.
+
+function timeToTz(originalTime, timeZone) {
+    const zonedDate = new Date(new Date(originalTime * 1000).toLocaleString('en-US', { timeZone }));
+    return zonedDate.getTime() / 1000;
+}
+
+
+If you only need to support a client (local) time zone, you can use the following function:
+
+function timeToLocal(originalTime) {
+    const d = new Date(originalTime * 1000);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()) / 1000;
+}
+
+
+Using the date-fns-tz library
+You can use the utcToZonedTime function from the date-fns-tz library as follows:
+
+import { utcToZonedTime } from 'date-fns-tz';
+
+function timeToTz(originalTime, timeZone) {
+    const zonedDate = utcToZonedTime(new Date(originalTime * 1000), timeZone);
+    return zonedDate.getTime() / 1000;
+}
+
+
+Using the IANA time zone database
+If you process a large dataset and approaches above do not meet your performance requirements, consider using the tzdata.
+
+This approach can significantly improve performance for the following reasons:
+
+You do not need to calculate the time zone offset for every data point individually. Instead, you can look up the correct offset just once for the first timestamp using a fast binary search.
+After finding the starting offset, you go through the rest data and check whether an offset should be changed, for example, because of DST starting/ending.
+Why are time zones not supported?
+The approaches above were not implemented in Lightweight Charts™ for the following reasons:
+
+Using pure JavaScript is slow. In our tests, processing 100,000 data points took over 20 seconds.
+Using the date-fns-tz library introduces additional dependencies and is also slow. In our tests, processing 100,000 data points took 18 seconds.
+Incorporating the IANA time zone database increases the bundle size by 29.9 kB, which is nearly the size of the entire Lightweight Charts™ library.
+Since time zone support is not required for all users, it is intentionally left out of the library to maintain high performance and a lightweight package size.
+
+Previous
+Panes
+Next
+Overview
+Overview
+Approaches
+Using pure JavaScript
+Using the date-fns-tz library
+Using the IANA time zone database
+Why are time zones not supported?
+Docs
+Getting Started
+Tutorials
+API Reference
+Lightweight Charts™ Community
+Stack Overflow
+Twitter
+More
+Advanced Charts
+TradingView Widgets
+Copyright © 2025 TradingView, Inc. Built with Docusaurus.
