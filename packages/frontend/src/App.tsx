@@ -3,11 +3,10 @@ import { createSignal, onMount, onCleanup, For, Component, JSX, createMemo } fro
 import { createStore, produce } from 'solid-js/store';
 import { io, Socket } from 'socket.io-client';
 import type { MarketItem, DataPayload } from 'shared-types';
-import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
+// 移除提醒功能相关导入
 
 const BACKEND_URL = 'http://localhost:3001';
 const CHAINS = ['BSC', 'Base', 'Solana'];
-const MAX_LOG_ENTRIES = 50;
 
 // --- 辅助函数区 (无变动) ---
 const FIELD_DISPLAY_NAMES: Record<string, string> = {
@@ -47,7 +46,7 @@ const formatVolumeOrMarketCap = (num: number | null | undefined): string => {
   return `$${num.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 };
 
-// --- ✨ 新增: 排行榜组件 ---
+// --- 排行榜组件 (无变动) ---
 interface RankingListProps {
   data: MarketItem[];
   rankBy: keyof MarketItem;
@@ -116,12 +115,7 @@ const MarketRow: Component<MarketRowProps> = (props) => {
   );
 };
 
-interface LogEntry {
-  timestamp: string;
-  message: string;
-}
-
-// --- ✨ 新增: 排行榜配置 ---
+// --- 排行榜配置 (无变动) ---
 const RANKING_COUNT = 9;
 const VOLUME_RANKINGS = [
   { field: 'volume1m', title: '1m 成交额' },
@@ -145,27 +139,13 @@ const App: Component = () => {
   const [desiredFields, setDesiredFields] = createSignal<string[]>([]);
   const [selectedChain, setSelectedChain] = createSignal<string>(CHAINS[0]);
   
-  const [volumeLogs, setVolumeLogs] = createSignal<LogEntry[]>([]);
-  const [priceLogs, setPriceLogs] = createSignal<LogEntry[]>([]);
+  // 移除 volumeLogs 和 priceLogs state
 
   const filteredData = createMemo(() => 
     marketData.filter(item => item.chain === selectedChain())
   );
   
-  const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
-    console.log(`[UIFlow] handleNewAlert: 即将更新 "${alertType}" 类型的UI日志, 内容: "${logMessage}"`);
-
-    const newLog: LogEntry = {
-      timestamp: new Date().toLocaleTimeString(),
-      message: logMessage,
-    };
-    if (alertType === 'volume') {
-      setVolumeLogs(prev => [newLog, ...prev].slice(0, MAX_LOG_ENTRIES));
-    } else {
-      setPriceLogs(prev => [newLog, ...prev].slice(0, MAX_LOG_ENTRIES));
-    }
-  };
-
+  // 移除 handleNewAlert 函数
 
   onMount(() => {
     const fetchDesiredFields = async () => {
@@ -196,12 +176,7 @@ const App: Component = () => {
       const { type, data } = payload;
       if (!data || data.length === 0) return;
 
-      for (const newItem of data) {
-        const oldItem = marketData.find(d => d.contractAddress === newItem.contractAddress && d.chain === newItem.chain);
-        if (oldItem) {
-          checkAndTriggerAlerts(newItem, oldItem, handleNewAlert);
-        }
-      }
+      // 移除 checkAndTriggerAlerts 相关逻辑
 
       setMarketData(produce(currentData => {
         for (const item of data) {
@@ -217,7 +192,7 @@ const App: Component = () => {
       setLastUpdate(new Date().toLocaleTimeString());
     });
 
-    initializeVoices();
+    // 移除 initializeVoices 调用
 
     onCleanup(() => socket.disconnect());
   });
@@ -233,36 +208,10 @@ const App: Component = () => {
           <p>当前链品种: <span>{filteredData().length}</span></p>
         </div>
         
-        <div class="alert-logs">
-          <h2>成交金额提醒</h2>
-          <ul>
-            <For each={volumeLogs()} fallback={<li>暂无提醒</li>}>
-              {(log) => (
-                <li>
-                  <span class="timestamp">[{log.timestamp}]</span>
-                  <span class="message">{log.message}</span>
-                </li>
-              )}
-            </For>
-          </ul>
-        </div>
-
-        <div class="alert-logs">
-          <h2>价格幅度提醒</h2>
-          <ul>
-            <For each={priceLogs()} fallback={<li>暂无提醒</li>}>
-              {(log) => (
-                <li>
-                  <span class="timestamp">[{log.timestamp}]</span>
-                  <span class="message">{log.message}</span>
-                </li>
-              )}
-            </For>
-          </ul>
-        </div>
+        {/* 移除提醒日志的 UI 模块 */}
       </div>
 
-      {/* --- ✨ 新增: 排行榜区域 --- */}
+      {/* --- 排行榜区域 (无变动) --- */}
       <div class="rankings-container">
         <h2>成交额排名</h2>
         <div class="rankings-grid">

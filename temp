@@ -1,0 +1,2 @@
+https://dquery.sintral.io/u-kline/v1/k-line/candles?address=0xe747e54783ba3f77a8e5251a3cba19ebe9c0e197&interval=1m&limit=500&platform=bsc
+https://dquery.sintral.io/u-kline/v1/k-line/candles?address=0xe747e54783ba3f77a8e5251a3cba19ebe9c0e197&interval=1min&limit=500&platform=bsc&to=1763040240000

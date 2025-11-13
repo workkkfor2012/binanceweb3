@@ -1,14 +1,23 @@
 // packages/frontend/src/SingleKlineChart.tsx
 import { Component, onMount, onCleanup, createEffect, Show } from 'solid-js';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries } from 'lightweight-charts';
-import KlineBrowserManager, { LightweightChartKline } from './kline-browser-manager';
+// ✨ 核心修改 1: 导入 LogicalRange
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, LogicalRange } from 'lightweight-charts';
+import KlineBrowserManager from './kline-browser-manager';
+import type { LightweightChartKline } from './types';
 import type { MarketItem } from 'shared-types';
+import { ALL_TIMEFRAMES } from './ChartPageLayout';
 
 const BACKEND_URL = 'http://localhost:3001';
 
+// ✨ 核心修改 2: 更新 Props 接口
 interface SingleKlineChartProps {
     tokenInfo: MarketItem | undefined;
-    onBlock?: (contractAddress: string) => void; // ✨ 新增: onBlock 函数 prop
+    onBlock?: (contractAddress: string) => void;
+    timeframe: string;
+    visibleLogicalRange: LogicalRange | null;
+    onVisibleLogicalRangeChange?: (range: LogicalRange) => void;
+    activeChartId: string | null;
+    onSetActiveChart?: (id: string | null) => void;
 }
 
 const customPriceFormatter = (price: number): string => {
@@ -24,41 +33,48 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let klineManager: KlineBrowserManager | null = null;
     let resizeObserver: ResizeObserver | null = null;
 
+    let loadChartVersion = 0;
+    let lastLoadedAddress: string | undefined = undefined;
+    let lastLoadedTimeframe: string | undefined = undefined;
+    let isSettingRangeProgrammatically = false;
+
     const cleanup = () => {
         klineManager?.stop();
         klineManager = null;
-        chart?.remove();
-        chart = null;
+        if (chart) {
+            chart.remove();
+            chart = null;
+        }
     };
 
-    const loadChart = (addr: string, ch: string) => {
+    const loadChart = (addr: string, ch: string, interval: string) => {
         cleanup(); 
-
+        loadChartVersion++;
+        const currentVersion = loadChartVersion;
         if (!chartContainer) return;
 
         chart = createChart(chartContainer, {
             width: chartContainer.clientWidth,
             height: chartContainer.clientHeight,
-            layout: {
-                background: { type: ColorType.Solid, color: '#ffffff' },
-                textColor: '#333',
-            },
+            layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
             grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
             timeScale: {
-                borderColor: '#cccccc', 
-                timeVisible: true, 
-                secondsVisible: false,
-                barSpacing: 10,
-                rightOffset: 10,
+                borderColor: '#cccccc', timeVisible: true, secondsVisible: false,
+                barSpacing: 10, rightOffset: 10,
             },
-            rightPriceScale: {
-                visible: false,
-            },
-            leftPriceScale: {
-                visible: false,
-            },
+            rightPriceScale: { visible: true, borderColor: '#cccccc' }, // 显示价格轴以便调试
+            leftPriceScale: { visible: false },
             handleScroll: true,
             handleScale: true,
+        });
+        
+        // ✨ 核心修改 3: 订阅 getVisibleLogicalRange 的变化
+        chart.timeScale().subscribeVisibleLogicalRangeChange((newRange) => {
+            if (newRange && props.onVisibleLogicalRangeChange && !isSettingRangeProgrammatically) {
+                if (props.activeChartId === props.tokenInfo?.contractAddress) {
+                    props.onVisibleLogicalRangeChange(newRange);
+                }
+            }
         });
 
         candlestickSeries = chart.addSeries(CandlestickSeries, {
@@ -67,15 +83,19 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             borderVisible: false,
             wickDownColor: '#dc3545', wickUpColor: '#28a745',
         });
-
-        klineManager = new KlineBrowserManager(addr, ch);
+        
+        klineManager = new KlineBrowserManager(addr, ch, interval);
 
         klineManager.on('data', (initialData: LightweightChartKline[]) => {
+            if (currentVersion !== loadChartVersion) return;
             if (candlestickSeries) {
                 candlestickSeries.setData(initialData as CandlestickData<number>[]);
                 
-                if (initialData.length > 0) {
-                    chart?.timeScale().scrollToPosition(initialData.length - 1, false);
+                // ✨ 核心修改 4: 数据加载后，应用 LogicalRange (如果存在)
+                if (props.visibleLogicalRange) {
+                     setTimeout(() => { if (chart) chart.timeScale().setVisibleLogicalRange(props.visibleLogicalRange!) }, 0);
+                } else if (initialData.length > 0) {
+                    chart?.timeScale().scrollToPosition(-5, false);
                 } else {
                     chart?.timeScale().fitContent();
                 }
@@ -83,17 +103,49 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
         
         klineManager.on('update', (updatedCandle: LightweightChartKline) => {
+            if (currentVersion !== loadChartVersion) return;
             candlestickSeries?.update(updatedCandle as CandlestickData<number>);
         });
-
         klineManager.start();
     };
 
+    const prefetchOtherTimeframes = (addr: string, ch: string, activeTf: string) => {
+        const otherTimeframes = ALL_TIMEFRAMES.filter(tf => tf !== activeTf);
+        for (const tf of otherTimeframes) new KlineBrowserManager(addr, ch, tf).start();
+    };
+
+    createEffect(() => {
+        const newRange = props.visibleLogicalRange;
+        // ✨ 核心修改 5: 监听 LogicalRange 的变化并应用
+        if (chart && newRange && props.activeChartId !== props.tokenInfo?.contractAddress) {
+            const currentRange = chart.timeScale().getVisibleLogicalRange();
+            if (currentRange && (newRange.from !== currentRange.from || newRange.to !== currentRange.to)) {
+                isSettingRangeProgrammatically = true;
+                chart.timeScale().setVisibleLogicalRange(newRange);
+                setTimeout(() => { isSettingRangeProgrammatically = false; }, 100);
+            }
+        }
+    });
+
     createEffect(() => {
         const info = props.tokenInfo;
-        if (info && info.contractAddress && info.chain) {
-            loadChart(info.contractAddress, info.chain);
+        const tf = props.timeframe;
+        const newAddress = info?.contractAddress;
+
+        if (newAddress === lastLoadedAddress && tf === lastLoadedTimeframe) return;
+
+        if (newAddress) {
+            if (newAddress !== lastLoadedAddress) {
+                // 当品种变化时，重置 LogicalRange 以避免奇怪的缩放
+                if (props.onVisibleLogicalRangeChange) props.onVisibleLogicalRangeChange(null);
+                prefetchOtherTimeframes(newAddress, info.chain, tf);
+            }
+            lastLoadedAddress = newAddress;
+            lastLoadedTimeframe = tf;
+            loadChart(newAddress, info.chain, tf);
         } else {
+            lastLoadedAddress = undefined;
+            lastLoadedTimeframe = undefined;
             cleanup();
         }
     });
@@ -101,8 +153,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     onMount(() => {
         resizeObserver = new ResizeObserver(entries => {
             for (const entry of entries) {
-                if (entry.target === chartContainer) {
-                    chart?.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
+                if (entry.target === chartContainer && chart) {
+                    chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
                 }
             }
         });
@@ -112,10 +164,15 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     onCleanup(() => {
         resizeObserver?.disconnect();
         cleanup();
+        loadChartVersion++;
     });
 
     return (
-        <div class="single-chart-wrapper">
+        <div 
+            class="single-chart-wrapper"
+            onMouseEnter={() => props.tokenInfo && props.onSetActiveChart?.(props.tokenInfo.contractAddress)}
+            onMouseLeave={() => props.onSetActiveChart?.(null)}
+        >
             <div class="chart-header">
                 <Show when={props.tokenInfo} fallback={<span class="placeholder">点击左侧排名标题加载图表</span>}>
                     <img 
@@ -125,8 +182,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     />
                     <span class="symbol-title">{props.tokenInfo!.symbol}</span>
                     <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
-                    
-                    {/* ✨ 新增: 屏蔽按钮 */}
                     <button 
                         class="block-button" 
                         title={`屏蔽 ${props.tokenInfo!.symbol}`}

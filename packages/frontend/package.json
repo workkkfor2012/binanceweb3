@@ -10,6 +10,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "idb": "^8.0.0",
     "lightweight-charts": "^5.0.9",
     "socket.io-client": "^4.7.5",
     "solid-js": "^1.9.10",
