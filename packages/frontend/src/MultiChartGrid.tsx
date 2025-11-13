@@ -2,17 +2,14 @@
 import { Component, For, createMemo } from 'solid-js';
 import SingleKlineChart from './SingleKlineChart';
 import type { MarketItem } from 'shared-types';
-// ✨ 核心修改 1: 导入 LogicalRange
-import type { LogicalRange } from 'lightweight-charts';
+import type { ViewportState } from './ChartPageLayout'; // 导入新类型
 
-
-// ✨ 核心修改 2: 更新 Props 接口
 interface MultiChartGridProps {
     tokens: MarketItem[];
     onBlockToken: (contractAddress: string) => void;
     timeframe: string;
-    visibleLogicalRange: LogicalRange | null;
-    onVisibleLogicalRangeChange: (range: LogicalRange) => void;
+    viewportState: ViewportState | null;
+    onViewportChange: (state: ViewportState | null) => void;
     activeChartId: string | null;
     onSetActiveChart: (id: string | null) => void;
 }
@@ -31,9 +28,8 @@ const MultiChartGrid: Component<MultiChartGridProps> = (props) => {
             tokenInfo={token} 
             onBlock={props.onBlockToken} 
             timeframe={props.timeframe}
-            // ✨ 核心修改 3: 传递新的 props
-            visibleLogicalRange={props.visibleLogicalRange}
-            onVisibleLogicalRangeChange={props.onVisibleLogicalRangeChange}
+            viewportState={props.viewportState}
+            onViewportChange={props.onViewportChange}
             activeChartId={props.activeChartId}
             onSetActiveChart={props.onSetActiveChart}
           />

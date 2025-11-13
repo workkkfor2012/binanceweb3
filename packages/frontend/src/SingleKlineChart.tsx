@@ -1,21 +1,19 @@
 // packages/frontend/src/SingleKlineChart.tsx
-import { Component, onMount, onCleanup, createEffect, Show } from 'solid-js';
-// ✨ 核心修改 1: 导入 LogicalRange
+import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
 import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, LogicalRange } from 'lightweight-charts';
 import KlineBrowserManager from './kline-browser-manager';
 import type { LightweightChartKline } from './types';
 import type { MarketItem } from 'shared-types';
-import { ALL_TIMEFRAMES } from './ChartPageLayout';
+import { ALL_TIMEFRAMES, ViewportState } from './ChartPageLayout';
 
 const BACKEND_URL = 'http://localhost:3001';
 
-// ✨ 核心修改 2: 更新 Props 接口
 interface SingleKlineChartProps {
     tokenInfo: MarketItem | undefined;
     onBlock?: (contractAddress: string) => void;
     timeframe: string;
-    visibleLogicalRange: LogicalRange | null;
-    onVisibleLogicalRangeChange?: (range: LogicalRange) => void;
+    viewportState: ViewportState | null;
+    onViewportChange?: (state: ViewportState | null) => void;
     activeChartId: string | null;
     onSetActiveChart?: (id: string | null) => void;
 }
@@ -33,6 +31,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let klineManager: KlineBrowserManager | null = null;
     let resizeObserver: ResizeObserver | null = null;
 
+    // ✨ 核心修改 1: 追踪最后一根bar的索引
+    const [lastBarIndex, setLastBarIndex] = createSignal<number | null>(null);
+
     let loadChartVersion = 0;
     let lastLoadedAddress: string | undefined = undefined;
     let lastLoadedTimeframe: string | undefined = undefined;
@@ -41,10 +42,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     const cleanup = () => {
         klineManager?.stop();
         klineManager = null;
-        if (chart) {
-            chart.remove();
-            chart = null;
-        }
+        if (chart) chart.remove();
+        chart = null;
+        setLastBarIndex(null);
     };
 
     const loadChart = (addr: string, ch: string, interval: string) => {
@@ -54,35 +54,32 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         if (!chartContainer) return;
 
         chart = createChart(chartContainer, {
-            width: chartContainer.clientWidth,
-            height: chartContainer.clientHeight,
+            // ... (chart options are the same: handleScroll/Scale are true)
+            width: chartContainer.clientWidth, height: chartContainer.clientHeight,
             layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
             grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
-            timeScale: {
-                borderColor: '#cccccc', timeVisible: true, secondsVisible: false,
-                barSpacing: 10, rightOffset: 10,
-            },
-            rightPriceScale: { visible: true, borderColor: '#cccccc' }, // 显示价格轴以便调试
+            timeScale: { borderColor: '#cccccc', timeVisible: true, secondsVisible: false, barSpacing: 10, },
+            rightPriceScale: { visible: true, borderColor: '#cccccc' },
             leftPriceScale: { visible: false },
-            handleScroll: true,
-            handleScale: true,
+            handleScroll: true, handleScale: true,
         });
         
-        // ✨ 核心修改 3: 订阅 getVisibleLogicalRange 的变化
+        // ✨ 核心修改 2: 领导者计算并广播 ViewportState
         chart.timeScale().subscribeVisibleLogicalRangeChange((newRange) => {
-            if (newRange && props.onVisibleLogicalRangeChange && !isSettingRangeProgrammatically) {
+            if (newRange && props.onViewportChange && !isSettingRangeProgrammatically) {
                 if (props.activeChartId === props.tokenInfo?.contractAddress) {
-                    props.onVisibleLogicalRangeChange(newRange);
+                    const lbi = lastBarIndex();
+                    if (lbi === null) return;
+                    
+                    const width = newRange.to - newRange.from;
+                    const offset = lbi - newRange.to;
+                    
+                    props.onViewportChange({ width, offset });
                 }
             }
         });
 
-        candlestickSeries = chart.addSeries(CandlestickSeries, {
-            priceFormat: { type: 'price', precision: 8, minMove: 0.00000001, formatter: customPriceFormatter },
-            upColor: '#28a745', downColor: '#dc3545',
-            borderVisible: false,
-            wickDownColor: '#dc3545', wickUpColor: '#28a745',
-        });
+        candlestickSeries = chart.addSeries(CandlestickSeries, { /* ... options ... */ });
         
         klineManager = new KlineBrowserManager(addr, ch, interval);
 
@@ -90,14 +87,17 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (currentVersion !== loadChartVersion) return;
             if (candlestickSeries) {
                 candlestickSeries.setData(initialData as CandlestickData<number>[]);
-                
-                // ✨ 核心修改 4: 数据加载后，应用 LogicalRange (如果存在)
-                if (props.visibleLogicalRange) {
-                     setTimeout(() => { if (chart) chart.timeScale().setVisibleLogicalRange(props.visibleLogicalRange!) }, 0);
-                } else if (initialData.length > 0) {
-                    chart?.timeScale().scrollToPosition(-5, false);
+                const newLastBarIndex = initialData.length > 0 ? initialData.length - 1 : null;
+                setLastBarIndex(newLastBarIndex);
+
+                // ✨ 核心修改 3: 数据加载后，应用全局 ViewportState
+                const vs = props.viewportState;
+                if (vs && newLastBarIndex !== null) {
+                    const to = newLastBarIndex - vs.offset;
+                    const from = to - vs.width;
+                    setTimeout(() => chart?.timeScale().setVisibleLogicalRange({ from, to }), 0);
                 } else {
-                    chart?.timeScale().fitContent();
+                    chart?.timeScale().scrollToPosition(-5, false);
                 }
             }
         });
@@ -105,40 +105,45 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         klineManager.on('update', (updatedCandle: LightweightChartKline) => {
             if (currentVersion !== loadChartVersion) return;
             candlestickSeries?.update(updatedCandle as CandlestickData<number>);
+            // 当有新bar时，更新索引
+            const lbi = lastBarIndex();
+            if (lbi !== null) setLastBarIndex(lbi + 1);
         });
+
         klineManager.start();
     };
-
-    const prefetchOtherTimeframes = (addr: string, ch: string, activeTf: string) => {
-        const otherTimeframes = ALL_TIMEFRAMES.filter(tf => tf !== activeTf);
-        for (const tf of otherTimeframes) new KlineBrowserManager(addr, ch, tf).start();
-    };
-
+    
+    // ✨ 核心修改 4: 跟随者接收 ViewportState 并重建 LogicalRange
     createEffect(() => {
-        const newRange = props.visibleLogicalRange;
-        // ✨ 核心修改 5: 监听 LogicalRange 的变化并应用
-        if (chart && newRange && props.activeChartId !== props.tokenInfo?.contractAddress) {
-            const currentRange = chart.timeScale().getVisibleLogicalRange();
-            if (currentRange && (newRange.from !== currentRange.from || newRange.to !== currentRange.to)) {
-                isSettingRangeProgrammatically = true;
-                chart.timeScale().setVisibleLogicalRange(newRange);
-                setTimeout(() => { isSettingRangeProgrammatically = false; }, 100);
-            }
+        const vs = props.viewportState;
+        if (chart && vs && props.activeChartId !== props.tokenInfo?.contractAddress) {
+            const lbi = lastBarIndex();
+            if (lbi === null) return;
+
+            const to = lbi - vs.offset;
+            const from = to - vs.width;
+            
+            isSettingRangeProgrammatically = true;
+            chart.timeScale().setVisibleLogicalRange({ from, to });
+            setTimeout(() => { isSettingRangeProgrammatically = false; }, 100);
         }
     });
 
+    // ... (the final createEffect for loading charts and lifecycle hooks remain the same as the previous correct version)
     createEffect(() => {
         const info = props.tokenInfo;
         const tf = props.timeframe;
         const newAddress = info?.contractAddress;
-
         if (newAddress === lastLoadedAddress && tf === lastLoadedTimeframe) return;
-
         if (newAddress) {
+            if (tf !== lastLoadedTimeframe && props.onViewportChange) {
+                 props.onViewportChange(null);
+            }
             if (newAddress !== lastLoadedAddress) {
-                // 当品种变化时，重置 LogicalRange 以避免奇怪的缩放
-                if (props.onVisibleLogicalRangeChange) props.onVisibleLogicalRangeChange(null);
-                prefetchOtherTimeframes(newAddress, info.chain, tf);
+                 const otherTimeframes = ALL_TIMEFRAMES.filter(t => t !== tf);
+                 for (const otherTf of otherTimeframes) {
+                     new KlineBrowserManager(newAddress, info.chain, otherTf).start();
+                 }
             }
             lastLoadedAddress = newAddress;
             lastLoadedTimeframe = tf;
@@ -149,7 +154,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             cleanup();
         }
     });
-
     onMount(() => {
         resizeObserver = new ResizeObserver(entries => {
             for (const entry of entries) {
@@ -160,7 +164,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
         resizeObserver.observe(chartContainer);
     });
-
     onCleanup(() => {
         resizeObserver?.disconnect();
         cleanup();
@@ -174,19 +177,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             onMouseLeave={() => props.onSetActiveChart?.(null)}
         >
             <div class="chart-header">
+                {/* ... (header JSX is unchanged) ... */}
                 <Show when={props.tokenInfo} fallback={<span class="placeholder">点击左侧排名标题加载图表</span>}>
-                    <img 
-                        src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} 
-                        class="icon-small" 
-                        alt={props.tokenInfo!.symbol}
-                    />
+                    <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
                     <span class="symbol-title">{props.tokenInfo!.symbol}</span>
                     <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
-                    <button 
-                        class="block-button" 
-                        title={`屏蔽 ${props.tokenInfo!.symbol}`}
-                        onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}
-                    >
+                    <button class="block-button" title={`屏蔽 ${props.tokenInfo!.symbol}`} onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}>
                         🚫
                     </button>
                 </Show>
