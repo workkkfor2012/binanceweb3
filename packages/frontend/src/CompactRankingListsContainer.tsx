@@ -2,10 +2,9 @@
 import { Component, createMemo, For, JSX } from 'solid-js';
 import type { MarketItem } from 'shared-types';
 
-// 🌟 1. 从 App.tsx 复制 BACKEND_URL 常量
 const BACKEND_URL = 'http://localhost:3001';
 
-// --- 辅助函数 & 组件 (这部分无变化) ---
+// --- 辅助函数 (无变化) ---
 const formatPercentage = (change: string | number | null | undefined): JSX.Element => {
     if (change === null || change === undefined) return <span class="na">N/A</span>;
     const value = typeof change === 'string' ? parseFloat(change) : change;
@@ -20,11 +19,13 @@ const formatVolume = (num: number | null | undefined): string => {
   return num.toFixed(0);
 };
 
+// ✨ 修改: 增加 onHeaderClick prop
 interface CompactListProps {
   title: string;
   data: MarketItem[];
   rankBy: keyof MarketItem;
   formatter: (value: any) => string | JSX.Element;
+  onHeaderClick: (rankBy: keyof MarketItem) => void;
 }
 
 const CompactRankingList: Component<CompactListProps> = (props) => {
@@ -47,12 +48,14 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
 
     return (
         <div class="compact-ranking-list">
-            <h3>{props.title}</h3>
+            {/* ✨ 修改: 添加 onClick 事件 */}
+            <h3 onClick={() => props.onHeaderClick(props.rankBy)} class="clickable-header">
+                {props.title}
+            </h3>
             <ul>
                 <For each={rankedData()} fallback={<li>-</li>}>
                     {(item) => (
                         <li title={`${item.chain}: ${item.contractAddress}`}>
-                            {/* 🌟 2. 添加图标和容器 */}
                             <div class="symbol-and-icon">
                                 <img 
                                     src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}`} 
@@ -64,16 +67,18 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
                             <span class="value-compact">{props.formatter(item[props.rankBy])}</span>
                         </li>
                     )}
-                </For>
+                </For
+                >
             </ul>
         </div>
     );
 };
 
-// --- 主容器组件 (无变化) ---
+// ✨ 修改: 增加 onHeaderClick prop
 interface ContainerProps {
     marketData: MarketItem[];
     lastUpdate: string;
+    onHeaderClick: (rankBy: keyof MarketItem) => void;
 }
 
 const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
@@ -109,6 +114,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 data={props.marketData}
                                 rankBy={ranking.field as keyof MarketItem}
                                 formatter={formatPercentage}
+                                onHeaderClick={props.onHeaderClick}
                             />
                         )}
                     </For>
@@ -123,6 +129,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 data={props.marketData}
                                 rankBy={ranking.field as keyof MarketItem}
                                 formatter={formatVolume}
+                                onHeaderClick={props.onHeaderClick}
                             />
                         )}
                     </For>

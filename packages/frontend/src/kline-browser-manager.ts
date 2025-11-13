@@ -19,7 +19,7 @@ export interface LightweightChartKline {
     close: number;
 }
 
-const HISTORICAL_API_URL = 'https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval=1min&limit=1000&platform={platform}';
+const HISTORICAL_API_URL = 'https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval=1min&limit=500&platform={platform}';
 const WEBSOCKET_URL = 'wss://nbstream.binance.com/w3w/stream';
 
 type DataCallback = (data: LightweightChartKline[]) => void;
@@ -51,32 +51,44 @@ class KlineBrowserManager {
     }
 
     private async fetchHistoricalData(): Promise<void> {
-        const platform = this.chain === 'solana' ? 'sol' : this.chain;
+        // ✨ 核心修正: 移除对 'solana' 的错误特殊处理
+        // this.chain 在构造函数中已经是小写了 (e.g., 'bsc', 'base', 'solana')
+        // 直接使用 this.chain 作为 platform 参数
+        const platform = this.chain;
+
         const url = HISTORICAL_API_URL
             .replace('{address}', this.contractAddress)
             .replace('{platform}', platform);
 
-        console.log(`[HISTORICAL] Fetching from ${url}...`);
+        console.log(`[HISTORICAL] Fetching from ${url}...`); // 现在会打印正确的 URL
         try {
             const response = await fetch(url);
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const json: any = await response.json();
-            
-            this.klineData = json.data.map((d: (string|number)[]): Kline => ({
-                open: parseFloat(String(d[0])),
-                high: parseFloat(String(d[1])),
-                low: parseFloat(String(d[2])),
-                close: parseFloat(String(d[3])),
-                volume: parseFloat(String(d[4])),
-                timestamp: Number(d[5]),
-                time: Number(d[5]) / 1000
-            }));
-            console.log(`✅ [HISTORICAL] Fetched ${this.klineData.length} candles.`);
-            if (this.onDataLoaded) {
-                this.onDataLoaded(this.klineData.map(this.mapToLightweightChartKline));
+
+            if (json && Array.isArray(json.data)) {
+                this.klineData = json.data.map((d: (string|number)[]): Kline => ({
+                    open: parseFloat(String(d[0])),
+                    high: parseFloat(String(d[1])),
+                    low: parseFloat(String(d[2])),
+                    close: parseFloat(String(d[3])),
+                    volume: parseFloat(String(d[4])),
+                    timestamp: Number(d[5]),
+                    time: Number(d[5]) / 1000
+                }));
+                console.log(`✅ [HISTORICAL] Fetched ${this.klineData.length} candles.`);
+            } else {
+                console.warn(`[HISTORICAL] No historical data found or invalid API response for ${this.contractAddress}. Response:`, json);
+                this.klineData = [];
             }
+            
         } catch (error) {
             console.error('❌ [HISTORICAL] Failed to fetch data:', error);
+            this.klineData = [];
+        }
+
+        if (this.onDataLoaded) {
+            this.onDataLoaded(this.klineData.map(this.mapToLightweightChartKline));
         }
     }
 
@@ -86,10 +98,8 @@ class KlineBrowserManager {
         this.ws.onopen = () => {
             console.log('✅ [REALTIME] WebSocket connected. Subscribing...');
             
-            // 使用简短、合规的ID
             const requestId = `sub-${Date.now()}`;
             
-            // 使用正确的订阅参数格式
             const subscribeMessage = { 
                 id: requestId, 
                 method: 'SUBSCRIBE', 
@@ -103,13 +113,11 @@ class KlineBrowserManager {
         this.ws.onmessage = (event) => {
             const message = JSON.parse(event.data.toString());
             
-            // 处理订阅成功的回应消息
             if (message.id && message.result === null) {
                 console.log(`✅ [REALTIME] Subscription successful for request ID: ${message.id}`);
                 return;
             }
 
-            // 处理K线数据流
             if (message.stream && message.stream.startsWith('kl@')) {
                 const tickArray = message.data.d.u;
                 const tick: Kline = {
@@ -127,7 +135,6 @@ class KlineBrowserManager {
 
         this.ws.onclose = (event) => {
             console.log(`🔌 [REALTIME] WebSocket closed: code=${event.code}, reason=${event.reason || 'N/A'}. Reconnecting in 5s...`);
-            // 只有在非主动关闭时才重连
             if (this.ws) {
                 setTimeout(() => this.startRealtimeUpdates(), 5000);
             }
@@ -149,12 +156,14 @@ class KlineBrowserManager {
 
         if (tick.timestamp > lastCandle.timestamp) {
             this.klineData.push(tick);
+            if (this.onUpdate) {
+                this.onUpdate(this.mapToLightweightChartKline(tick));
+            }
         } else if (tick.timestamp === lastCandle.timestamp) {
             Object.assign(lastCandle, tick);
-        }
-        
-        if (this.onUpdate) {
-            this.onUpdate(this.mapToLightweightChartKline(tick));
+            if (this.onUpdate) {
+                this.onUpdate(this.mapToLightweightChartKline(lastCandle));
+            }
         }
     }
 
@@ -172,7 +181,7 @@ class KlineBrowserManager {
         if (this.ws) {
             console.log('🛑 [REALTIME] Stopping WebSocket connection.');
             const oldWs = this.ws;
-            this.ws = null; // 立即设为null，防止重连逻辑在手动关闭后触发
+            this.ws = null; 
             oldWs.close();
         }
     }

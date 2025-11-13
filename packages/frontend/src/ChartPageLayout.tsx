@@ -1,5 +1,5 @@
 // packages/frontend/src/ChartPageLayout.tsx
-import { Component, createSignal, onMount, onCleanup } from 'solid-js';
+import { Component, createSignal, onMount, onCleanup, createMemo } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { io, Socket } from 'socket.io-client';
 import type { MarketItem, DataPayload } from 'shared-types';
@@ -9,15 +9,14 @@ import MultiChartGrid from './MultiChartGrid';
 const BACKEND_URL = 'http://localhost:3001';
 
 const ChartPageLayout: Component = () => {
-    // 状态：用于存储从后端接收的所有市场数据
     const [marketData, setMarketData] = createStore<MarketItem[]>([]);
-    // 状态：用于显示最后更新时间
     const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
+    
+    // ✨ 核心修正 2.1: 创建一个 signal 来存储当前激活的排名类型
+    const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>(null);
 
-    // onMount 中建立 WebSocket 连接
     onMount(() => {
         const socket: Socket = io(BACKEND_URL);
-
         socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
         socket.on('disconnect', () => setLastUpdate('Disconnected'));
 
@@ -27,7 +26,6 @@ const ChartPageLayout: Component = () => {
 
             setMarketData(produce(currentData => {
                 for (const item of data) {
-                    // 我们接收所有链的数据，所以用合约地址+链作为唯一键
                     const index = currentData.findIndex(d => 
                         d.contractAddress === item.contractAddress && d.chain === item.chain
                     );
@@ -38,26 +36,57 @@ const ChartPageLayout: Component = () => {
                     }
                 }
             }));
-
-            // 更新时间戳
             setLastUpdate(new Date().toLocaleTimeString());
         });
 
-        // onCleanup 中断开连接，防止内存泄漏
         onCleanup(() => socket.disconnect());
     });
+    
+    // ✨ 核心修正 2.2: createMemo 会在 marketData 或 activeRankBy 变化时自动重新计算
+    const rankedTokensForGrid = createMemo(() => {
+        const rankBy = activeRankBy();
+        // 如果没有选择任何排名，返回空数组
+        if (!rankBy) {
+            return [];
+        }
+        
+        // 当 marketData 更新时，这里的代码会自动执行
+        console.log(`[Re-ranking] Market data or rank key changed. Recalculating for "${rankBy}".`);
+
+        return [...marketData]
+            .filter(item => {
+                const value = item[rankBy];
+                return item.icon && value !== null && value !== undefined && String(value).trim() !== '';
+            })
+            .sort((a, b) => {
+                const valA = a[rankBy]!;
+                const valB = b[rankBy]!;
+                const numA = typeof valA === 'string' ? parseFloat(valA) : valA;
+                const numB = typeof valB === 'string' ? parseFloat(valB) : valB;
+                return numB - numA;
+            })
+            .slice(0, 9);
+    });
+
+    // ✨ 核心修正 2.3: 点击处理器现在只负责设置激活的排名类型
+    const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
+        console.log(`[Layout] User selected new ranking: ${rankBy}.`);
+        setActiveRankBy(rankBy);
+    };
+
 
     return (
         <div class="chart-page-container">
             <div class="left-sidebar">
-                {/* 将实时数据和更新时间传递给左侧排名容器 */}
                 <CompactRankingListsContainer 
                     marketData={marketData}
                     lastUpdate={lastUpdate()} 
+                    onHeaderClick={handleRankingHeaderClick}
                 />
             </div>
             <div class="right-chart-grid">
-                <MultiChartGrid />
+                {/* 将 memoized 的结果传递给图表网格 */}
+                <MultiChartGrid tokens={rankedTokensForGrid()} />
             </div>
         </div>
     );

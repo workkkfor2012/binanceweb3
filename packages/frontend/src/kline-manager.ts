@@ -4,7 +4,7 @@ import WebSocket from 'ws';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
 // --- 配置区 ---
-const HISTORICAL_API_URL = 'https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval=1min&limit=1000&platform=bsc';
+const HISTORICAL_API_URL = 'https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval=1min&limit=500&platform=bsc';
 const WEBSOCKET_URL = 'wss://nbstream.binance.com/w3w/stream';
 const PROXY_URL = 'socks5://127.0.0.1:1080';
 const CONTRACT_ADDRESS = '0xea37a8de1de2d9d10772eeb569e28bfa5cb17707';
