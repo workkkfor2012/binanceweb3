@@ -480,6 +480,24 @@ Chart Dashboard Page (ChartPageLayout.tsx) Styles
     font-weight: bold;
 }
 
+/* ✨ 新增: 屏蔽按钮样式 */
+.block-button {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: auto; /* 核心: 将按钮推到最右边 */
+    font-size: 14px;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+    line-height: 1; /* 确保垂直居中 */
+}
+
+.block-button:hover {
+    opacity: 1;
+}
+
+
 .single-chart-wrapper .placeholder {
     display: flex;
     align-items: center;

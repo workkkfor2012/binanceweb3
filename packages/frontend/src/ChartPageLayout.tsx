@@ -7,13 +7,46 @@ import CompactRankingListsContainer from './CompactRankingListsContainer';
 import MultiChartGrid from './MultiChartGrid';
 
 const BACKEND_URL = 'http://localhost:3001';
+const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist'; // 定义一个 localStorage 的键
+
+// ✨ 新增: 从 localStorage 加载黑名单的辅助函数
+const loadBlockListFromStorage = (): Set<string> => {
+    try {
+        const storedList = localStorage.getItem(BLOCKLIST_STORAGE_KEY);
+        if (storedList) {
+            // 解析 JSON 字符串，并将其转换为 Set
+            const parsedArray = JSON.parse(storedList);
+            if (Array.isArray(parsedArray)) {
+                return new Set(parsedArray);
+            }
+        }
+    } catch (error) {
+        console.error('[Blocklist] Failed to load or parse blocklist from localStorage:', error);
+    }
+    // 如果失败或不存在，返回一个空的 Set
+    return new Set();
+};
+
+// ✨ 新增: 将黑名单保存到 localStorage 的辅助函数
+const saveBlockListToStorage = (blockList: Set<string>): void => {
+    try {
+        // 将 Set 转换为 Array，然后序列化为 JSON 字符串
+        const arrayToStore = Array.from(blockList);
+        localStorage.setItem(BLOCKLIST_STORAGE_KEY, JSON.stringify(arrayToStore));
+    } catch (error) {
+        console.error('[Blocklist] Failed to save blocklist to localStorage:', error);
+    }
+};
+
 
 const ChartPageLayout: Component = () => {
     const [marketData, setMarketData] = createStore<MarketItem[]>([]);
     const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
     
-    // ✨ 核心修正 2.1: 创建一个 signal 来存储当前激活的排名类型
     const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>(null);
+    
+    // ✨ 核心修改: 初始化时调用 loadBlockListFromStorage
+    const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
 
     onMount(() => {
         const socket: Socket = io(BACKEND_URL);
@@ -41,19 +74,30 @@ const ChartPageLayout: Component = () => {
 
         onCleanup(() => socket.disconnect());
     });
+
+    // ✨ 核心修改: 屏蔽函数现在也会写入 localStorage
+    const handleBlockToken = (contractAddress: string) => {
+        const newBlockList = new Set(blockList());
+        newBlockList.add(contractAddress);
+        
+        setBlockList(newBlockList); // 更新组件状态
+        saveBlockListToStorage(newBlockList); // 持久化到 localStorage
+
+        console.log(`[Blocklist] Token ${contractAddress} added. New list saved to localStorage.`);
+    };
     
-    // ✨ 核心修正 2.2: createMemo 会在 marketData 或 activeRankBy 变化时自动重新计算
     const rankedTokensForGrid = createMemo(() => {
         const rankBy = activeRankBy();
-        // 如果没有选择任何排名，返回空数组
+        const blocked = blockList(); 
+        
         if (!rankBy) {
             return [];
         }
         
-        // 当 marketData 更新时，这里的代码会自动执行
-        console.log(`[Re-ranking] Market data or rank key changed. Recalculating for "${rankBy}".`);
+        console.log(`[Re-ranking] Recalculating for "${rankBy}". Blocked items: ${blocked.size}`);
 
         return [...marketData]
+            .filter(item => !blocked.has(item.contractAddress))
             .filter(item => {
                 const value = item[rankBy];
                 return item.icon && value !== null && value !== undefined && String(value).trim() !== '';
@@ -68,12 +112,10 @@ const ChartPageLayout: Component = () => {
             .slice(0, 9);
     });
 
-    // ✨ 核心修正 2.3: 点击处理器现在只负责设置激活的排名类型
     const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
         console.log(`[Layout] User selected new ranking: ${rankBy}.`);
         setActiveRankBy(rankBy);
     };
-
 
     return (
         <div class="chart-page-container">
@@ -82,11 +124,14 @@ const ChartPageLayout: Component = () => {
                     marketData={marketData}
                     lastUpdate={lastUpdate()} 
                     onHeaderClick={handleRankingHeaderClick}
+                    blockList={blockList()}
                 />
             </div>
             <div class="right-chart-grid">
-                {/* 将 memoized 的结果传递给图表网格 */}
-                <MultiChartGrid tokens={rankedTokensForGrid()} />
+                <MultiChartGrid 
+                    tokens={rankedTokensForGrid()} 
+                    onBlockToken={handleBlockToken} 
+                />
             </div>
         </div>
     );

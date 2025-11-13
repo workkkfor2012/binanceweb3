@@ -8,6 +8,7 @@ const BACKEND_URL = 'http://localhost:3001';
 
 interface SingleKlineChartProps {
     tokenInfo: MarketItem | undefined;
+    onBlock?: (contractAddress: string) => void; // ✨ 新增: onBlock 函数 prop
 }
 
 const customPriceFormatter = (price: number): string => {
@@ -73,12 +74,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (candlestickSeries) {
                 candlestickSeries.setData(initialData as CandlestickData<number>[]);
                 
-                // ✨ 核心修正 1: 控制初始K线位置
                 if (initialData.length > 0) {
-                    // 滚动到最新的K线，同时尊重 rightOffset
                     chart?.timeScale().scrollToPosition(initialData.length - 1, false);
                 } else {
-                    // 如果没有历史数据，则居中显示
                     chart?.timeScale().fitContent();
                 }
             }
@@ -127,6 +125,15 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     />
                     <span class="symbol-title">{props.tokenInfo!.symbol}</span>
                     <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
+                    
+                    {/* ✨ 新增: 屏蔽按钮 */}
+                    <button 
+                        class="block-button" 
+                        title={`屏蔽 ${props.tokenInfo!.symbol}`}
+                        onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}
+                    >
+                        🚫
+                    </button>
                 </Show>
             </div>
             <div ref={chartContainer!} class="chart-container" />

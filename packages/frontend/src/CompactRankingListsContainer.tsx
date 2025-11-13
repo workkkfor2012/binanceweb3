@@ -19,18 +19,22 @@ const formatVolume = (num: number | null | undefined): string => {
   return num.toFixed(0);
 };
 
-// ✨ 修改: 增加 onHeaderClick prop
+// ✨ 修改: 增加 blockList prop
 interface CompactListProps {
   title: string;
   data: MarketItem[];
   rankBy: keyof MarketItem;
   formatter: (value: any) => string | JSX.Element;
   onHeaderClick: (rankBy: keyof MarketItem) => void;
+  blockList: Set<string>;
 }
 
 const CompactRankingList: Component<CompactListProps> = (props) => {
     const rankedData = createMemo(() => {
+        const blocked = props.blockList; // 获取 blockList
         const validData = props.data.filter(item => {
+            if (blocked.has(item.contractAddress)) return false; // ✨ 核心修改: 过滤
+
             const value = item[props.rankBy];
             return item.icon && value !== null && value !== undefined && String(value).trim() !== '';
         });
@@ -48,7 +52,6 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
 
     return (
         <div class="compact-ranking-list">
-            {/* ✨ 修改: 添加 onClick 事件 */}
             <h3 onClick={() => props.onHeaderClick(props.rankBy)} class="clickable-header">
                 {props.title}
             </h3>
@@ -74,11 +77,12 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
     );
 };
 
-// ✨ 修改: 增加 onHeaderClick prop
+// ✨ 修改: 增加 blockList prop
 interface ContainerProps {
     marketData: MarketItem[];
     lastUpdate: string;
     onHeaderClick: (rankBy: keyof MarketItem) => void;
+    blockList: Set<string>;
 }
 
 const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
@@ -115,6 +119,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 rankBy={ranking.field as keyof MarketItem}
                                 formatter={formatPercentage}
                                 onHeaderClick={props.onHeaderClick}
+                                blockList={props.blockList}
                             />
                         )}
                     </For>
@@ -130,6 +135,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 rankBy={ranking.field as keyof MarketItem}
                                 formatter={formatVolume}
                                 onHeaderClick={props.onHeaderClick}
+                                blockList={props.blockList}
                             />
                         )}
                     </For>
