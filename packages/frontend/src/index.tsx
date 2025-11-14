@@ -2,7 +2,8 @@
 /* @refresh reload */
 import { render } from 'solid-js/web';
 
-import './index.css';
+import './css/base.css';
+import './css/dashboard.css';
 import App from './App';
 
 const root = document.getElementById('root');

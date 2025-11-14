@@ -1,0 +1,116 @@
+// packages/frontend/src/css/rankings.css
+/* 仅用于图表页左侧栏的紧凑型排行榜样式 */
+.update-timestamp {
+    text-align: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    font-size: 0.9em;
+}
+
+.update-timestamp span {
+    color: #666;
+    margin-right: 8px;
+}
+
+.update-timestamp strong {
+    font-family: 'Courier New', Courier, monospace;
+    color: #007bff;
+}
+
+.compact-ranking-list-container {
+    display: flex;
+    flex-direction: column;
+}
+
+.ranking-columns {
+    display: flex;
+    gap: 15px;
+}
+
+.ranking-section {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.ranking-section h2 {
+    font-size: 1.1em;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+    margin-bottom: 0;
+    text-align: center;
+    color: #333;
+    margin-top: 0;
+}
+
+.clickable-header {
+    cursor: pointer;
+    transition: color 0.2s;
+}
+.clickable-header:hover {
+    color: #007bff;
+}
+
+.compact-ranking-list h3 {
+    font-size: 0.9em;
+    font-weight: bold;
+    color: #555;
+    margin: 0 0 5px 0;
+    text-align: center;
+}
+
+.compact-ranking-list ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.compact-ranking-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 5px;
+    font-size: 0.9em;
+    border-bottom: 1px dotted #f0f0f0;
+}
+
+.compact-ranking-list li:last-child { border-bottom: none; }
+
+.symbol-and-icon {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.symbol-compact {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.value-compact {
+    flex-shrink: 0;
+    font-family: 'Courier New', Courier, monospace;
+    font-weight: bold;
+    margin-left: 8px;
+}
+.value-compact .positive { color: #28a745; }
+.value-compact .negative { color: #dc3545; }
+
+/*
+  --- ✨ 修正：添加此处缺失的图标样式 ✨ ---
+  这个样式在重构中被错误地分到了 dashboard.css，
+  导致 chart.html 页面无法应用它。
+  现在将其添加到正确的组件样式文件中。
+*/
+.compact-ranking-list .icon {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+    border-radius: 50%;
+}

@@ -1,0 +1,136 @@
+/*  packages/frontend/src/css/chart-grid.css
+/* 仅用于图表页右侧九宫格K线图区域的样式 */
+
+/* --- 时间周期选择器 --- */
+.timeframe-selector {
+    display: flex;
+    gap: 8px;
+    padding: 4px;
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    border: 1px solid #e1e4e8;
+    flex-shrink: 0;
+}
+
+.timeframe-selector button {
+    flex-grow: 1;
+    padding: 6px 12px;
+    border: 1px solid transparent;
+    background-color: #f8f9fa;
+    color: #555;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 500;
+    transition: all 0.2s ease-in-out;
+}
+
+.timeframe-selector button:hover {
+    background-color: #e9ecef;
+    color: #000;
+}
+
+.timeframe-selector button.active {
+    background-color: #007bff;
+    color: #fff;
+    font-weight: bold;
+    border-color: #0056b3;
+}
+
+
+/* --- 9宫格图表样式 --- */
+#chart-grid-container {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  width: 100%;
+  height: 100%;
+  gap: 8px;
+  flex-grow: 1; /* 让网格填满可用空间 */
+}
+
+.single-chart-wrapper {
+  background-color: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+  border: 1px solid #e1e4e8;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.single-chart-wrapper .chart-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 6px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid #f0f0f0;
+    height: 24px;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.single-chart-wrapper .icon-small {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+}
+
+.single-chart-wrapper .symbol-title {
+    font-weight: bold;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.single-chart-wrapper .chain-badge {
+    font-size: 10px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    background-color: #e9ecef;
+    color: #6c757d;
+    font-weight: bold;
+}
+
+.block-button {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: auto;
+    font-size: 14px;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+    line-height: 1;
+}
+
+.block-button:hover {
+    opacity: 1;
+}
+
+.single-chart-wrapper .placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: #999;
+    font-size: 13px;
+    text-align: center;
+}
+
+.single-chart-wrapper .controls,
+.single-chart-wrapper .status {
+    display: none;
+}
+
+.single-chart-wrapper .chart-container {
+  width: 100%;
+  flex-grow: 1;
+}
