@@ -1,0 +1,99 @@
+/* packages/frontend/src/css/single-token-view.css */
+.single-token-view-container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background-color: #f0f3fa;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.view-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
+    background-color: #ffffff;
+    border-bottom: 1px solid #e1e4e8;
+    flex-shrink: 0;
+}
+
+.token-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.token-info .icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+}
+
+.token-info h1 {
+    font-size: 1.5em;
+    margin: 0;
+}
+
+.token-info .chain-badge {
+    font-size: 0.8em;
+    padding: 3px 6px;
+    border-radius: 6px;
+    background-color: #e9ecef;
+    color: #6c757d;
+    font-weight: bold;
+}
+
+.exit-hint {
+    font-size: 0.9em;
+    color: #888;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+.chart-panes {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background-color: #d1d9e6;
+}
+
+.chart-pane {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    background: #fff;
+    /* 重写 single-chart-wrapper 的一些样式 */
+    display: flex;
+    flex-direction: column;
+}
+
+.chart-pane .single-chart-wrapper {
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    border-radius: 0;
+    height: 100%;
+}
+.chart-pane .single-chart-wrapper .chart-header {
+    display: none; /* 在这里隐藏单个图表的头部，因为外部已有总头部 */
+}
+.chart-pane .single-chart-wrapper .chart-container {
+    padding-top: 0;
+}
+
+.timeframe-label {
+    position: absolute;
+    top: 10px;
+    left: 15px;
+    z-index: 20;
+    background-color: rgba(240, 243, 250, 0.8);
+    backdrop-filter: blur(2px);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 0.9em;
+    font-weight: bold;
+    color: #555;
+    pointer-events: none; /* 确保标签不会捕获鼠标事件 */
+}

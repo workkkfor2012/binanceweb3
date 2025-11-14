@@ -5,6 +5,7 @@ import './css/base.css';
 import './css/chart-layout.css';
 import './css/rankings.css';
 import './css/chart-grid.css';
+import './css/single-token-view.css'; // 导入新的 CSS 文件
 import ChartPageLayout from './ChartPageLayout';
 
 const root = document.getElementById('root');

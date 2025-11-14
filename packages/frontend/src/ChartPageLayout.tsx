@@ -1,16 +1,16 @@
 // packages/frontend/src/ChartPageLayout.tsx
-import { Component, createSignal, onMount, onCleanup, createMemo } from 'solid-js';
+import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { io, Socket } from 'socket.io-client';
 import type { MarketItem, DataPayload } from 'shared-types';
 import CompactRankingListsContainer from './CompactRankingListsContainer';
 import MultiChartGrid from './MultiChartGrid';
+import SingleTokenView from './SingleTokenView'; // 导入新组件
 import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
 
-// ✨ 核心修改 1: 定义新的同步状态类型
 export interface ViewportState {
-    width: number; // 逻辑宽度，代表缩放
-    offset: number; // 相对于最后一根bar的右侧偏移量，代表平移
+    width: number;
+    offset: number;
 }
 
 const BACKEND_URL = 'http://localhost:3001';
@@ -44,22 +44,50 @@ const ChartPageLayout: Component = () => {
     const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('volume1m');
     const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
     const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
-
-    // ✨ 核心修改 2: 更改状态为 ViewportState
     const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
     const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
+
+    // 新的状态来管理视图模式和聚焦的 Token
+    const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
+    const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
 
     const handleViewportChange = (newState: ViewportState | null) => {
         setViewportState(newState);
     };
 
+    // 增强的键盘事件处理
     const handleKeyDown = (e: KeyboardEvent) => {
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+        // 切换时间周期 (现在对两种视图模式都生效)
         if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
             const newTimeframe = TIMEFRAME_MAP[e.key];
             console.log(`[Layout] Hotkey '${e.key}' pressed. Changing timeframe to ${newTimeframe}`);
             setActiveTimeframe(newTimeframe);
-            setViewportState(null); // 切换时间周期时重置视图
+            // 在九图模式下，切换周期时重置视图同步状态
+            if (viewMode() === 'grid') {
+                setViewportState(null);
+            }
+            return;
+        }
+
+        // 使用 'F' 键切换视图模式
+        if (e.key.toLowerCase() === 'f') {
+            if (viewMode() === 'grid') {
+                const hoveredTokenId = activeChartId();
+                if (hoveredTokenId) {
+                    const token = rankedTokensForGrid().find(t => t.contractAddress === hoveredTokenId);
+                    if (token) {
+                        console.log(`[Layout] Entering single view for ${token.symbol}`);
+                        setFocusedToken(token);
+                        setViewMode('single');
+                    }
+                }
+            } else {
+                console.log('[Layout] Exiting single view.');
+                setViewMode('grid');
+                setFocusedToken(null);
+            }
         }
     };
 
@@ -68,7 +96,6 @@ const ChartPageLayout: Component = () => {
     };
 
     onMount(() => {
-        // ... (socket connection and other logic remains the same)
         const socket: Socket = io(BACKEND_URL);
         socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
         socket.on('disconnect', () => setLastUpdate('Disconnected'));
@@ -106,11 +133,11 @@ const ChartPageLayout: Component = () => {
         const newBlockList = new Set(blockList());
         newBlockList.add(contractAddress);
         setBlockList(newBlockList);
+        saveBlockListToStorage(newBlockList); // 保存到localStorage
         console.log(`[Blocklist] Token ${contractAddress} added.`);
     };
 
     const rankedTokensForGrid = createMemo(() => {
-        // ... (this logic remains the same)
         const rankBy = activeRankBy();
         const blocked = blockList(); 
         if (!rankBy) return [];
@@ -142,23 +169,35 @@ const ChartPageLayout: Component = () => {
                 />
             </div>
             <div class="right-chart-grid">
-                <div class="grid-header">
-                    <div class="active-timeframe-indicator">
-                        <span>Timeframe: </span>
-                        <strong>{activeTimeframe().toUpperCase()}</strong>
-                        <span class="hotkey-hint">(Keys: 1-5)</span>
-                    </div>
-                </div>
-                {/* ✨ 核心修改 3: 传递新的 props */}
-                <MultiChartGrid 
-                    tokens={rankedTokensForGrid()} 
-                    onBlockToken={handleBlockToken} 
-                    timeframe={activeTimeframe()}
-                    viewportState={viewportState()}
-                    onViewportChange={handleViewportChange}
-                    activeChartId={activeChartId()}
-                    onSetActiveChart={setActiveChartId}
-                />
+                {/* 使用 <Show> 组件进行条件渲染 */}
+                <Show
+                    when={viewMode() === 'single' && focusedToken()}
+                    fallback={
+                        <>
+                            <div class="grid-header">
+                                <div class="active-timeframe-indicator">
+                                    <span>Timeframe: </span>
+                                    <strong>{activeTimeframe().toUpperCase()}</strong>
+                                    <span class="hotkey-hint">(Keys: 1-5)</span>
+                                </div>
+                            </div>
+                            <MultiChartGrid 
+                                tokens={rankedTokensForGrid()} 
+                                onBlockToken={handleBlockToken} 
+                                timeframe={activeTimeframe()}
+                                viewportState={viewportState()}
+                                onViewportChange={handleViewportChange}
+                                activeChartId={activeChartId()}
+                                onSetActiveChart={setActiveChartId}
+                            />
+                        </>
+                    }
+                >
+                    <SingleTokenView 
+                        token={focusedToken()!} 
+                        activeTimeframe={activeTimeframe()} 
+                    />
+                </Show>
             </div>
         </div>
     );
