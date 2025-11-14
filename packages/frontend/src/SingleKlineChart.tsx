@@ -31,7 +31,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let klineManager: KlineBrowserManager | null = null;
     let resizeObserver: ResizeObserver | null = null;
 
-    // ✨ 核心修改 1: 追踪最后一根bar的索引
     const [lastBarIndex, setLastBarIndex] = createSignal<number | null>(null);
 
     let loadChartVersion = 0;
@@ -54,17 +53,24 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         if (!chartContainer) return;
 
         chart = createChart(chartContainer, {
-            // ... (chart options are the same: handleScroll/Scale are true)
             width: chartContainer.clientWidth, height: chartContainer.clientHeight,
-            layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
+            layout: { 
+                background: { type: ColorType.Solid, color: '#ffffff' }, 
+                textColor: '#333',
+            },
             grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
-            timeScale: { borderColor: '#cccccc', timeVisible: true, secondsVisible: false, barSpacing: 10, },
-            rightPriceScale: { visible: true, borderColor: '#cccccc' },
-            leftPriceScale: { visible: false },
+            timeScale: { 
+                visible: false, // 需求 3 (最终版): 完全不显示时间轴
+            },
+            rightPriceScale: { 
+                visible: false, // 需求 1: 不显示价格坐标轴
+            },
+            leftPriceScale: { 
+                visible: false, // 需求 1: 不显示价格坐标轴
+            },
             handleScroll: true, handleScale: true,
         });
         
-        // ✨ 核心修改 2: 领导者计算并广播 ViewportState
         chart.timeScale().subscribeVisibleLogicalRangeChange((newRange) => {
             if (newRange && props.onViewportChange && !isSettingRangeProgrammatically) {
                 if (props.activeChartId === props.tokenInfo?.contractAddress) {
@@ -90,7 +96,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 const newLastBarIndex = initialData.length > 0 ? initialData.length - 1 : null;
                 setLastBarIndex(newLastBarIndex);
 
-                // ✨ 核心修改 3: 数据加载后，应用全局 ViewportState
                 const vs = props.viewportState;
                 if (vs && newLastBarIndex !== null) {
                     const to = newLastBarIndex - vs.offset;
@@ -105,7 +110,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         klineManager.on('update', (updatedCandle: LightweightChartKline) => {
             if (currentVersion !== loadChartVersion) return;
             candlestickSeries?.update(updatedCandle as CandlestickData<number>);
-            // 当有新bar时，更新索引
             const lbi = lastBarIndex();
             if (lbi !== null) setLastBarIndex(lbi + 1);
         });
@@ -113,7 +117,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         klineManager.start();
     };
     
-    // ✨ 核心修改 4: 跟随者接收 ViewportState 并重建 LogicalRange
     createEffect(() => {
         const vs = props.viewportState;
         if (chart && vs && props.activeChartId !== props.tokenInfo?.contractAddress) {
@@ -129,7 +132,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         }
     });
 
-    // ... (the final createEffect for loading charts and lifecycle hooks remain the same as the previous correct version)
     createEffect(() => {
         const info = props.tokenInfo;
         const tf = props.timeframe;
@@ -177,7 +179,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             onMouseLeave={() => props.onSetActiveChart?.(null)}
         >
             <div class="chart-header">
-                {/* ... (header JSX is unchanged) ... */}
                 <Show when={props.tokenInfo} fallback={<span class="placeholder">点击左侧排名标题加载图表</span>}>
                     <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
                     <span class="symbol-title">{props.tokenInfo!.symbol}</span>

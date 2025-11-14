@@ -1,7 +1,7 @@
-/*  packages/frontend/src/css/chart-grid.css
+/*  packages/frontend/src/css/chart-grid.css */
 /* 仅用于图表页右侧九宫格K线图区域的样式 */
 
-/* --- 时间周期选择器 --- */
+/* ... (timeframe-selector 样式无变化) ... */
 .timeframe-selector {
     display: flex;
     gap: 8px;
@@ -46,34 +46,51 @@
   grid-template-rows: repeat(3, 1fr);
   width: 100%;
   height: 100%;
-  gap: 8px;
-  flex-grow: 1; /* 让网格填满可用空间 */
+  gap: 1px;
+  background-color: #444; 
+  flex-grow: 1;
+  border: 1px solid #444;
 }
 
 .single-chart-wrapper {
   background-color: #ffffff;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
-  border: 1px solid #e1e4e8;
+  border-radius: 0;
+  box-shadow: none;
+  border: none;
   padding: 8px;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  position: relative;
+  position: relative; /* ✨ 核心修改 1: 建立定位上下文 */
 }
 
+/* ✨ 核心修改 2: 让头部悬浮起来 */
 .single-chart-wrapper .chart-header {
+    position: absolute; /* 让元素脱离文档流，悬浮起来 */
+    top: 8px;           /* 与父元素的 padding 匹配 */
+    left: 8px;          /* 与父元素的 padding 匹配 */
+    width: calc(100% - 16px); /* 宽度撑满，并减去左右 padding */
+    z-index: 10;        /* 确保在图表 canvas 之上 */
+
+    /* 为了美观和可读性，增加一些样式 */
+    background-color: rgba(255, 255, 255, 0.75); /* 半透明背景，避免与K线混淆 */
+    backdrop-filter: blur(2px); /* 增加一点毛玻璃效果，更现代 */
+    border-radius: 6px;
+    padding: 4px 6px;   /* 调整内边距，使其更紧凑 */
+    box-sizing: border-box; /* 确保 padding 不会撑大宽度 */
+
+    /* 原有样式保留 */
     display: flex;
     align-items: center;
     gap: 6px;
-    padding-bottom: 6px;
-    margin-bottom: 4px;
-    border-bottom: 1px solid #f0f0f0;
-    height: 24px;
+    height: auto; /* 高度自适应 */
     font-size: 13px;
     flex-shrink: 0;
+    border-bottom: none; /* 悬浮后不再需要下边框 */
+    margin-bottom: 0;
 }
+
 
 .single-chart-wrapper .icon-small {
     width: 18px;
