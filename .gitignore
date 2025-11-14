@@ -2,6 +2,8 @@
 # Dependencies
 /node_modules
 packages/backend/node_modules
+packages/backend/target
+packages/backend/image_cache
 packages/extractor/node_modules
 packages/frontend/node_modules
 packages/shared-types/node_modules

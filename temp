@@ -1,2 +1,6 @@
-https://dquery.sintral.io/u-kline/v1/k-line/candles?address=0xe747e54783ba3f77a8e5251a3cba19ebe9c0e197&interval=1m&limit=500&platform=bsc
-https://dquery.sintral.io/u-kline/v1/k-line/candles?address=0xe747e54783ba3f77a8e5251a3cba19ebe9c0e197&interval=1min&limit=500&platform=bsc&to=1763040240000
+这是项目介绍
+首先需要你理解chart.html页面
+左边是价格涨幅排名和成交额排名，右边是9图的tradingview的k线
+`docs\tradingview`这是最新版的文档
+现在的需求是：现在的问题是，我需要将ts写的后端，修改成rust写的后端,仍然要在backend文件夹内实现
+
