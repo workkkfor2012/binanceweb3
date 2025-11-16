@@ -1,11 +1,11 @@
 // packages/frontend/src/ChartPageLayout.tsx
 import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
-import { io, Socket } from 'socket.io-client';
+import { socket } from './socket'; // ✨ 使用共享的 socket 实例
 import type { MarketItem, DataPayload } from 'shared-types';
 import CompactRankingListsContainer from './CompactRankingListsContainer';
 import MultiChartGrid from './MultiChartGrid';
-import SingleTokenView from './SingleTokenView'; // 导入新组件
+import SingleTokenView from './SingleTokenView';
 import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
 
 export interface ViewportState {
@@ -13,7 +13,6 @@ export interface ViewportState {
     offset: number;
 }
 
-const BACKEND_URL = 'http://localhost:3001';
 const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
 
 const TIMEFRAME_MAP: Record<string, string> = {
@@ -47,7 +46,6 @@ const ChartPageLayout: Component = () => {
     const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
     const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
 
-    // 新的状态来管理视图模式和聚焦的 Token
     const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
     const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
 
@@ -55,23 +53,19 @@ const ChartPageLayout: Component = () => {
         setViewportState(newState);
     };
 
-    // 增强的键盘事件处理
     const handleKeyDown = (e: KeyboardEvent) => {
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
-        // 切换时间周期 (现在对两种视图模式都生效)
         if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
             const newTimeframe = TIMEFRAME_MAP[e.key];
             console.log(`[Layout] Hotkey '${e.key}' pressed. Changing timeframe to ${newTimeframe}`);
             setActiveTimeframe(newTimeframe);
-            // 在九图模式下，切换周期时重置视图同步状态
             if (viewMode() === 'grid') {
                 setViewportState(null);
             }
             return;
         }
 
-        // 使用 'F' 键切换视图模式
         if (e.key.toLowerCase() === 'f') {
             if (viewMode() === 'grid') {
                 const hoveredTokenId = activeChartId();
@@ -96,7 +90,11 @@ const ChartPageLayout: Component = () => {
     };
 
     onMount(() => {
-        const socket: Socket = io(BACKEND_URL);
+        // 确保 socket 连接，如果它断开了，它会自动重连
+        if (!socket.connected) {
+            socket.connect();
+        }
+        
         socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
         socket.on('disconnect', () => setLastUpdate('Disconnected'));
         socket.on('data-broadcast', (payload: DataPayload) => {
@@ -123,8 +121,12 @@ const ChartPageLayout: Component = () => {
         });
         initializeVoices();
         window.addEventListener('keydown', handleKeyDown);
+
         onCleanup(() => {
-            socket.disconnect();
+            // 在组件卸载时，只移除此组件关心的事件监听器，而不是断开整个 socket
+            socket.off('connect');
+            socket.off('disconnect');
+            socket.off('data-broadcast');
             window.removeEventListener('keydown', handleKeyDown);
         });
     });
@@ -133,7 +135,7 @@ const ChartPageLayout: Component = () => {
         const newBlockList = new Set(blockList());
         newBlockList.add(contractAddress);
         setBlockList(newBlockList);
-        saveBlockListToStorage(newBlockList); // 保存到localStorage
+        saveBlockListToStorage(newBlockList);
         console.log(`[Blocklist] Token ${contractAddress} added.`);
     };
 
@@ -169,7 +171,6 @@ const ChartPageLayout: Component = () => {
                 />
             </div>
             <div class="right-chart-grid">
-                {/* 使用 <Show> 组件进行条件渲染 */}
                 <Show
                     when={viewMode() === 'single' && focusedToken()}
                     fallback={

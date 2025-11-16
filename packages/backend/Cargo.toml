@@ -19,6 +19,11 @@ http = "1.3.0"
 url = "2.5.7"
 sha2 = "0.10.9"
 hex = "0.4.3"
-
-# 使用 tokio::sync::Mutex 和 std::collections::HashMap
-# 无需额外的 cache 依赖
+tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
+futures-util = "0.3.31"
+dashmap = "6.1.0"
+tokio-stream = "0.1.17"
+once_cell = "1.21.3"
+tokio-socks = "0.5.2"
+tokio-native-tls = "0.3.1"
+native-tls = "0.2.14"

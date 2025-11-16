@@ -1,4 +1,7 @@
 <!-- README.MD -->
+`packages\frontend`这是前端代码
+`packages\extractor`这是爬虫代码
+`packages\backend`这是后端代码
 
 实时市场数据监控面板 (Rust 后端版)
 
