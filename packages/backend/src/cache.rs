@@ -6,7 +6,7 @@ use http::{HeaderMap, HeaderValue};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::info;
+use tracing::{info, warn};
 
 /// 基于 URL 哈希生成缓存文件路径。
 fn get_cache_paths(url: &str, config: &Config) -> (PathBuf, PathBuf) {
@@ -35,6 +35,17 @@ pub async fn get_cached_response(
     let meta: CacheMeta = serde_json::from_str(&meta_json)?;
     let buffer = fs::read(&data_path).await?;
 
+    // --- LRU 逻辑：更新访问时间 ---
+    // 异步执行，不阻塞当前请求的响应
+    let meta_path_clone = meta_path.clone();
+    tokio::spawn(async move {
+        // 通过重写元数据文件来更新它的 mtime
+        if let Err(e) = fs::write(meta_path_clone, meta_json).await {
+            warn!("[CACHE TOUCH] Failed to update metadata timestamp: {}", e);
+        }
+    });
+    // --- 结束 ---
+
     info!("[CACHE HIT] Serving from disk: {}", url);
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -57,6 +68,11 @@ pub async fn save_to_cache(
     config: &Config,
 ) -> Result<(), AppError> {
     let (data_path, meta_path) = get_cache_paths(url, config);
+    // 确保缓存目录存在
+    if let Some(parent) = data_path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    
     let meta = CacheMeta {
         content_type: content_type
             .to_str()
@@ -64,7 +80,6 @@ pub async fn save_to_cache(
             .to_string(),
     };
 
-    fs::create_dir_all(&config.cache_dir).await?;
     let meta_json = serde_json::to_string(&meta)?;
     fs::write(&data_path, data).await?;
     fs::write(&meta_path, meta_json).await?;

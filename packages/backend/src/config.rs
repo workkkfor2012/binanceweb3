@@ -8,6 +8,9 @@ pub struct Config {
     pub proxy_addr: String,
     pub heartbeat_interval: Duration,
     pub desired_fields: Vec<&'static str>,
+    // 重命名并修改单位为 MB
+    pub max_cache_size_mb: u64,
+    pub cache_cleanup_interval: Duration,
 }
 
 impl Config {
@@ -36,6 +39,10 @@ impl Config {
                 "priceChange4h",
                 "priceChange24h",
             ],
+            // 默认最大缓存为 1024 MB (1 GB)
+            max_cache_size_mb: 70,
+            // 默认每小时清理一次
+            cache_cleanup_interval: Duration::from_secs(3600),
         }
     }
 }

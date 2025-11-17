@@ -28,7 +28,7 @@ type WsRead = futures_util::stream::SplitStream<WsStream>;
 /// 连接到 Binance WebSocket 并处理数据的主任务循环。
 pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc<Config>) {
     loop {
-        info!("[TASK {}] Attempting to connect...", room_name);
+        //info!("[TASK {}] Attempting to connect...", room_name);
         match connect_and_run(&io, &room_name, &config).await {
             Ok(_) => warn!("[TASK {}] Disconnected gracefully. Reconnecting...", room_name),
             Err(e) => error!("[TASK {}] Connection failed: {:#?}. Retrying...", room_name, e),
@@ -54,7 +54,7 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Res
     let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
         .await
         .context("WebSocket handshake failed")?;
-    info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", room_name, response.status());
+    //info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", room_name, response.status());
 
     let (mut write, mut read) = ws_stream.split();
     subscribe(&mut write, room_name).await?;
@@ -67,7 +67,7 @@ async fn subscribe(write: &mut WsWrite, room_name: &str) -> Result<()> {
     let subscribe_msg = serde_json::json!({ "id": request_id, "method": "SUBSCRIBE", "params": [room_name] });
     // 修正: tungstenite::Message::Text 现在需要一个 Into<Utf8Bytes>，String 可以 .into()
     write.send(Message::Text(subscribe_msg.to_string().into())).await?;
-    info!("👍 [TASK {}] Subscription message sent with ID: {}", room_name, request_id);
+    //info!("👍 [TASK {}] Subscription message sent with ID: {}", room_name, request_id);
     Ok(())
 }
 
@@ -116,6 +116,8 @@ async fn handle_message(msg: Message, io: &SocketIo, room_name: &str, write: &mu
                     volume: wrapper.data.d.u.4.parse().unwrap_or_default(),
                 };
                 let broadcast_data = KlineBroadcastData { room: room_name.to_string(), data: tick_data };
+                info!(time = broadcast_data.data.time, open = broadcast_data.data.open, high = broadcast_data.data.high, low = broadcast_data.data.low, close = broadcast_data.data.close, volume = broadcast_data.data.volume, "[TASK {}] Broadcasting kline update", room_name);
+
                 // 修正: .emit() 方法现在需要一个引用 &T
                 if let Err(e) = io.to(room_name.to_string()).emit("kline_update", &broadcast_data).await {
                     error!("[TASK {}] Failed to broadcast kline update: {:?}", room_name, e);

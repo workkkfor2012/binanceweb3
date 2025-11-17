@@ -7,6 +7,7 @@ mod http_handlers;
 mod socket_handlers;
 mod state;
 mod types;
+mod cache_manager; // 1. 声明新模块
 
 use axum::{routing::get, Router};
 use config::Config;
@@ -29,10 +30,11 @@ async fn main() {
     init_tracing();
 
     let (layer, io) = SocketIo::new_layer();
+    let config = Arc::new(Config::new());
 
     let server_state = ServerState {
         app_state: state::new_app_state(),
-        config: Arc::new(Config::new()),
+        config: config.clone(), // 2. 克隆 Arc<Config> 给 server_state
         io: io.clone(),
     };
 
@@ -49,6 +51,10 @@ async fn main() {
             }
         },
     );
+
+    // 3. 启动缓存管理后台任务
+    // 我们将最初的 Arc<Config> 移动到任务中
+    tokio::spawn(cache_manager::cache_manager_task(config));
 
     let app = Router::new()
         .route(
