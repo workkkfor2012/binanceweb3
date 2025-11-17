@@ -151,11 +151,22 @@ class KlineBrowserManager {
             if (newKlines.length > 0) {
                 await dbManager.saveKlines(newKlines);
                 await dbManager.pruneOldKlines(this.contractAddress, this.chain, this.interval);
-                let allKlines = await dbManager.getKlines(this.contractAddress, this.chain, this.interval);
-                allKlines.sort((a, b) => a.timestamp - b.timestamp);
-                if (this.onDataLoaded) {
-                    console.log(`[Manager ${this.roomName}] 👉 Firing 'onDataLoaded' with ${allKlines.length} FETCHED & MERGED candles.`);
+                
+                // ✨ --- 核心优化 --- ✨
+                // 如果是首次加载 (没有缓存)，则通过 'data' 事件发送完整数据
+                if (cachedKlines.length === 0 && this.onDataLoaded) {
+                    let allKlines = await dbManager.getKlines(this.contractAddress, this.chain, this.interval);
+                    allKlines.sort((a, b) => a.timestamp - b.timestamp);
+                    console.log(`[Manager ${this.roomName}] 👉 Firing 'onDataLoaded' with ${allKlines.length} FRESHLY FETCHED candles.`);
                     this.onDataLoaded(allKlines.map(this.mapToLightweightChartKline));
+                } 
+                // 如果是补充数据 (已有缓存)，则通过 'update' 事件逐条发送增量数据
+                else if (this.onUpdate) {
+                    console.log(`[Manager ${this.roomName}] 👉 Firing 'onUpdate' for ${newKlines.length} newly fetched historical candles.`);
+                    newKlines.sort((a, b) => a.timestamp - b.timestamp); // 确保按时间顺序更新
+                    for (const kline of newKlines) {
+                        this.onUpdate(this.mapToLightweightChartKline(kline));
+                    }
                 }
             }
         }

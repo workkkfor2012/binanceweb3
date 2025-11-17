@@ -5,7 +5,7 @@ import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, Candles
 import KlineBrowserManager from './kline-browser-manager';
 import type { LightweightChartKline } from './types';
 import type { MarketItem } from 'shared-types';
-import { ALL_TIMEFRAMES, ViewportState } from './ChartPageLayout';
+import { ViewportState } from './ChartPageLayout'; // 移除了不再需要的 ALL_TIMEFRAMES
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -176,15 +176,11 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (tf !== lastLoadedTimeframe && props.onViewportChange) {
                  props.onViewportChange(null);
             }
-            if (newAddress !== lastLoadedAddress) {
-                 const otherTimeframes = ALL_TIMEFRAMES.filter(t => t !== tf);
-                 for (const otherTf of otherTimeframes) {
-                     new KlineBrowserManager(newAddress, info.chain, otherTf).start();
-                 }
-            }
+
+            // ✨ 核心修改: 移除了这里的 for 循环预缓存逻辑
+            
             lastLoadedAddress = newAddress;
             lastLoadedTimeframe = tf;
-            // ✨ 核心修复: 延迟图表加载以确保容器已渲染并具有尺寸
             setTimeout(() => loadChart(newAddress!, info!.chain, tf), 0);
         } else {
             console.log(`[ChartComponent] > Token info is undefined. Cleaning up.`);

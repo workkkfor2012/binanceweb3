@@ -23,19 +23,20 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     task::JoinHandle,
+    time::interval,
 };
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::{
-    client_async_with_config, // ✨ 改用这个函数
+    client_async_with_config,
     tungstenite::{
-        client::IntoClientRequest, // ✨ 引入新的 Trait
-        handshake::client::Request, 
+        client::IntoClientRequest,
         Message,
     },
 };
@@ -45,26 +46,37 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
 
-// --- 常量 (无变化) ---
+// --- 常量 ---
 const CACHE_DIR: &str = "./image_cache";
 const BINANCE_WSS_URL: &str = "wss://nbstream.binance.com/w3w/stream";
 const PROXY_ADDR: &str = "127.0.0.1:1080";
+const HEARTBEAT_INTERVAL_SECONDS: u64 = 20;
 
-// --- 类型定义 (无变化) ---
+// --- 类型定义 ---
 #[derive(Debug, Deserialize, Clone)]
 struct KlineSubscribePayload {
     address: String,
     chain: String,
     interval: String,
 }
+
+#[derive(Debug, Deserialize)]
+struct BinanceStreamWrapper {
+    stream: String,
+    data: BinanceKlineData,
+}
+
 #[derive(Debug, Deserialize)]
 struct BinanceKlineData {
     d: BinanceKlineDetail,
 }
+
 #[derive(Debug, Deserialize)]
 struct BinanceKlineDetail {
-    u: (String, String, String, String, String, i64),
+    u: (String, String, String, String, String, String),
 }
+
+
 #[derive(Debug, Serialize, Clone)]
 struct KlineBroadcastData {
     room: String,
@@ -177,120 +189,116 @@ async fn binance_websocket_task(io: SocketIo, room_name: String) {
     info!("🚀 [TASK {}] Starting with HTTP Proxy {}...", room_name, PROXY_ADDR);
     
     loop {
-        let url_obj = match Url::parse(BINANCE_WSS_URL) {
-            Ok(u) => u,
-            Err(e) => {
-                error!("[TASK {}] Invalid WebSocket URL: {:?}", room_name, e);
-                return;
-            }
-        };
+        // --- 代理和TLS连接部分 (无变化) ---
+        let url_obj = match Url::parse(BINANCE_WSS_URL) { Ok(u) => u, Err(e) => { error!("[TASK {}] Invalid WebSocket URL: {:?}", room_name, e); return; } };
         let host = url_obj.host_str().unwrap_or_default();
         let port = url_obj.port_or_known_default().unwrap_or(443);
         let target_addr = format!("{}:{}", host, port);
-
         info!("[TASK {}] Connecting to HTTP proxy...", room_name);
-        let mut stream = match TcpStream::connect(PROXY_ADDR).await {
-            Ok(s) => s,
-            Err(e) => {
-                error!("[TASK {}] HTTP proxy connection failed: {:?}. Retrying in 5s...", room_name, e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-
-        let connect_req = format!(
-            "CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-            target_addr, target_addr
-        );
-        if let Err(e) = stream.write_all(connect_req.as_bytes()).await {
-            error!("[TASK {}] Failed to send CONNECT request: {:?}. Retrying...", room_name, e);
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            continue;
-        }
-
+        let mut stream = match TcpStream::connect(PROXY_ADDR).await { Ok(s) => s, Err(e) => { error!("[TASK {}] HTTP proxy connection failed: {:?}. Retrying...", room_name, e); tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; continue; } };
+        let connect_req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", target_addr, target_addr);
+        if let Err(e) = stream.write_all(connect_req.as_bytes()).await { error!("[TASK {}] Failed to send CONNECT request: {:?}. Retrying...", room_name, e); tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; continue; }
         let mut buf = vec![0; 1024];
-        let n = match stream.read(&mut buf).await {
-            Ok(n) => n,
-            Err(e) => {
-                error!("[TASK {}] Failed to read proxy response: {:?}. Retrying...", room_name, e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                continue;
-            }
-        };
+        let n = match stream.read(&mut buf).await { Ok(n) => n, Err(e) => { error!("[TASK {}] Failed to read proxy response: {:?}. Retrying...", room_name, e); tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; continue; } };
         let response = String::from_utf8_lossy(&buf[..n]);
-        if !response.starts_with("HTTP/1.1 200") {
-            error!("[TASK {}] Proxy CONNECT failed: {}. Retrying...", room_name, response.trim());
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            continue;
-        }
+        if !response.starts_with("HTTP/1.1 200") { error!("[TASK {}] Proxy CONNECT failed: {}. Retrying...", room_name, response.trim()); tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; continue; }
         info!("[TASK {}] HTTP tunnel established.", room_name);
+        let tls_connector = TokioTlsConnector::from(TlsConnector::builder().build().expect("Failed to create TlsConnector"));
+        let tls_stream = match tls_connector.connect(host, stream).await { Ok(s) => s, Err(e) => { error!("[TASK {}] TLS Handshake failed: {:?}. Retrying...", room_name, e); tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; continue; } };
 
-        let tls_connector = TokioTlsConnector::from(
-            TlsConnector::builder().build().expect("Failed to create TlsConnector")
-        );
-        let tls_stream = match tls_connector.connect(host, stream).await {
-            Ok(s) => s,
-            Err(e) => {
-                error!("[TASK {}] TLS Handshake failed: {:?}. Retrying...", room_name, e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                continue;
-            }
-        };
-
-        // ✨ 核心修正: 使用 IntoClientRequest 来构建请求
-        // 这样库会自动处理 Host, Sec-WebSocket-Key 等协议头
+        // --- 伪装请求头 (无变化) ---
         let mut request = BINANCE_WSS_URL.into_client_request().unwrap();
         let headers = request.headers_mut();
-        headers.insert(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.37.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse().unwrap(),
-        );
+        headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse().unwrap());
         headers.insert("Origin", "https://web3.binance.com".parse().unwrap());
+        headers.insert("Accept-Encoding", "gzip, deflate, br, zstd".parse().unwrap());
+        headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
         
-        info!("[TASK {}] Performing WebSocket handshake with disguised headers...", room_name);
+        info!("[TASK {}] Performing WebSocket handshake with FULL disguised headers...", room_name);
         
-        // ✨ 使用 client_async_with_config 并传入 None 表示默认配置
         match client_async_with_config(request, tls_stream, None).await {
             Ok((ws_stream, response)) => {
-                info!("✅ [TASK {}] WebSocket handshake successful. Response: {:?}", room_name, response.status());
+                info!("✅ [TASK {}] WebSocket handshake successful. Response Status: {}", room_name, response.status());
                 let (mut write, mut read) = ws_stream.split();
                 
-                let subscribe_msg = serde_json::json!({
-                    "id": format!("sub-{}", room_name),
-                    "method": "SUBSCRIBE",
-                    "params": [&room_name]
-                });
+                let request_id = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_millis();
+                let subscribe_msg = serde_json::json!({ "id": request_id, "method": "SUBSCRIBE", "params": [&room_name] });
+                let msg_to_send = Message::Text(subscribe_msg.to_string().into());
                 
-                if let Err(e) = write.send(Message::Text(subscribe_msg.to_string().into())).await {
+                if let Err(e) = write.send(msg_to_send).await {
                     error!("[TASK {}] Failed to send subscription message: {:?}", room_name, e);
                     continue;
                 }
-                info!("👍 [TASK {}] Subscription message sent.", room_name);
+                info!("👍 [TASK {}] Subscription message sent with ID: {}", room_name, request_id);
 
-                while let Some(Ok(msg)) = read.next().await {
-                    if let Message::Text(text) = msg {
-                        if text.is_empty() { continue; }
-                        
-                        if let Ok(data) = serde_json::from_str::<BinanceKlineData>(&text) {
-                            let tick_data = KlineTick {
-                                time: data.d.u.5 / 1000,
-                                open: data.d.u.0.parse().unwrap_or_default(),
-                                high: data.d.u.1.parse().unwrap_or_default(),
-                                low: data.d.u.2.parse().unwrap_or_default(),
-                                close: data.d.u.3.parse().unwrap_or_default(),
-                                volume: data.d.u.4.parse().unwrap_or_default(),
-                            };
-                            let broadcast_data = KlineBroadcastData {
-                                room: room_name.clone(),
-                                data: tick_data,
-                            };
-                            if let Err(e) = io.to(room_name.clone()).emit("kline_update", &broadcast_data).await {
-                                error!("[TASK {}] Failed to broadcast kline update: {:?}", room_name, e);
+                let mut heartbeat = interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS));
+                
+                loop {
+                    tokio::select! {
+                        _ = heartbeat.tick() => {
+                            let ping_msg = Message::Ping(vec![].into());
+                            if let Err(e) = write.send(ping_msg).await {
+                                error!("[TASK {}] Failed to send heartbeat Ping: {:?}", room_name, e);
+                                break;
+                            }
+                        }
+
+                        msg_result = read.next() => {
+                            match msg_result {
+                                Some(Ok(msg)) => {
+                                    match msg {
+                                        Message::Text(text) => {
+                                            if text.is_empty() { continue; }
+                                            
+                                            if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper>(&text) {
+                                                let data = &wrapper.data;
+                                                // ✨ 核心修正: 为每个 .parse() 添加类型注解
+                                                let tick_data = KlineTick {
+                                                    time: data.d.u.5.parse::<i64>().unwrap_or_default() / 1000,
+                                                    open: data.d.u.0.parse::<f64>().unwrap_or_default(),
+                                                    high: data.d.u.1.parse::<f64>().unwrap_or_default(),
+                                                    low: data.d.u.2.parse::<f64>().unwrap_or_default(),
+                                                    close: data.d.u.3.parse::<f64>().unwrap_or_default(),
+                                                    volume: data.d.u.4.parse::<f64>().unwrap_or_default(),
+                                                };
+                                                info!("[KLINE DATA {}] Parsed tick: {:?}", room_name, tick_data);
+                                                let broadcast_data = KlineBroadcastData { room: room_name.clone(), data: tick_data };
+                                                if let Err(e) = io.to(room_name.clone()).emit("kline_update", &broadcast_data).await {
+                                                    error!("[TASK {}] Failed to broadcast kline update: {:?}", room_name, e);
+                                                }
+                                            } else if text.contains("result") {
+                                                info!("[TASK {}] Received subscription confirmation: {}", room_name, text);
+                                            } else {
+                                                warn!("[TASK {}] Received unhandled text message: {}", room_name, text);
+                                            }
+                                        },
+                                        Message::Pong(_) => {},
+                                        Message::Ping(ping_data) => {
+                                            if let Err(e) = write.send(Message::Pong(ping_data)).await {
+                                                error!("[TASK {}] Failed to send Pong in response to server Ping: {:?}", room_name, e);
+                                                break;
+                                            }
+                                        },
+                                        Message::Close(close_frame) => {
+                                            warn!("[TASK {}] Received Close frame, triggering disconnect: {:?}", room_name, close_frame);
+                                            break;
+                                        },
+                                        _ => {}
+                                    }
+                                },
+                                Some(Err(e)) => {
+                                    error!("[TASK {}] Error reading from WebSocket: {:?}", room_name, e);
+                                    break;
+                                },
+                                None => {
+                                    warn!("[TASK {}] WebSocket stream ended.", room_name);
+                                    break;
+                                }
                             }
                         }
                     }
                 }
-                warn!("[TASK {}] Disconnected from Binance WebSocket. Reconnecting...", room_name);
+                warn!("[TASK {}] Loop exited. Disconnected from Binance WebSocket. Reconnecting...", room_name);
             }
             Err(e) => {
                 error!("[TASK {}] WebSocket Handshake failed: {:?}. Retrying...", room_name, e);
@@ -360,7 +368,7 @@ async fn image_proxy_handler(Query(query): Query<ImageProxyQuery>) -> Result<Res
     };
     let client = reqwest::Client::builder()
         .proxy(proxy)
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.37.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/5.37.36")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.37.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36")
         .build()
         .map_err(|e| {
             error!("[PROXY ERROR] Failed to build client: {:?}", e);

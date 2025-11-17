@@ -7,13 +7,14 @@ import type { MarketItem, DataPayload } from 'shared-types';
 import CompactRankingListsContainer from './CompactRankingListsContainer';
 import SingleTokenView from './SingleTokenView';
 import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
+// 移除 KlineBrowserManager 的导入，因为此组件不再直接管理它
 
 const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
 
-// ✨ 1. 引入时间周期常量
 const TIMEFRAME_MAP: Record<string, string> = {
     '1': '1m', '2': '5m', '3': '1h', '4': '4h', '5': '1d',
 };
+const ALL_TIMEFRAMES = Object.values(TIMEFRAME_MAP);
 
 const loadBlockListFromStorage = (): Set<string> => {
     try {
@@ -31,8 +32,27 @@ const TokenPageLayout: Component = () => {
     const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
     const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
     const [currentToken, setCurrentToken] = createSignal<MarketItem | null>(null);
-    // ✨ 2. 创建一个 signal 来管理动态的时间周期，默认是 '5m'
     const [activeTimeframe, setActiveTimeframe] = createSignal('5m'); 
+
+    // --- 核心修复: 移除有问题的预缓存逻辑 ---
+    // let lastPreCachedAddress: string | null = null;
+    /*
+    const preCacheAllTimeframes = (token: MarketItem) => {
+        if (token.contractAddress === lastPreCachedAddress) {
+            console.log(`[TokenPageLayout] Pre-caching for ${token.symbol} already initiated. Skipping.`);
+            return;
+        }
+        console.log(`[TokenPageLayout] 🚀 Initiating pre-caching for all timeframes for ${token.symbol}...`);
+        lastPreCachedAddress = token.contractAddress;
+
+        // 这个循环创建了多个“孤儿”KlineBrowserManager实例。
+        // 它们发起了WebSocket订阅，但从未被清理，导致了资源泄漏和混乱的订阅/取消订阅日志。
+        // 正确的做法是让负责显示图表的组件（SingleKlineChart）全权管理自己的数据加载和生命周期。
+        for (const tf of ['1m']) { 
+            new KlineBrowserManager(token.contractAddress, token.chain, tf).start();
+        }
+    };
+    */
 
     const getTokenParamsFromURL = () => {
         const params = new URLSearchParams(window.location.search);
@@ -41,19 +61,10 @@ const TokenPageLayout: Component = () => {
         return (address && chain) ? { address, chain } : null;
     };
 
-    const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
-        console.log(`[TokenPage Alert] [${alertType.toUpperCase()}] ${logMessage}`);
-    };
-    
-    // ✨ 3. 创建键盘事件处理器
     const handleKeyDown = (e: KeyboardEvent) => {
-        // 忽略在输入框中的按键
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-
-        // 检查按键是否在我们的映射中 (1, 2, 3, 4, 5)
         if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
             const newTimeframe = TIMEFRAME_MAP[e.key];
-            console.log(`[TokenPageLayout] Hotkey '${e.key}' pressed. Changing timeframe to ${newTimeframe}`);
             setActiveTimeframe(newTimeframe);
         }
     };
@@ -61,11 +72,8 @@ const TokenPageLayout: Component = () => {
     onMount(() => {
         if (!socket.connected) socket.connect();
         
-        socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
-        socket.on('disconnect', () => setLastUpdate('Disconnected'));
         socket.on('data-broadcast', (payload: DataPayload) => {
             if (!payload.data || payload.data.length === 0) return;
-            // ... alert logic unchanged
             setMarketData(produce(currentData => {
                 for (const item of payload.data) {
                     const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
@@ -75,19 +83,13 @@ const TokenPageLayout: Component = () => {
             }));
             setLastUpdate(new Date().toLocaleTimeString());
         });
-        initializeVoices();
         
-        // ✨ 4. 注册和清理事件监听器
         window.addEventListener('keydown', handleKeyDown);
         onCleanup(() => {
-            socket.off('connect');
-            socket.off('disconnect');
-            socket.off('data-broadcast');
             window.removeEventListener('keydown', handleKeyDown);
         });
     });
 
-    // Effect for handling URL changes (unchanged)
     createEffect(() => {
         const params = getTokenParamsFromURL();
         if (marketData.length > 0 && params) {
@@ -96,9 +98,7 @@ const TokenPageLayout: Component = () => {
                 current.contractAddress.toLowerCase() === params.address.toLowerCase() && 
                 current.chain.toLowerCase() === params.chain.toLowerCase()) {
                 const updatedTokenData = marketData.find(t => t.contractAddress === current.contractAddress);
-                if (updatedTokenData) {
-                    setCurrentToken(updatedTokenData);
-                }
+                if (updatedTokenData) setCurrentToken(updatedTokenData);
                 return;
             }
             const foundToken = marketData.find(t => 
@@ -107,6 +107,8 @@ const TokenPageLayout: Component = () => {
             );
             if (foundToken) {
                 setCurrentToken(foundToken);
+                // --- 核心修复: 移除此处的调用 ---
+                // preCacheAllTimeframes(foundToken); 
             }
         }
     });
@@ -115,6 +117,8 @@ const TokenPageLayout: Component = () => {
         const newUrl = `/token.html?address=${token.contractAddress}&chain=${token.chain}`;
         window.history.pushState({ path: newUrl }, '', newUrl);
         setCurrentToken(token);
+        // --- 核心修复: 移除此处的调用 ---
+        // preCacheAllTimeframes(token);
     };
 
     return (
@@ -133,7 +137,6 @@ const TokenPageLayout: Component = () => {
                     when={currentToken()}
                     fallback={<div class="placeholder">Select a token from the list on the left or provide address/chain in URL.</div>}
                 >
-                    {/* ✨ 5. 将动态的 activeTimeframe 传递给 SingleTokenView */}
                     <SingleTokenView 
                         token={currentToken()!} 
                         activeTimeframe={activeTimeframe()} 
