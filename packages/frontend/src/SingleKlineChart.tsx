@@ -1,4 +1,5 @@
 // packages/frontend/src/SingleKlineChart.tsx
+/** @jsxImportSource solid-js */
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
 import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, LogicalRange } from 'lightweight-charts';
 import KlineBrowserManager from './kline-browser-manager';
@@ -39,6 +40,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let isSettingRangeProgrammatically = false;
 
     const cleanup = () => {
+        const symbol = props.tokenInfo?.symbol || 'N/A';
+        const tf = props.timeframe || 'N/A';
+        console.log(`[ChartComponent ${symbol}@${tf}] Running cleanup...`);
         klineManager?.stop();
         klineManager = null;
         if (chart) chart.remove();
@@ -50,6 +54,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         cleanup(); 
         loadChartVersion++;
         const currentVersion = loadChartVersion;
+        const symbol = props.tokenInfo?.symbol;
+        console.log(`[ChartComponent ${symbol}@${interval}] 🚀 --- LOAD CHART (Version: ${currentVersion}) ---`);
         if (!chartContainer) return;
 
         chart = createChart(chartContainer, {
@@ -60,13 +66,13 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             },
             grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
             timeScale: { 
-                visible: false, // 需求 3 (最终版): 完全不显示时间轴
+                visible: false,
             },
             rightPriceScale: { 
-                visible: false, // 需求 1: 不显示价格坐标轴
+                visible: false,
             },
             leftPriceScale: { 
-                visible: false, // 需求 1: 不显示价格坐标轴
+                visible: false,
             },
             handleScroll: true, handleScale: true,
         });
@@ -85,15 +91,33 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             }
         });
 
-        candlestickSeries = chart.addSeries(CandlestickSeries, { /* ... options ... */ });
+        candlestickSeries = chart.addSeries(CandlestickSeries, {
+            priceFormat: {
+                type: 'price',
+                precision: 8,
+                minMove: 0.00000001,
+                formatter: customPriceFormatter,
+            },
+            upColor: '#28a745',
+            downColor: '#dc3545',
+            borderDownColor: '#dc3545',
+            borderUpColor: '#28a745',
+            wickDownColor: '#dc3545',
+            wickUpColor: '#28a745',
+        });
         
         klineManager = new KlineBrowserManager(addr, ch, interval);
 
         klineManager.on('data', (initialData: LightweightChartKline[]) => {
-            if (currentVersion !== loadChartVersion) return;
-            if (candlestickSeries) {
+            console.log(`[ChartComponent ${symbol}@${interval}] 📦 Received 'data' event. My version: ${currentVersion}, Global version: ${loadChartVersion}, Data length: ${initialData.length}`);
+            if (currentVersion !== loadChartVersion) {
+                console.warn(`[ChartComponent ${symbol}@${interval}] ⚠️ Aborting data load. Version mismatch.`);
+                return;
+            }
+            if (candlestickSeries && initialData.length > 0) {
+                console.log(`[ChartComponent ${symbol}@${interval}] ✅ Versions match. Calling setData with ${initialData.length} candles.`);
                 candlestickSeries.setData(initialData as CandlestickData<number>[]);
-                const newLastBarIndex = initialData.length > 0 ? initialData.length - 1 : null;
+                const newLastBarIndex = initialData.length - 1;
                 setLastBarIndex(newLastBarIndex);
 
                 const vs = props.viewportState;
@@ -102,8 +126,10 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     const from = to - vs.width;
                     setTimeout(() => chart?.timeScale().setVisibleLogicalRange({ from, to }), 0);
                 } else {
-                    chart?.timeScale().scrollToPosition(-5, false);
+                    chart?.timeScale().fitContent();
                 }
+            } else {
+                 console.log(`[ChartComponent ${symbol}@${interval}] 🤔 Data received, but series is not ready or data is empty.`);
             }
         });
         
@@ -114,6 +140,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (lbi !== null) setLastBarIndex(lbi + 1);
         });
 
+        console.log(`[ChartComponent ${symbol}@${interval}] Starting KlineManager...`);
         klineManager.start();
     };
     
@@ -136,8 +163,16 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const info = props.tokenInfo;
         const tf = props.timeframe;
         const newAddress = info?.contractAddress;
-        if (newAddress === lastLoadedAddress && tf === lastLoadedTimeframe) return;
+        
+        console.log(`[ChartComponent ${info?.symbol}@${tf}] EFFECT TRIGGERED. New Address: ${newAddress}, Last Address: ${lastLoadedAddress}`);
+
+        if (newAddress === lastLoadedAddress && tf === lastLoadedTimeframe) {
+            console.log(`[ChartComponent ${info?.symbol}@${tf}] > Props changed but address and timeframe are the same. Skipping chart reload.`);
+            return;
+        }
+
         if (newAddress) {
+            console.log(`[ChartComponent ${info?.symbol}@${tf}] > Address or timeframe changed. Proceeding to load chart.`);
             if (tf !== lastLoadedTimeframe && props.onViewportChange) {
                  props.onViewportChange(null);
             }
@@ -149,13 +184,16 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             }
             lastLoadedAddress = newAddress;
             lastLoadedTimeframe = tf;
-            loadChart(newAddress, info.chain, tf);
+            // ✨ 核心修复: 延迟图表加载以确保容器已渲染并具有尺寸
+            setTimeout(() => loadChart(newAddress!, info!.chain, tf), 0);
         } else {
+            console.log(`[ChartComponent] > Token info is undefined. Cleaning up.`);
             lastLoadedAddress = undefined;
             lastLoadedTimeframe = undefined;
             cleanup();
         }
     });
+
     onMount(() => {
         resizeObserver = new ResizeObserver(entries => {
             for (const entry of entries) {
@@ -166,7 +204,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
         resizeObserver.observe(chartContainer);
     });
+
     onCleanup(() => {
+        console.log(`[ChartComponent ${props.tokenInfo?.symbol}@${props.timeframe}] Component is unmounting. Full cleanup.`);
         resizeObserver?.disconnect();
         cleanup();
         loadChartVersion++;
@@ -179,7 +219,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             onMouseLeave={() => props.onSetActiveChart?.(null)}
         >
             <div class="chart-header">
-                <Show when={props.tokenInfo} fallback={<span class="placeholder">点击左侧排名标题加载图表</span>}>
+                <Show when={props.tokenInfo} fallback={<span class="placeholder">...</span>}>
                     <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
                     <span class="symbol-title">{props.tokenInfo!.symbol}</span>
                     <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>

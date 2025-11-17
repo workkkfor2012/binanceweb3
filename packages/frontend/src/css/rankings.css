@@ -77,6 +77,17 @@
     border-bottom: 1px dotted #f0f0f0;
 }
 
+/* ✨ 新增样式 */
+.compact-ranking-list li.item-clickable {
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.compact-ranking-list li.item-clickable:hover {
+    background-color: #f8f9fa;
+}
+
+
 .compact-ranking-list li:last-child { border-bottom: none; }
 
 .symbol-and-icon {
@@ -102,12 +113,6 @@
 .value-compact .positive { color: #28a745; }
 .value-compact .negative { color: #dc3545; }
 
-/*
-  --- ✨ 修正：添加此处缺失的图标样式 ✨ ---
-  这个样式在重构中被错误地分到了 dashboard.css，
-  导致 chart.html 页面无法应用它。
-  现在将其添加到正确的组件样式文件中。
-*/
 .compact-ranking-list .icon {
     width: 24px;
     height: 24px;

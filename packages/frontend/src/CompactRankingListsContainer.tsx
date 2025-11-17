@@ -19,7 +19,7 @@ const formatVolume = (num: number | null | undefined): string => {
   return num.toFixed(0);
 };
 
-// ✨ 修改: 增加 blockList prop
+// ✨ 修改: 增加 onItemClick prop
 interface CompactListProps {
   title: string;
   data: MarketItem[];
@@ -27,13 +27,14 @@ interface CompactListProps {
   formatter: (value: any) => string | JSX.Element;
   onHeaderClick: (rankBy: keyof MarketItem) => void;
   blockList: Set<string>;
+  onItemClick?: (item: MarketItem) => void; // ✨ 新增: 可选的列表项点击回调
 }
 
 const CompactRankingList: Component<CompactListProps> = (props) => {
     const rankedData = createMemo(() => {
-        const blocked = props.blockList; // 获取 blockList
+        const blocked = props.blockList;
         const validData = props.data.filter(item => {
-            if (blocked.has(item.contractAddress)) return false; // ✨ 核心修改: 过滤
+            if (blocked.has(item.contractAddress)) return false; 
 
             const value = item[props.rankBy];
             return item.icon && value !== null && value !== undefined && String(value).trim() !== '';
@@ -58,7 +59,12 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
             <ul>
                 <For each={rankedData()} fallback={<li>-</li>}>
                     {(item) => (
-                        <li title={`${item.chain}: ${item.contractAddress}`}>
+                        // ✨ 核心修改: 增加 onClick 和 class
+                        <li 
+                            title={`${item.chain}: ${item.contractAddress}`}
+                            onClick={() => props.onItemClick?.(item)}
+                            class={props.onItemClick ? 'item-clickable' : ''}
+                        >
                             <div class="symbol-and-icon">
                                 <img 
                                     src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}`} 
@@ -77,12 +83,13 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
     );
 };
 
-// ✨ 修改: 增加 blockList prop
+// ✨ 修改: 增加 onItemClick prop
 interface ContainerProps {
     marketData: MarketItem[];
     lastUpdate: string;
     onHeaderClick: (rankBy: keyof MarketItem) => void;
     blockList: Set<string>;
+    onItemClick?: (item: MarketItem) => void; // ✨ 新增
 }
 
 const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
@@ -120,6 +127,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 formatter={formatPercentage}
                                 onHeaderClick={props.onHeaderClick}
                                 blockList={props.blockList}
+                                onItemClick={props.onItemClick} // ✨ 传递
                             />
                         )}
                     </For>
@@ -136,6 +144,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 formatter={formatVolume}
                                 onHeaderClick={props.onHeaderClick}
                                 blockList={props.blockList}
+                                onItemClick={props.onItemClick} // ✨ 传递
                             />
                         )}
                     </For>

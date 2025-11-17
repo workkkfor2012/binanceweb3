@@ -160,6 +160,13 @@ const ChartPageLayout: Component = () => {
         setActiveRankBy(rankBy);
     };
 
+    // ✨ 核心修改: 定义点击跳转逻辑
+    const handleRankingItemClick = (item: MarketItem) => {
+        const url = `/token.html?address=${item.contractAddress}&chain=${item.chain}`;
+        // 在新标签页中打开
+        window.open(url, '_blank');
+    };
+
     return (
         <div class="chart-page-container">
             <div class="left-sidebar">
@@ -168,6 +175,7 @@ const ChartPageLayout: Component = () => {
                     lastUpdate={lastUpdate()} 
                     onHeaderClick={handleRankingHeaderClick}
                     blockList={blockList()}
+                    onItemClick={handleRankingItemClick} // ✨ 传递处理器
                 />
             </div>
             <div class="right-chart-grid">
