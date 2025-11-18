@@ -19,7 +19,7 @@ impl Config {
             cache_dir: "./image_cache".to_string(),
             binance_wss_url: "wss://nbstream.binance.com/w3w/stream".to_string(),
             proxy_addr: "127.0.0.1:1080".to_string(),
-            heartbeat_interval: Duration::from_secs(20),
+            heartbeat_interval: Duration::from_secs(300),
             desired_fields: vec![
                 "icon",
                 "symbol",

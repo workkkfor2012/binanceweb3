@@ -32,6 +32,7 @@ const MultiChartGrid: Component<MultiChartGridProps> = (props) => {
             onViewportChange={props.onViewportChange}
             activeChartId={props.activeChartId}
             onSetActiveChart={props.onSetActiveChart}
+            showAxes={true}
           />
         )}
       </For>

@@ -50,7 +50,7 @@ pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc
             Ok(_) => warn!("[TASK {}] Disconnected gracefully. Reconnecting...", room_name),
             Err(e) => error!("[TASK {}] Connection failed: {:#?}. Retrying...", room_name, e),
         }
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
@@ -173,7 +173,7 @@ async fn handle_message(
                             close: values.3.parse().unwrap_or_default(),
                             volume: values.4.parse().unwrap_or_default(),
                         };
-                        info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
+                        //info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
                         broadcast_update(io, room_name, new_kline.clone()).await;
                         *current_kline.lock().await = Some(new_kline);
                     },
@@ -220,7 +220,7 @@ async fn handle_message(
                             kline.low = kline.low.min(price);
                             kline.close = price;
                             kline.volume += volume;
-                            info!("[TICK UPDATE {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
+                            //info!("[TICK UPDATE {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
                             broadcast_update(io, room_name, kline.clone()).await;
                         } else {
                             warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", room_name);
