@@ -6,7 +6,7 @@ use super::{
 use anyhow::{anyhow, Context, Result};
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use socketioxide::SocketIo;
-use std::{sync::Arc, time::SystemTime}; // 修正：移除了错误的 UNIX_EPOCH 导入
+use std::{sync::Arc, time::SystemTime};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -48,13 +48,17 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Res
 
     let mut request = config.binance_wss_url.as_str().into_client_request()?;
     let headers = request.headers_mut();
-    headers.insert("User-Agent", "Mozilla/5.0...".parse()?);
+
+    // 补全所有伪装头，使其行为与旧的、可工作的版本一致
+    headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse()?);
     headers.insert("Origin", "https://web3.binance.com".parse()?);
+    headers.insert("Accept-Encoding", "gzip, deflate, br, zstd".parse()?);
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse()?);
 
     let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
         .await
         .context("WebSocket handshake failed")?;
-    //info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", room_name, response.status());
+    info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", room_name, response.status());
 
     let (mut write, mut read) = ws_stream.split();
     subscribe(&mut write, room_name).await?;
@@ -62,12 +66,9 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Res
 }
 
 async fn subscribe(write: &mut WsWrite, room_name: &str) -> Result<()> {
-    // 修正: 使用 SystemTime::UNIX_EPOCH
     let request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
     let subscribe_msg = serde_json::json!({ "id": request_id, "method": "SUBSCRIBE", "params": [room_name] });
-    // 修正: tungstenite::Message::Text 现在需要一个 Into<Utf8Bytes>，String 可以 .into()
     write.send(Message::Text(subscribe_msg.to_string().into())).await?;
-    //info!("👍 [TASK {}] Subscription message sent with ID: {}", room_name, request_id);
     Ok(())
 }
 
@@ -82,7 +83,7 @@ async fn message_loop(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                // 修正: tungstenite::Message::Ping 现在需要一个 Into<Bytes>，vec![] 可以 .into()
+                info!("[HEARTBEAT {}] Sending Ping...", room_name);
                 write.send(Message::Ping(vec![].into())).await.context("Failed to send heartbeat Ping")?;
             }
             msg_result = read.next() => {
@@ -106,6 +107,8 @@ async fn message_loop(
 async fn handle_message(msg: Message, io: &SocketIo, room_name: &str, write: &mut WsWrite) -> Result<bool> {
     match msg {
         Message::Text(text) if !text.is_empty() => {
+            info!("[RAW MSG {}] {}", room_name, text);
+
             if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper>(&text) {
                 let tick_data = KlineTick {
                     time: wrapper.data.d.u.5.parse::<i64>().unwrap_or_default() / 1000,
@@ -118,7 +121,6 @@ async fn handle_message(msg: Message, io: &SocketIo, room_name: &str, write: &mu
                 let broadcast_data = KlineBroadcastData { room: room_name.to_string(), data: tick_data };
                 info!(time = broadcast_data.data.time, open = broadcast_data.data.open, high = broadcast_data.data.high, low = broadcast_data.data.low, close = broadcast_data.data.close, volume = broadcast_data.data.volume, "[TASK {}] Broadcasting kline update", room_name);
 
-                // 修正: .emit() 方法现在需要一个引用 &T
                 if let Err(e) = io.to(room_name.to_string()).emit("kline_update", &broadcast_data).await {
                     error!("[TASK {}] Failed to broadcast kline update: {:?}", room_name, e);
                 }
@@ -145,12 +147,17 @@ async fn establish_http_tunnel(room_name: &str, config: &Config) -> Result<TcpSt
     let target_addr = format!("{}:{}", host, port);
 
     let mut stream = TcpStream::connect(&config.proxy_addr).await.context("HTTP proxy connection failed")?;
-    let connect_req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target_addr, target_addr);
+    let connect_req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", target_addr, target_addr);
     stream.write_all(connect_req.as_bytes()).await.context("Failed to send CONNECT request")?;
 
     let mut buf = vec![0; 1024];
     let n = stream.read(&mut buf).await.context("Failed to read proxy response")?;
+    
+    // --- 这里是修改的地方 ---
+    // 将 `String.from_utf8_lossy` 修改为 `String::from_utf8_lossy`
     let response = String::from_utf8_lossy(&buf[..n]);
+    // --- 修改结束 ---
+
     if !response.starts_with("HTTP/1.1 200") {
         return Err(anyhow!("[TASK {}] Proxy CONNECT failed: {}", room_name, response.trim()));
     }

@@ -24,3 +24,9 @@ export interface KlineData extends Kline {
     chain: string;
     interval: string;
 }
+
+// ✨ 新增: 定义从后端接收的 kline_update 事件的 payload 结构
+export interface KlineUpdatePayload {
+    room: string;
+    data: LightweightChartKline;
+}

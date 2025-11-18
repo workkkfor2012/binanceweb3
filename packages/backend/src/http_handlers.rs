@@ -7,8 +7,7 @@ use axum::{
 };
 use http::HeaderValue;
 use reqwest;
-// 修正：移除了未使用的 Arc 导入
-use tracing::{info, warn};
+use tracing::warn; // 修正：移除了未使用的 `info`
 use url::Url;
 
 /// 处理监控字段配置的请求。
@@ -33,7 +32,6 @@ pub async fn image_proxy_handler(
     }
 
     // 3. 如果缓存未命中，则从源站抓取
-    info!("[CACHE MISS] Fetching via proxy: {}", image_url);
     let client = build_proxy_client(&config)?;
     let res = client.get(&image_url).send().await?;
 

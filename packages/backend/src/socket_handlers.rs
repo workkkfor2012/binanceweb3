@@ -11,7 +11,7 @@ use socketioxide::{
     SocketIo,
 };
 use std::{collections::HashSet, sync::Arc};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
@@ -30,7 +30,6 @@ fn register_data_update_handler(socket: &SocketRef) {
     socket.on(
         "data-update",
         |s: SocketRef, payload: Data<serde_json::Value>| async move {
-            // 核心修正：为 payload.0 添加引用 `&`
             if let Err(e) = s.broadcast().emit("data-broadcast", &payload.0).await {
                 error!("[Socket.IO] Failed to broadcast data for {}: {:?}", s.id, e);
             }
@@ -46,8 +45,26 @@ fn register_kline_subscribe_handler(socket: &SocketRef, io: SocketIo, state: App
             let config = config.clone();
             let io = io.clone();
             async move {
-                let room_name = format!("kl@14@{}@{}", payload.address, payload.interval);
+                // --- 这里是核心修改 ---
+                // 使 Solana 的匹配更宽容，同时接受 "sol" 和 "solana"
+                let pool_id = match payload.chain.as_str() {
+                    "bsc" => 14,
+                    "sol" | "solana" => 16, // <-- 修改点
+                    "base" => 199,
+                    unsupported_chain => {
+                        warn!(
+                            "Unsupported chain '{}' requested by client {}. Subscription ignored.",
+                            unsupported_chain, s.id
+                        );
+                        return;
+                    }
+                };
+                // --- 修改结束 ---
+
+                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+
                 info!("🔼 [SUB] Client {} subscribing to room: {}", s.id, room_name);
+                
                 s.join(room_name.clone());
 
                 state
@@ -87,8 +104,22 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: AppState) {
         move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
-                let room_name = format!("kl@14@{}@{}", payload.address, payload.interval);
+                // --- 这里是核心修改 ---
+                // 同样，在退订时也保持逻辑一致
+                let pool_id = match payload.chain.as_str() {
+                    "bsc" => 14,
+                    "sol" | "solana" => 16, // <-- 修改点
+                    "base" => 199,
+                    _ => {
+                        warn!("Attempted to unsubscribe from an unsupported or unknown chain: {}", payload.chain);
+                        return;
+                    }
+                };
+                // --- 修改结束 ---
+                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+
                 info!("🔽 [UNSUB] Client {} from room: {}", s.id, room_name);
+                
                 s.leave(room_name.clone());
 
                 if let Some(mut room) = state.get_mut(&room_name) {
@@ -99,6 +130,8 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: AppState) {
                             info!("🗑️ [ROOM] Last client left room '{}'. Aborting task.", room_name);
                             room_to_abort.task_handle.abort();
                         }
+                    } else {
+                        info!("[UNSUB] Room '{}' still has {} clients.", room_name, room.clients.len());
                     }
                 }
             }
@@ -110,7 +143,7 @@ fn register_disconnect_handler(socket: &SocketRef, state: AppState) {
     socket.on_disconnect(move |s: SocketRef| {
         let state = state.clone();
         async move {
-            info!("[Socket.IO] Client disconnected: {}", s.id);
+            info!("🔌 [Socket.IO] Client disconnected: {}", s.id);
             let mut empty_rooms = Vec::new();
 
             for mut room in state.iter_mut() {

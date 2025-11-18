@@ -1,10 +1,18 @@
 // packages/frontend/src/kline-browser-manager.ts
 import * as dbManager from './db-manager';
-import type { Kline, LightweightChartKline, KlineData } from './types';
+import type { KlineData, LightweightChartKline, KlineUpdatePayload } from './types'; // ✨ 引入 KlineUpdatePayload
 import { socket } from './socket';
 
 const HISTORICAL_API_URL = 'https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}';
 const API_MAX_LIMIT = 500;
+
+// ✨ 核心修改 1: 添加链配置，与后端保持一致
+const CHAIN_CONFIG: Record<string, { internalPoolId: number }> = {
+    bsc: { internalPoolId: 14 },
+    sol: { internalPoolId: 16 },
+    solana: { internalPoolId: 16 }, // 兼容 'sol' 和 'solana'
+    base: { internalPoolId: 199 }
+};
 
 type DataCallback = (data: LightweightChartKline[]) => void;
 type UpdateCallback = (data: LightweightChartKline) => void;
@@ -25,11 +33,6 @@ function formatIntervalForApi(interval: string): string {
     return interval;
 }
 
-interface KlineUpdatePayload {
-    room: string;
-    data: LightweightChartKline;
-}
-
 class KlineBrowserManager {
     private contractAddress: string;
     private chain: string;
@@ -43,11 +46,20 @@ class KlineBrowserManager {
         this.contractAddress = contractAddress;
         this.chain = chain.toLowerCase();
         this.interval = interval;
-        this.roomName = `kl@14@${this.contractAddress}@${this.interval}`;
+        
+        // ✨ 核心修改 2: 动态生成 roomName
+        const poolId = CHAIN_CONFIG[this.chain]?.internalPoolId;
+        if (!poolId) {
+            console.error(`❌ [KlineManager] Unsupported chain: ${this.chain}. Cannot construct room name.`);
+            this.roomName = 'invalid-room';
+        } else {
+            this.roomName = `kl@${poolId}@${this.contractAddress}@${this.interval}`;
+        }
+        
         console.log(`📈 KlineManager for ${this.roomName} initialized.`);
     }
 
-    private mapToLightweightChartKline(kline: Kline): LightweightChartKline {
+    private mapToLightweightChartKline(kline: KlineData): LightweightChartKline {
         return {
             time: kline.timestamp / 1000,
             open: kline.open,
@@ -96,16 +108,16 @@ class KlineBrowserManager {
         console.log(`🔼 [SUB] Sent subscribe request for ${this.roomName}`);
     }
 
+    // ✨ 核心修改 3: 增加详细日志
     private handleKlineUpdate = (payload: KlineUpdatePayload) => {
+        // console.log(`[Socket RECV] kline_update event for room: ${payload.room}`); // 调试时可开启此行
         if (payload.room === this.roomName) {
-            const tick = {
-                ...payload.data,
-                timestamp: payload.data.time * 1000,
-            } as KlineData;
-            
+            console.log(`✅ [RT ${this.roomName}] Room match! Received update:`, payload.data);
             if (this.onUpdate) {
                 this.onUpdate(payload.data);
             }
+        } else {
+            // console.log(`[RT ${this.roomName}] Ignoring update for different room: ${payload.room}`); // 调试时可开启此行
         }
     };
 
@@ -152,18 +164,15 @@ class KlineBrowserManager {
                 await dbManager.saveKlines(newKlines);
                 await dbManager.pruneOldKlines(this.contractAddress, this.chain, this.interval);
                 
-                // ✨ --- 核心优化 --- ✨
-                // 如果是首次加载 (没有缓存)，则通过 'data' 事件发送完整数据
                 if (cachedKlines.length === 0 && this.onDataLoaded) {
                     let allKlines = await dbManager.getKlines(this.contractAddress, this.chain, this.interval);
                     allKlines.sort((a, b) => a.timestamp - b.timestamp);
                     console.log(`[Manager ${this.roomName}] 👉 Firing 'onDataLoaded' with ${allKlines.length} FRESHLY FETCHED candles.`);
                     this.onDataLoaded(allKlines.map(this.mapToLightweightChartKline));
                 } 
-                // 如果是补充数据 (已有缓存)，则通过 'update' 事件逐条发送增量数据
                 else if (this.onUpdate) {
                     console.log(`[Manager ${this.roomName}] 👉 Firing 'onUpdate' for ${newKlines.length} newly fetched historical candles.`);
-                    newKlines.sort((a, b) => a.timestamp - b.timestamp); // 确保按时间顺序更新
+                    newKlines.sort((a, b) => a.timestamp - b.timestamp);
                     for (const kline of newKlines) {
                         this.onUpdate(this.mapToLightweightChartKline(kline));
                     }

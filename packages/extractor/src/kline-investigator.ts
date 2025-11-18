@@ -6,7 +6,9 @@ import stealth from 'puppeteer-extra-plugin-stealth';
 
 chromium.use(stealth());
 
-const TARGET_URL = 'https://web3.binance.com/zh-CN/token/bsc/0xea37a8de1de2d9d10772eeb569e28bfa5cb17707';
+//const TARGET_URL = 'https://web3.binance.com/zh-CN/token/bsc/0xea37a8de1de2d9d10772eeb569e28bfa5cb17707';
+//const TARGET_URL = 'https://web3.binance.com/zh-CN/token/sol/6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN';
+const TARGET_URL = 'https://web3.binance.com/zh-CN/token/base/0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b';
 
 async function investigate() {
     console.log('🚀 [Investigator v3.1 - Fused] 启动侦察模式...');

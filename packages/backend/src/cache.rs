@@ -6,7 +6,7 @@ use http::{HeaderMap, HeaderValue};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{info, warn};
+use tracing::warn; // 修正：移除了未使用的 `info`
 
 /// 基于 URL 哈希生成缓存文件路径。
 fn get_cache_paths(url: &str, config: &Config) -> (PathBuf, PathBuf) {
@@ -46,7 +46,6 @@ pub async fn get_cached_response(
     });
     // --- 结束 ---
 
-    info!("[CACHE HIT] Serving from disk: {}", url);
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::CONTENT_TYPE,
@@ -84,6 +83,5 @@ pub async fn save_to_cache(
     fs::write(&data_path, data).await?;
     fs::write(&meta_path, meta_json).await?;
 
-    info!("[CACHE SET] Stored on disk: {}", url);
     Ok(())
 }
