@@ -1,7 +1,10 @@
 // packages/backend/src/binance_task.rs
 use super::{
     config::Config,
-    types::{BinanceStreamWrapper, KlineBroadcastData, KlineTick},
+    types::{
+        BinanceKlineDataWrapper, BinanceStreamWrapper, BinanceTickDataWrapper, KlineBroadcastData,
+        KlineTick,
+    },
 };
 use anyhow::{anyhow, Context, Result};
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
@@ -10,6 +13,7 @@ use std::{sync::Arc, time::SystemTime};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::Mutex,
     time::interval,
 };
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
@@ -28,7 +32,6 @@ type WsRead = futures_util::stream::SplitStream<WsStream>;
 /// 连接到 Binance WebSocket 并处理数据的主任务循环。
 pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc<Config>) {
     loop {
-        //info!("[TASK {}] Attempting to connect...", room_name);
         match connect_and_run(&io, &room_name, &config).await {
             Ok(_) => warn!("[TASK {}] Disconnected gracefully. Reconnecting...", room_name),
             Err(e) => error!("[TASK {}] Connection failed: {:#?}. Retrying...", room_name, e),
@@ -49,11 +52,15 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Res
     let mut request = config.binance_wss_url.as_str().into_client_request()?;
     let headers = request.headers_mut();
 
-    // 补全所有伪装头，使其行为与旧的、可工作的版本一致
+    // --- 核心修改：补全所有伪装头，使其行为与可工作的 Node.js 版本一致 ---
     headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse()?);
     headers.insert("Origin", "https://web3.binance.com".parse()?);
     headers.insert("Accept-Encoding", "gzip, deflate, br, zstd".parse()?);
     headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse()?);
+    // Pragma 和 Cache-Control 通常用于HTTP请求，对于WebSocket握手不是标准，但为了100%模仿，可以加上
+    headers.insert("Pragma", "no-cache".parse()?);
+    headers.insert("Cache-Control", "no-cache".parse()?);
+    // --- 修改结束 ---
 
     let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
         .await
@@ -61,13 +68,31 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Res
     info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", room_name, response.status());
 
     let (mut write, mut read) = ws_stream.split();
-    subscribe(&mut write, room_name).await?;
-    message_loop(io, room_name, config, &mut write, &mut read).await
+    subscribe_all(&mut write, room_name).await?;
+    
+    let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
+    
+    message_loop(io, room_name, config, &mut write, &mut read, current_kline).await
 }
 
-async fn subscribe(write: &mut WsWrite, room_name: &str) -> Result<()> {
+async fn subscribe_all(write: &mut WsWrite, kline_room_name: &str) -> Result<()> {
+    let parts: Vec<&str> = kline_room_name.split('@').collect();
+    if parts.len() != 4 {
+        return Err(anyhow!("Invalid kline room name format: {}", kline_room_name));
+    }
+    let pool_id = parts[1];
+    let address = parts[2];
+    let tick_param = format!("tx@{}_{}", pool_id, address);
+
+    let params_to_subscribe = vec![kline_room_name.to_string(), tick_param];
     let request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
-    let subscribe_msg = serde_json::json!({ "id": request_id, "method": "SUBSCRIBE", "params": [room_name] });
+    let subscribe_msg = serde_json::json!({
+        "id": request_id,
+        "method": "SUBSCRIBE",
+        "params": params_to_subscribe
+    });
+
+    info!("[SUB {}] Sending subscriptions for: {:?}", kline_room_name, params_to_subscribe);
     write.send(Message::Text(subscribe_msg.to_string().into())).await?;
     Ok(())
 }
@@ -78,6 +103,7 @@ async fn message_loop(
     config: &Config,
     write: &mut WsWrite,
     read: &mut WsRead,
+    current_kline: Arc<Mutex<Option<KlineTick>>>,
 ) -> Result<()> {
     let mut heartbeat = interval(config.heartbeat_interval);
     loop {
@@ -89,12 +115,13 @@ async fn message_loop(
             msg_result = read.next() => {
                 match msg_result {
                     Some(Ok(msg)) => {
-                        if !handle_message(msg, io, room_name, write).await? {
-                            break; // 收到Close帧，正常退出
+                        let should_continue = handle_message(msg, io, room_name, write, current_kline.clone()).await?;
+                        if !should_continue {
+                            break;
                         }
                     },
-                    Some(Err(e)) => return Err(e.into()), // 出现错误，向上传播
-                    None => break, // Stream结束
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break,
                 }
             }
         }
@@ -103,29 +130,56 @@ async fn message_loop(
     Ok(())
 }
 
-/// 返回 `Ok(false)` 表示连接应终止。
-async fn handle_message(msg: Message, io: &SocketIo, room_name: &str, write: &mut WsWrite) -> Result<bool> {
+async fn handle_message(
+    msg: Message,
+    io: &SocketIo,
+    room_name: &str,
+    write: &mut WsWrite,
+    current_kline: Arc<Mutex<Option<KlineTick>>>,
+) -> Result<bool> {
     match msg {
         Message::Text(text) if !text.is_empty() => {
-            info!("[RAW MSG {}] {}", room_name, text);
-
-            if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper>(&text) {
-                let tick_data = KlineTick {
-                    time: wrapper.data.d.u.5.parse::<i64>().unwrap_or_default() / 1000,
-                    open: wrapper.data.d.u.0.parse().unwrap_or_default(),
-                    high: wrapper.data.d.u.1.parse().unwrap_or_default(),
-                    low: wrapper.data.d.u.2.parse().unwrap_or_default(),
-                    close: wrapper.data.d.u.3.parse().unwrap_or_default(),
-                    volume: wrapper.data.d.u.4.parse().unwrap_or_default(),
-                };
-                let broadcast_data = KlineBroadcastData { room: room_name.to_string(), data: tick_data };
-                info!(time = broadcast_data.data.time, open = broadcast_data.data.open, high = broadcast_data.data.high, low = broadcast_data.data.low, close = broadcast_data.data.close, volume = broadcast_data.data.volume, "[TASK {}] Broadcasting kline update", room_name);
-
-                if let Err(e) = io.to(room_name.to_string()).emit("kline_update", &broadcast_data).await {
-                    error!("[TASK {}] Failed to broadcast kline update: {:?}", room_name, e);
+            if text.contains("\"stream\":\"kl@") {
+                if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {
+                    let values = &wrapper.data.kline_data.values;
+                    let new_kline = KlineTick {
+                        time: values.5.parse::<i64>().unwrap_or_default() / 1000,
+                        open: values.0.parse().unwrap_or_default(),
+                        high: values.1.parse().unwrap_or_default(),
+                        low: values.2.parse().unwrap_or_default(),
+                        close: values.3.parse().unwrap_or_default(),
+                        volume: values.4.parse().unwrap_or_default(),
+                    };
+                    
+                    info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
+                    
+                    broadcast_update(io, room_name, new_kline.clone()).await;
+                    *current_kline.lock().await = Some(new_kline);
+                }
+            } else if text.contains("\"stream\":\"tx@") {
+                if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
+                    let tick = &wrapper.data.tick_data;
+                    let price: f64 = tick.t0pu.parse().unwrap_or(0.0);
+                    let volume: f64 = tick.v.parse().unwrap_or(0.0);
+                    
+                    let mut kline_guard = current_kline.lock().await;
+                    if let Some(kline) = kline_guard.as_mut() {
+                        kline.high = kline.high.max(price);
+                        kline.low = kline.low.min(price);
+                        kline.close = price;
+                        kline.volume += volume;
+                        
+                        info!("[TICK {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
+                        
+                        broadcast_update(io, room_name, kline.clone()).await;
+                    } else {
+                        warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", room_name);
+                    }
                 }
             } else if text.contains("result") {
                 info!("[TASK {}] Received subscription confirmation: {}", room_name, text);
+            } else {
+                warn!("[UNHANDLED MSG {}] {}", room_name, text);
             }
         }
         Message::Ping(ping_data) => {
@@ -133,11 +187,21 @@ async fn handle_message(msg: Message, io: &SocketIo, room_name: &str, write: &mu
         }
         Message::Close(close_frame) => {
             warn!("[TASK {}] Received Close frame: {:?}", room_name, close_frame);
-            return Ok(false); // 信号：退出循环
+            return Ok(false);
         }
         _ => {}
     }
-    Ok(true) // 信号：继续循环
+    Ok(true)
+}
+
+async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
+    let broadcast_data = KlineBroadcastData {
+        room: room_name.to_string(),
+        data: kline,
+    };
+    if let Err(e) = io.to(room_name.to_string()).emit("kline_update", &broadcast_data).await {
+        error!("[TASK {}] Failed to broadcast kline update: {:?}", room_name, e);
+    }
 }
 
 async fn establish_http_tunnel(room_name: &str, config: &Config) -> Result<TcpStream> {
@@ -153,10 +217,7 @@ async fn establish_http_tunnel(room_name: &str, config: &Config) -> Result<TcpSt
     let mut buf = vec![0; 1024];
     let n = stream.read(&mut buf).await.context("Failed to read proxy response")?;
     
-    // --- 这里是修改的地方 ---
-    // 将 `String.from_utf8_lossy` 修改为 `String::from_utf8_lossy`
     let response = String::from_utf8_lossy(&buf[..n]);
-    // --- 修改结束 ---
 
     if !response.starts_with("HTTP/1.1 200") {
         return Err(anyhow!("[TASK {}] Proxy CONNECT failed: {}", room_name, response.trim()));

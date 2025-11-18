@@ -45,11 +45,9 @@ fn register_kline_subscribe_handler(socket: &SocketRef, io: SocketIo, state: App
             let config = config.clone();
             let io = io.clone();
             async move {
-                // --- 这里是核心修改 ---
-                // 使 Solana 的匹配更宽容，同时接受 "sol" 和 "solana"
                 let pool_id = match payload.chain.as_str() {
                     "bsc" => 14,
-                    "sol" | "solana" => 16, // <-- 修改点
+                    "sol" | "solana" => 16,
                     "base" => 199,
                     unsupported_chain => {
                         warn!(
@@ -59,8 +57,8 @@ fn register_kline_subscribe_handler(socket: &SocketRef, io: SocketIo, state: App
                         return;
                     }
                 };
-                // --- 修改结束 ---
 
+                // room_name 保持 kl@ 格式，用于前端通信和任务管理
                 let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
 
                 info!("🔼 [SUB] Client {} subscribing to room: {}", s.id, room_name);
@@ -73,7 +71,7 @@ fn register_kline_subscribe_handler(socket: &SocketRef, io: SocketIo, state: App
                         info!("✨ [ROOM] First subscriber for '{}'. Spawning task...", room_name);
                         let task_handle = tokio::spawn(binance_task::binance_websocket_task(
                             io,
-                            room_name.clone(),
+                            room_name.clone(), // 任务将使用此名称来派生 kl@ 和 tx@ 订阅
                             config,
                         ));
                         Room {
@@ -104,18 +102,15 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: AppState) {
         move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
-                // --- 这里是核心修改 ---
-                // 同样，在退订时也保持逻辑一致
                 let pool_id = match payload.chain.as_str() {
                     "bsc" => 14,
-                    "sol" | "solana" => 16, // <-- 修改点
+                    "sol" | "solana" => 16,
                     "base" => 199,
                     _ => {
                         warn!("Attempted to unsubscribe from an unsupported or unknown chain: {}", payload.chain);
                         return;
                     }
                 };
-                // --- 修改结束 ---
                 let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
 
                 info!("🔽 [UNSUB] Client {} from room: {}", s.id, room_name);

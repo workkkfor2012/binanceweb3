@@ -13,23 +13,44 @@ pub struct KlineSubscribePayload {
     pub interval: String,
 }
 
+// --- Binance Incoming Data Structures ---
+
 #[derive(Debug, Deserialize)]
-pub struct BinanceStreamWrapper {
+pub struct BinanceStreamWrapper<T> {
     pub stream: String,
-    pub data: BinanceKlineData,
+    pub data: T,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct BinanceKlineData {
-    pub d: BinanceKlineDetail,
+pub struct BinanceKlineDataWrapper {
+    #[serde(rename = "d")]
+    pub kline_data: BinanceKlineDetail,
 }
 
 #[derive(Debug, Deserialize)]
 #[allow(non_snake_case)]
 pub struct BinanceKlineDetail {
     // Tuples represent: Open, High, Low, Close, Volume, Timestamp
-    pub u: (String, String, String, String, String, String),
+    #[serde(rename = "u")]
+    pub values: (String, String, String, String, String, String),
 }
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceTickDataWrapper {
+    #[serde(rename = "d")]
+    pub tick_data: BinanceTickDetail,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+pub struct BinanceTickDetail {
+    pub t0pu: String, // Price
+    pub v: String,    // Volume in USD
+    pub tp: String,   // Side ("BUY" or "SELL")
+}
+
+
+// --- Data Sent to Frontend ---
 
 #[derive(Debug, Serialize, Clone)]
 pub struct KlineBroadcastData {
@@ -47,6 +68,7 @@ pub struct KlineTick {
     pub close: f64,
     pub volume: f64,
 }
+
 
 // --- Application State Component ---
 
