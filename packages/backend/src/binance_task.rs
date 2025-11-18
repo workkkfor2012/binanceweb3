@@ -29,7 +29,9 @@ type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
 type WsRead = futures_util::stream::SplitStream<WsStream>;
 
-/// 连接到 Binance WebSocket 并处理数据的主任务循环。
+// 定义一个常量用于价格异常检测，表示价格变化超过 10 倍 (1000%)
+const PRICE_DEVIATION_THRESHOLD: f64 = 10.0;
+
 pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc<Config>) {
     loop {
         match connect_and_run(&io, &room_name, &config).await {
@@ -40,7 +42,6 @@ pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc
     }
 }
 
-/// 执行一次完整的连接、订阅和消息处理流程。
 async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Result<()> {
     let stream = establish_http_tunnel(room_name, config).await?;
     let host = Url::parse(&config.binance_wss_url)?
@@ -52,15 +53,12 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Res
     let mut request = config.binance_wss_url.as_str().into_client_request()?;
     let headers = request.headers_mut();
 
-    // --- 核心修改：补全所有伪装头，使其行为与可工作的 Node.js 版本一致 ---
     headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse()?);
     headers.insert("Origin", "https://web3.binance.com".parse()?);
     headers.insert("Accept-Encoding", "gzip, deflate, br, zstd".parse()?);
     headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse()?);
-    // Pragma 和 Cache-Control 通常用于HTTP请求，对于WebSocket握手不是标准，但为了100%模仿，可以加上
     headers.insert("Pragma", "no-cache".parse()?);
     headers.insert("Cache-Control", "no-cache".parse()?);
-    // --- 修改结束 ---
 
     let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
         .await
@@ -84,16 +82,26 @@ async fn subscribe_all(write: &mut WsWrite, kline_room_name: &str) -> Result<()>
     let address = parts[2];
     let tick_param = format!("tx@{}_{}", pool_id, address);
 
-    let params_to_subscribe = vec![kline_room_name.to_string(), tick_param];
-    let request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
-    let subscribe_msg = serde_json::json!({
-        "id": request_id,
+    let tick_request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
+    let tick_subscribe_msg = serde_json::json!({
+        "id": tick_request_id,
         "method": "SUBSCRIBE",
-        "params": params_to_subscribe
+        "params": [tick_param]
     });
+    info!("[SUB {}] Sending Tick subscription FIRST...", kline_room_name);
+    write.send(Message::Text(tick_subscribe_msg.to_string().into())).await?;
+    
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    info!("[SUB {}] Sending subscriptions for: {:?}", kline_room_name, params_to_subscribe);
-    write.send(Message::Text(subscribe_msg.to_string().into())).await?;
+    let kline_request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() + 1;
+    let kline_subscribe_msg = serde_json::json!({
+        "id": kline_request_id,
+        "method": "SUBSCRIBE",
+        "params": [kline_room_name]
+    });
+    info!("[SUB {}] Sending K-line subscription SECOND...", kline_room_name);
+    write.send(Message::Text(kline_subscribe_msg.to_string().into())).await?;
+    
     Ok(())
 }
 
@@ -140,40 +148,57 @@ async fn handle_message(
     match msg {
         Message::Text(text) if !text.is_empty() => {
             if text.contains("\"stream\":\"kl@") {
-                if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {
-                    let values = &wrapper.data.kline_data.values;
-                    let new_kline = KlineTick {
-                        time: values.5.parse::<i64>().unwrap_or_default() / 1000,
-                        open: values.0.parse().unwrap_or_default(),
-                        high: values.1.parse().unwrap_or_default(),
-                        low: values.2.parse().unwrap_or_default(),
-                        close: values.3.parse().unwrap_or_default(),
-                        volume: values.4.parse().unwrap_or_default(),
-                    };
-                    
-                    info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
-                    
-                    broadcast_update(io, room_name, new_kline.clone()).await;
-                    *current_kline.lock().await = Some(new_kline);
+                match serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {
+                    Ok(wrapper) => {
+                        let values = &wrapper.data.kline_data.values;
+                        let new_kline = KlineTick {
+                            time: values.5.parse::<i64>().unwrap_or_default() / 1000,
+                            open: values.0.parse().unwrap_or_default(),
+                            high: values.1.parse().unwrap_or_default(),
+                            low: values.2.parse().unwrap_or_default(),
+                            close: values.3.parse().unwrap_or_default(),
+                            volume: values.4.parse().unwrap_or_default(),
+                        };
+                        info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
+                        broadcast_update(io, room_name, new_kline.clone()).await;
+                        *current_kline.lock().await = Some(new_kline);
+                    },
+                    Err(e) => {
+                        error!("[KLINE PARSE ERROR {}] Failed to parse kline message. Error: {}. Raw: {}", room_name, e, text);
+                    }
                 }
             } else if text.contains("\"stream\":\"tx@") {
-                if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
-                    let tick = &wrapper.data.tick_data;
-                    let price: f64 = tick.t0pu.parse().unwrap_or(0.0);
-                    let volume: f64 = tick.v.parse().unwrap_or(0.0);
-                    
-                    let mut kline_guard = current_kline.lock().await;
-                    if let Some(kline) = kline_guard.as_mut() {
-                        kline.high = kline.high.max(price);
-                        kline.low = kline.low.min(price);
-                        kline.close = price;
-                        kline.volume += volume;
+                match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
+                    Ok(wrapper) => {
+                        let tick = &wrapper.data.tick_data;
+                        let price = tick.t0pu;
+                        let volume = tick.v;
                         
-                        info!("[TICK {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
-                        
-                        broadcast_update(io, room_name, kline.clone()).await;
-                    } else {
-                        warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", room_name);
+                        let mut kline_guard = current_kline.lock().await;
+                        if let Some(kline) = kline_guard.as_mut() {
+                            // --- 新增：价格异常值过滤逻辑 ---
+                            let last_price = kline.close;
+                            // 检查价格是否发生剧烈偏离 (上涨或下跌超过阈值)
+                            if last_price > 0.0 && 
+                               (price / last_price > PRICE_DEVIATION_THRESHOLD || last_price / price > PRICE_DEVIATION_THRESHOLD) {
+                                warn!("[PRICE SPIKE REJECTED {}] New price {} deviates too much from last price {}. Ignoring.", room_name, price, last_price);
+                                // 直接返回，不更新K线数据
+                                return Ok(true);
+                            }
+                            // --- 过滤逻辑结束 ---
+
+                            kline.high = kline.high.max(price);
+                            kline.low = kline.low.min(price);
+                            kline.close = price;
+                            kline.volume += volume;
+                            info!("[TICK {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
+                            broadcast_update(io, room_name, kline.clone()).await;
+                        } else {
+                            warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", room_name);
+                        }
+                    },
+                    Err(e) => {
+                        error!("[TICK PARSE ERROR {}] Failed to parse tick message. Error: {}. Raw: {}", room_name, e, text);
                     }
                 }
             } else if text.contains("result") {

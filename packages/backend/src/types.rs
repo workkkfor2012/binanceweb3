@@ -30,7 +30,6 @@ pub struct BinanceKlineDataWrapper {
 #[derive(Debug, Deserialize)]
 #[allow(non_snake_case)]
 pub struct BinanceKlineDetail {
-    // Tuples represent: Open, High, Low, Close, Volume, Timestamp
     #[serde(rename = "u")]
     pub values: (String, String, String, String, String, String),
 }
@@ -41,13 +40,15 @@ pub struct BinanceTickDataWrapper {
     pub tick_data: BinanceTickDetail,
 }
 
+// --- 核心修改：将 t0pu 和 v 的类型从 String 改为 f64 ---
 #[derive(Debug, Deserialize)]
 #[allow(non_snake_case)]
 pub struct BinanceTickDetail {
-    pub t0pu: String, // Price
-    pub v: String,    // Volume in USD
+    pub t0pu: f64, // Price
+    pub v: f64,    // Volume in USD
     pub tp: String,   // Side ("BUY" or "SELL")
 }
+// --- 修改结束 ---
 
 
 // --- Data Sent to Frontend ---
