@@ -1,17 +1,12 @@
 // packages/extractor/src/kline-client.ts
 import WebSocket from 'ws';
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import { URL } from 'url';
 
 // --- 全局配置 ---
 const WEBSOCKET_URL = 'wss://nbstream.binance.com/w3w/stream';
-const PROXY_URL = 'socks5://127.0.0.1:1080';
-
-const requestHeaders = {
-    "Origin": "https://web3.binance.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-};
-
-const agent = new SocksProxyAgent(PROXY_URL);
+const PROXY_URL = 'socks5://127.0.0.1:1080'; // 如果不需要代理，请设为 null 或 undefined
+const RECONNECT_DELAY_MS = 5000;
 
 // --- 链特有的配置中心 ---
 type Chain = 'bsc' | 'sol' | 'base';
@@ -19,7 +14,7 @@ type Chain = 'bsc' | 'sol' | 'base';
 const CHAIN_CONFIG: Record<Chain, { internalPoolId: number }> = {
     bsc: { internalPoolId: 14 },
     sol: { internalPoolId: 16 },
-    base: { internalPoolId: 199 } // ✨ 新增 Base 链的配置
+    base: { internalPoolId: 199 }
 };
 
 // --- 🚀 订阅清单: 在这里定义所有你想订阅的资产 ---
@@ -29,79 +24,148 @@ const TARGETS_TO_SUBSCRIBE: { chain: Chain; contractAddress: string; interval: s
     //{ chain: 'base', contractAddress: '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b', interval: '1m' },
 ];
 
+
 /**
  * 多链K-line订阅客户端
- * 管理一个单一的WebSocket连接，并处理所有目标的订阅和数据接收。
+ * 负责管理一个到 Binance Web3 的 WebSocket 连接，处理订阅、数据接收和自动重连。
  */
-function MultiChainKlineClient() {
-    function connect() {
-        console.log(`[MANAGER] Connecting to ${WEBSOCKET_URL} via proxy...`);
-        const ws = new WebSocket(WEBSOCKET_URL, { headers: requestHeaders, agent: agent });
+class KlineClient {
+    private ws: WebSocket | null = null;
+    private agent: SocksProxyAgent | undefined;
 
-        ws.on('open', () => {
-            console.log('✅ [MANAGER] Connection successful. Subscribing to all targets...');
-            
-            TARGETS_TO_SUBSCRIBE.forEach(target => {
-                const config = CHAIN_CONFIG[target.chain];
-                if (!config) {
-                    console.error(`❌ [ERROR] Missing config for chain: '${target.chain}'. Skipping subscription.`);
-                    return;
-                }
-                
-                const subscriptionParam = `kl@${config.internalPoolId}@${target.contractAddress}@${target.interval}`;
-                const subscribeMessage = {
-                    id: `${target.chain}-kl-${Date.now()}`,
-                    method: 'SUBSCRIBE',
-                    params: [subscriptionParam]
-                };
+    constructor() {
+        if (PROXY_URL) {
+            this.agent = new SocksProxyAgent(PROXY_URL);
+            console.log(`[CONFIG] Using SOCKS5 proxy: ${PROXY_URL}`);
+        } else {
+            console.log(`[CONFIG] No proxy configured.`);
+        }
+        console.log("🚀 Initializing Multi-Chain K-Line Client...");
+    }
 
-                ws.send(JSON.stringify(subscribeMessage));
-                console.log(`  -> Sent subscription for ${target.chain.toUpperCase()}: ${target.contractAddress}`);
-            });
+    /**
+     * 启动客户端并建立连接。
+     */
+    public start(): void {
+        this.connect();
+    }
+    
+    private connect(): void {
+        console.log(`[MANAGER] Attempting to connect to ${WEBSOCKET_URL}...`);
+        
+        // 1. **请求头伪装**：精确复制官方浏览器的请求头
+        const headers = {
+            'Host': new URL(WEBSOCKET_URL).host,
+            'Connection': 'Upgrade',
+            'Pragma': 'no-cache',
+            'Cache-Control': 'no-cache',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+            'Upgrade': 'websocket',
+            'Origin': 'https://web3.binance.com',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        };
 
-            console.log('------------------- ALL SUBSCRIPTIONS SENT, WAITING FOR DATA -------------------');
-        });
-
-        ws.on('message', (data) => {
-            try {
-                const message = JSON.parse(data.toString());
-                
-                if (message.stream && message.stream.startsWith('kl@')) {
-                    // 从 stream 字段中提取关键信息用于日志
-                    const [, poolId, address] = message.stream.split('@');
-                    const chain = Object.keys(CHAIN_CONFIG).find(
-                        key => CHAIN_CONFIG[key as Chain].internalPoolId == poolId
-                    ) || 'UNKNOWN';
-
-                    console.log(`\n--- [${new Date().toLocaleTimeString()}] [${chain.toUpperCase()}] KLINE UPDATE for ${address} ---`);
-                    console.log(JSON.stringify(message.data, null, 2));
-
-                } else if (message.id) {
-                    console.log(`[RESPONSE] Received for ID ${message.id}: ${JSON.stringify(message.result)}`);
-                } else {
-                    console.log(`[UNHANDLED MESSAGE] Received: ${JSON.stringify(message)}`);
-                }
-                
-            } catch (error) {
-                console.error('\n❌ Failed to parse message:', error);
-                console.log('Raw Data:', data.toString());
+        // 2. **WebSocket 扩展配置**：确保启用了与浏览器一致的压缩选项
+        const wsOptions: WebSocket.ClientOptions = {
+            headers,
+            agent: this.agent,
+            perMessageDeflate: {
+                clientNoContextTakeover: true, // 对应 server_no_context_takeover
+                serverNoContextTakeover: true,
+                clientMaxWindowBits: 15,       // 对应 client_max_window_bits=15
+                serverMaxWindowBits: 15,
+                zlibDeflateOptions: {
+                    chunkSize: 1024,
+                    memLevel: 7,
+                    level: 3,
+                },
+                zlibInflateOptions: {
+                    chunkSize: 10 * 1024
+                },
             }
-        });
+        };
 
-        ws.on('close', (code, reason) => {
-            console.log(`\n🔌 [MANAGER] Connection closed: code=${code}, reason=${reason.toString()}`);
-            console.log('   Reconnecting in 5s...');
-            setTimeout(connect, 5000);
-        });
+        this.ws = new WebSocket(WEBSOCKET_URL, wsOptions);
 
-        ws.on('error', (err) => {
-            console.error('\n❌ [MANAGER] WebSocket Error:', err.message);
+        this.ws.on('open', this.onOpen.bind(this));
+        this.ws.on('message', this.onMessage.bind(this));
+        this.ws.on('close', this.onClose.bind(this));
+        this.ws.on('error', this.onError.bind(this));
+    }
+
+    private onOpen(): void {
+        console.log('✅ [MANAGER] Connection successful. Subscribing to all targets...');
+        this.subscribeToAll();
+        console.log('------------------- ALL SUBSCRIPTIONS SENT, WAITING FOR DATA -------------------');
+    }
+
+    private subscribeToAll(): void {
+        TARGETS_TO_SUBSCRIBE.forEach(target => {
+            const config = CHAIN_CONFIG[target.chain];
+            if (!config) {
+                console.error(`❌ [ERROR] Missing config for chain: '${target.chain}'. Skipping subscription.`);
+                return;
+            }
+            
+            const subscriptionParam = `kl@${config.internalPoolId}@${target.contractAddress}@${target.interval}`;
+            const subscribeMessage = {
+                // 使用更随机的 ID，模拟真实场景
+                id: `sub-kl-${target.chain}-${Math.random().toString(36).substring(2, 9)}`,
+                method: 'SUBSCRIBE',
+                params: [subscriptionParam]
+            };
+
+            this.ws?.send(JSON.stringify(subscribeMessage));
+            console.log(`  -> Sent subscription for ${target.chain.toUpperCase()}: ${target.contractAddress} | param: ${subscriptionParam}`);
         });
     }
 
-    console.log("🚀 Starting Multi-Chain K-Line Client...");
-    connect();
+    private onMessage(data: WebSocket.RawData): void {
+        try {
+            // 直接处理 Buffer，性能更好
+            const message = JSON.parse(data.toString('utf-8'));
+            
+            if (message.stream && message.stream.startsWith('kl@')) {
+                const [, poolId, address] = message.stream.split('@');
+                const chain = Object.keys(CHAIN_CONFIG).find(
+                    key => CHAIN_CONFIG[key as Chain].internalPoolId === Number(poolId)
+                ) || 'UNKNOWN';
+
+                console.log(`\n--- [${new Date().toLocaleTimeString()}] [${chain.toUpperCase()}] KLINE UPDATE for ${address} ---`);
+                console.log(JSON.stringify(message.data, null, 2));
+
+            } else if (message.id) {
+                console.log(`[RESPONSE] Received for ID ${message.id}: ${JSON.stringify(message.result ?? message.error)}`);
+            } else {
+                console.log(`[UNHANDLED MESSAGE] Received: ${JSON.stringify(message)}`);
+            }
+            
+        } catch (error) {
+            console.error('\n❌ Failed to parse message:', error);
+            console.log('Raw Data:', data.toString('utf-8'));
+        }
+    }
+
+    private onClose(code: number, reason: Buffer): void {
+        console.log(`\n🔌 [MANAGER] Connection closed: code=${code}, reason=${reason.toString()}`);
+        this.ws = null; // 清理旧的实例
+        this.reconnect();
+    }
+
+
+
+    private onError(err: Error): void {
+        console.error('\n❌ [MANAGER] WebSocket Error:', err.message);
+        // onError 之后通常会触发 onClose，所以重连逻辑统一放在 onClose 中处理
+    }
+    
+    private reconnect(): void {
+        console.log(`   Reconnecting in ${RECONNECT_DELAY_MS / 1000}s...`);
+        setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
+    }
 }
 
-// 启动客户端
-MultiChainKlineClient();
+// --- 启动客户端 ---
+const client = new KlineClient();
+client.start();
