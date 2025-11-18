@@ -40,13 +40,16 @@ pub struct BinanceTickDataWrapper {
     pub tick_data: BinanceTickDetail,
 }
 
-// --- 核心修改：将 t0pu 和 v 的类型从 String 改为 f64 ---
+// --- 核心修改：增加 t0a, t1a, t1pu 字段以进行动态价格选择 ---
 #[derive(Debug, Deserialize)]
 #[allow(non_snake_case)]
 pub struct BinanceTickDetail {
-    pub t0pu: f64, // Price
-    pub v: f64,    // Volume in USD
-    pub tp: String,   // Side ("BUY" or "SELL")
+    pub t0a: String, // Address of token0
+    pub t1a: String, // Address of token1
+    pub t0pu: f64,   // Price of token0
+    pub t1pu: f64,   // Price of token1
+    pub v: f64,      // Volume in USD
+    pub tp: String,     // Side ("buy" or "sell")
 }
 // --- 修改结束 ---
 

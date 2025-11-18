@@ -29,12 +29,24 @@ type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
 type WsRead = futures_util::stream::SplitStream<WsStream>;
 
-// 定义一个常量用于价格异常检测，表示价格变化超过 5 倍 (500%)
-const PRICE_DEVIATION_THRESHOLD: f64 = 5.0;
+// --- 用于复合过滤规则的常量 ---
+const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0; 
+const LOW_VOLUME_THRESHOLD: f64 = 10.0;
+
 
 pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc<Config>) {
+    // --- 核心修改：从 room_name 中预先解析出地址 ---
+    let address = match room_name.split('@').nth(2) {
+        Some(addr) => addr.to_lowercase(),
+        None => {
+            error!("[TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.", room_name);
+            return;
+        }
+    };
+    let address = Arc::new(address);
+
     loop {
-        match connect_and_run(&io, &room_name, &config).await {
+        match connect_and_run(&io, &room_name, address.clone(), &config).await {
             Ok(_) => warn!("[TASK {}] Disconnected gracefully. Reconnecting...", room_name),
             Err(e) => error!("[TASK {}] Connection failed: {:#?}. Retrying...", room_name, e),
         }
@@ -42,7 +54,7 @@ pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc
     }
 }
 
-async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Result<()> {
+async fn connect_and_run(io: &SocketIo, room_name: &str, address: Arc<String>, config: &Config) -> Result<()> {
     let stream = establish_http_tunnel(room_name, config).await?;
     let host = Url::parse(&config.binance_wss_url)?
         .host_str()
@@ -70,7 +82,7 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, config: &Config) -> Res
     
     let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
     
-    message_loop(io, room_name, config, &mut write, &mut read, current_kline).await
+    message_loop(io, room_name, config, &mut write, &mut read, current_kline, address).await
 }
 
 async fn subscribe_all(write: &mut WsWrite, kline_room_name: &str) -> Result<()> {
@@ -112,6 +124,7 @@ async fn message_loop(
     write: &mut WsWrite,
     read: &mut WsRead,
     current_kline: Arc<Mutex<Option<KlineTick>>>,
+    address: Arc<String>,
 ) -> Result<()> {
     let mut heartbeat = interval(config.heartbeat_interval);
     loop {
@@ -123,7 +136,7 @@ async fn message_loop(
             msg_result = read.next() => {
                 match msg_result {
                     Some(Ok(msg)) => {
-                        let should_continue = handle_message(msg, io, room_name, write, current_kline.clone()).await?;
+                        let should_continue = handle_message(msg, io, room_name, write, current_kline.clone(), &address).await?;
                         if !should_continue {
                             break;
                         }
@@ -144,6 +157,7 @@ async fn handle_message(
     room_name: &str,
     write: &mut WsWrite,
     current_kline: Arc<Mutex<Option<KlineTick>>>,
+    tracked_address: &str,
 ) -> Result<bool> {
     match msg {
         Message::Text(text) if !text.is_empty() => {
@@ -171,19 +185,34 @@ async fn handle_message(
                 match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
                     Ok(wrapper) => {
                         let tick = &wrapper.data.tick_data;
-                        let price = tick.t0pu;
+                        
+                        // --- 核心修改：动态选择价格 ---
+                        let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
+                            tick.t0pu
+                        } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
+                            tick.t1pu
+                        } else {
+                            // 这个 tick 与我们追踪的地址无关，极不寻常，记录并忽略
+                            warn!("[PRICE LOGIC ERROR {}] Tick does not contain tracked address {}. Tick data: {:?}. Raw: {}", room_name, tracked_address, tick, text);
+                            return Ok(true);
+                        };
+                        
                         let volume = tick.v;
                         
                         let mut kline_guard = current_kline.lock().await;
                         if let Some(kline) = kline_guard.as_mut() {
-                            // --- 新增：价格异常值过滤逻辑 ---
                             let last_price = kline.close;
-                            // 检查价格是否发生剧烈偏离 (上涨或下跌超过阈值)
-                            if last_price > 0.0 && 
-                               (price / last_price > PRICE_DEVIATION_THRESHOLD || last_price / price > PRICE_DEVIATION_THRESHOLD) {
-                                warn!("[PRICE SPIKE REJECTED {}] New price {} deviates too much from last price {}. Ignoring.", room_name, price, last_price);
-                                // 直接返回，不更新K线数据
-                                return Ok(true);
+
+                            // --- 唯一的过滤规则 ---
+                            if last_price > 0.0 {
+                                let price_ratio = if price > last_price { price / last_price } else { last_price / price };
+                                if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && volume < LOW_VOLUME_THRESHOLD {
+                                    warn!(
+                                        "[LOW VOL SPIKE REJECTED {}] Price ratio {:.2}x with volume ${:.4} is abnormal. Last: {}, New: {}. Full Tick: {:?}. Raw: {}",
+                                        room_name, price_ratio, volume, last_price, price, tick, text
+                                    );
+                                    return Ok(true);
+                                }
                             }
                             // --- 过滤逻辑结束 ---
 
@@ -191,7 +220,7 @@ async fn handle_message(
                             kline.low = kline.low.min(price);
                             kline.close = price;
                             kline.volume += volume;
-                            info!("[TICK {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
+                            info!("[TICK UPDATE {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
                             broadcast_update(io, room_name, kline.clone()).await;
                         } else {
                             warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", room_name);
