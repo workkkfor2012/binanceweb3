@@ -5,7 +5,7 @@ import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, Candles
 import KlineBrowserManager from './kline-browser-manager';
 import type { LightweightChartKline } from './types';
 import type { MarketItem } from 'shared-types';
-import { ViewportState } from './ChartPageLayout'; // 移除了不再需要的 ALL_TIMEFRAMES
+import { ViewportState } from './ChartPageLayout';
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -17,6 +17,7 @@ interface SingleKlineChartProps {
     onViewportChange?: (state: ViewportState | null) => void;
     activeChartId: string | null;
     onSetActiveChart?: (id: string | null) => void;
+    showAxes?: boolean; // ✨ 核心修改 1: 添加新属性以控制坐标轴的显示
 }
 
 const customPriceFormatter = (price: number): string => {
@@ -58,18 +59,26 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         console.log(`[ChartComponent ${symbol}@${interval}] 🚀 --- LOAD CHART (Version: ${currentVersion}) ---`);
         if (!chartContainer) return;
 
+        // ✨ 核心修改 2: 根据 showAxes 属性动态配置图表选项
         chart = createChart(chartContainer, {
             width: chartContainer.clientWidth, height: chartContainer.clientHeight,
             layout: { 
                 background: { type: ColorType.Solid, color: '#ffffff' }, 
                 textColor: '#333',
             },
-            grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+            grid: { 
+                vertLines: { color: '#f0f3fa' }, 
+                horzLines: { color: '#f0f3fa' } 
+            },
             timeScale: { 
-                visible: false,
+                visible: !!props.showAxes, // 控制时间轴可见性
+                borderColor: '#cccccc',
+                timeVisible: true,
+                secondsVisible: false,
             },
             rightPriceScale: { 
-                visible: false,
+                visible: !!props.showAxes, // 控制价格轴可见性
+                borderColor: '#cccccc',
             },
             leftPriceScale: { 
                 visible: false,
@@ -176,8 +185,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (tf !== lastLoadedTimeframe && props.onViewportChange) {
                  props.onViewportChange(null);
             }
-
-            // ✨ 核心修改: 移除了这里的 for 循环预缓存逻辑
             
             lastLoadedAddress = newAddress;
             lastLoadedTimeframe = tf;

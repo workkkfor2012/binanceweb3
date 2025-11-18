@@ -6,11 +6,9 @@ import './css/single-token-view.css';
 
 interface SingleTokenViewProps {
     token: MarketItem;
-    // 接收由快捷键控制的动态时间周期
     activeTimeframe: string; 
 }
 
-// 辅助函数，用于将 '1m', '5m' 等转换为更易读的标签
 const formatTimeframeLabel = (timeframe: string): string => {
     return timeframe.replace('m', ' Minute').replace('h', ' Hour').replace('d', ' Day').toUpperCase();
 }
@@ -34,19 +32,19 @@ const SingleTokenView: Component<SingleTokenViewProps> = (props) => {
                     <SingleKlineChart 
                         tokenInfo={props.token} 
                         timeframe="4h"
-                        // 在单视图模式下，这些交互由父组件或此视图本身管理，因此传入 null
                         viewportState={null}
                         activeChartId={null}
+                        showAxes={true} // ✨ 在这里启用坐标轴
                     />
                 </div>
                 <div class="chart-pane">
-                    {/* 标签会根据快捷键动态变化 */}
                     <div class="timeframe-label">{formatTimeframeLabel(props.activeTimeframe)} CHART</div>
                     <SingleKlineChart 
                         tokenInfo={props.token} 
                         timeframe={props.activeTimeframe}
                         viewportState={null}
                         activeChartId={null}
+                        showAxes={true} // ✨ 也在这里启用坐标轴
                     />
                 </div>
             </div>

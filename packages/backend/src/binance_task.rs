@@ -29,8 +29,8 @@ type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
 type WsRead = futures_util::stream::SplitStream<WsStream>;
 
-// 定义一个常量用于价格异常检测，表示价格变化超过 10 倍 (1000%)
-const PRICE_DEVIATION_THRESHOLD: f64 = 10.0;
+// 定义一个常量用于价格异常检测，表示价格变化超过 5 倍 (500%)
+const PRICE_DEVIATION_THRESHOLD: f64 = 5.0;
 
 pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc<Config>) {
     loop {
