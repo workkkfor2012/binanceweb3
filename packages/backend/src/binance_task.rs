@@ -34,28 +34,38 @@ const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0;
 const LOW_VOLUME_THRESHOLD: f64 = 10.0;
 
 
-pub async fn binance_websocket_task(io: SocketIo, room_name: String, config: Arc<Config>) {
-    // --- 核心修改：从 room_name 中预先解析出地址 ---
+// --- 核心修正：添加 pub 关键字，使此函数对其他模块可见 ---
+pub async fn binance_websocket_task(io: SocketIo, room_name: String, symbol: String, config: Arc<Config>) {
+    // 基于传入的 symbol 创建一个专门用于日志的标识符
+    let log_display_name = {
+        let parts: Vec<&str> = room_name.split('@').collect();
+        if parts.len() == 4 {
+            format!("{}@{}@{}@{}", parts[0], parts[1], &symbol, parts[3])
+        } else {
+            room_name.clone() // 格式不匹配时回退
+        }
+    };
+    
     let address = match room_name.split('@').nth(2) {
         Some(addr) => addr.to_lowercase(),
         None => {
-            error!("[TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.", room_name);
+            error!("[TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.", log_display_name);
             return;
         }
     };
     let address = Arc::new(address);
 
     loop {
-        match connect_and_run(&io, &room_name, address.clone(), &config).await {
-            Ok(_) => warn!("[TASK {}] Disconnected gracefully. Reconnecting...", room_name),
-            Err(e) => error!("[TASK {}] Connection failed: {:#?}. Retrying...", room_name, e),
+        match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config).await {
+            Ok(_) => warn!("[TASK {}] Disconnected gracefully. Reconnecting...", log_display_name),
+            Err(e) => error!("[TASK {}] Connection failed: {:#?}. Retrying...", log_display_name, e),
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 
-async fn connect_and_run(io: &SocketIo, room_name: &str, address: Arc<String>, config: &Config) -> Result<()> {
-    let stream = establish_http_tunnel(room_name, config).await?;
+async fn connect_and_run(io: &SocketIo, room_name: &str, log_display_name: &str, address: Arc<String>, config: &Config) -> Result<()> {
+    let stream = establish_http_tunnel(log_display_name, config).await?;
     let host = Url::parse(&config.binance_wss_url)?
         .host_str()
         .unwrap_or_default()
@@ -75,43 +85,45 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, address: Arc<String>, c
     let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
         .await
         .context("WebSocket handshake failed")?;
-    info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", room_name, response.status());
+    info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", log_display_name, response.status());
 
     let (mut write, mut read) = ws_stream.split();
-    subscribe_all(&mut write, room_name).await?;
+    subscribe_all(&mut write, room_name, log_display_name).await?;
     
     let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
     
-    message_loop(io, room_name, config, &mut write, &mut read, current_kline, address).await
+    message_loop(io, room_name, log_display_name, config, &mut write, &mut read, current_kline, address).await
 }
 
-async fn subscribe_all(write: &mut WsWrite, kline_room_name: &str) -> Result<()> {
+async fn subscribe_all(write: &mut WsWrite, kline_room_name: &str, log_display_name: &str) -> Result<()> {
     let parts: Vec<&str> = kline_room_name.split('@').collect();
     if parts.len() != 4 {
         return Err(anyhow!("Invalid kline room name format: {}", kline_room_name));
     }
     let pool_id = parts[1];
     let address = parts[2];
-    let tick_param = format!("tx@{}_{}", pool_id, address);
 
+    // --- Subscription for Tick Stream (tx) ---
+    let tick_param = format!("tx@{}_{}", pool_id, address);
     let tick_request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
     let tick_subscribe_msg = serde_json::json!({
         "id": tick_request_id,
         "method": "SUBSCRIBE",
         "params": [tick_param]
     });
-    info!("[SUB {}] Sending Tick subscription FIRST...", kline_room_name);
+    info!("[SEND SUB {}] Sending subscription for tick stream. Payload: {}", log_display_name, tick_subscribe_msg);
     write.send(Message::Text(tick_subscribe_msg.to_string().into())).await?;
     
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
+    // --- Subscription for K-line Stream (kl) ---
     let kline_request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() + 1;
     let kline_subscribe_msg = serde_json::json!({
         "id": kline_request_id,
         "method": "SUBSCRIBE",
         "params": [kline_room_name]
     });
-    info!("[SUB {}] Sending K-line subscription SECOND...", kline_room_name);
+    info!("[SEND SUB {}] Sending subscription for k-line stream. Payload: {}", log_display_name, kline_subscribe_msg);
     write.send(Message::Text(kline_subscribe_msg.to_string().into())).await?;
     
     Ok(())
@@ -120,6 +132,7 @@ async fn subscribe_all(write: &mut WsWrite, kline_room_name: &str) -> Result<()>
 async fn message_loop(
     io: &SocketIo,
     room_name: &str,
+    log_display_name: &str,
     config: &Config,
     write: &mut WsWrite,
     read: &mut WsRead,
@@ -130,13 +143,13 @@ async fn message_loop(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                info!("[HEARTBEAT {}] Sending Ping...", room_name);
+                info!("[HEARTBEAT {}] Sending Ping...", log_display_name);
                 write.send(Message::Ping(vec![].into())).await.context("Failed to send heartbeat Ping")?;
             }
             msg_result = read.next() => {
                 match msg_result {
                     Some(Ok(msg)) => {
-                        let should_continue = handle_message(msg, io, room_name, write, current_kline.clone(), &address).await?;
+                        let should_continue = handle_message(msg, io, room_name, log_display_name, write, current_kline.clone(), &address).await?;
                         if !should_continue {
                             break;
                         }
@@ -147,7 +160,7 @@ async fn message_loop(
             }
         }
     }
-    warn!("[TASK {}] Message loop exited.", room_name);
+    warn!("[TASK {}] Message loop exited.", log_display_name);
     Ok(())
 }
 
@@ -155,6 +168,7 @@ async fn handle_message(
     msg: Message,
     io: &SocketIo,
     room_name: &str,
+    log_display_name: &str,
     write: &mut WsWrite,
     current_kline: Arc<Mutex<Option<KlineTick>>>,
     tracked_address: &str,
@@ -173,12 +187,12 @@ async fn handle_message(
                             close: values.3.parse().unwrap_or_default(),
                             volume: values.4.parse().unwrap_or_default(),
                         };
-                        //info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
+                        info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
                         broadcast_update(io, room_name, new_kline.clone()).await;
                         *current_kline.lock().await = Some(new_kline);
                     },
                     Err(e) => {
-                        error!("[KLINE PARSE ERROR {}] Failed to parse kline message. Error: {}. Raw: {}", room_name, e, text);
+                        error!("[KLINE PARSE ERROR {}] Failed to parse kline message. Error: {}. Raw: {}", log_display_name, e, text);
                     }
                 }
             } else if text.contains("\"stream\":\"tx@") {
@@ -193,7 +207,7 @@ async fn handle_message(
                             tick.t1pu
                         } else {
                             // 这个 tick 与我们追踪的地址无关，极不寻常，记录并忽略
-                            warn!("[PRICE LOGIC ERROR {}] Tick does not contain tracked address {}. Tick data: {:?}. Raw: {}", room_name, tracked_address, tick, text);
+                            warn!("[PRICE LOGIC ERROR {}] Tick does not contain tracked address {}. Tick data: {:?}. Raw: {}", log_display_name, tracked_address, tick, text);
                             return Ok(true);
                         };
                         
@@ -209,7 +223,7 @@ async fn handle_message(
                                 if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && volume < LOW_VOLUME_THRESHOLD {
                                     warn!(
                                         "[LOW VOL SPIKE REJECTED {}] Price ratio {:.2}x with volume ${:.4} is abnormal. Last: {}, New: {}. Full Tick: {:?}. Raw: {}",
-                                        room_name, price_ratio, volume, last_price, price, tick, text
+                                        log_display_name, price_ratio, volume, last_price, price, tick, text
                                     );
                                     return Ok(true);
                                 }
@@ -220,27 +234,27 @@ async fn handle_message(
                             kline.low = kline.low.min(price);
                             kline.close = price;
                             kline.volume += volume;
-                            //info!("[TICK UPDATE {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
+                            info!("[TICK UPDATE {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
                             broadcast_update(io, room_name, kline.clone()).await;
                         } else {
-                            warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", room_name);
+                            warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", log_display_name);
                         }
                     },
                     Err(e) => {
-                        error!("[TICK PARSE ERROR {}] Failed to parse tick message. Error: {}. Raw: {}", room_name, e, text);
+                        error!("[TICK PARSE ERROR {}] Failed to parse tick message. Error: {}. Raw: {}", log_display_name, e, text);
                     }
                 }
             } else if text.contains("result") {
-                info!("[TASK {}] Received subscription confirmation: {}", room_name, text);
+                info!("[TASK {}] Received subscription confirmation: {}", log_display_name, text);
             } else {
-                warn!("[UNHANDLED MSG {}] {}", room_name, text);
+                warn!("[UNHANDLED MSG {}] {}", log_display_name, text);
             }
         }
         Message::Ping(ping_data) => {
             write.send(Message::Pong(ping_data)).await.context("Failed to send Pong")?;
         }
         Message::Close(close_frame) => {
-            warn!("[TASK {}] Received Close frame: {:?}", room_name, close_frame);
+            warn!("[TASK {}] Received Close frame: {:?}", log_display_name, close_frame);
             return Ok(false);
         }
         _ => {}
@@ -258,7 +272,7 @@ async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
     }
 }
 
-async fn establish_http_tunnel(room_name: &str, config: &Config) -> Result<TcpStream> {
+async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Result<TcpStream> {
     let url_obj = Url::parse(&config.binance_wss_url)?;
     let host = url_obj.host_str().unwrap_or_default();
     let port = url_obj.port_or_known_default().unwrap_or(443);
@@ -274,7 +288,7 @@ async fn establish_http_tunnel(room_name: &str, config: &Config) -> Result<TcpSt
     let response = String::from_utf8_lossy(&buf[..n]);
 
     if !response.starts_with("HTTP/1.1 200") {
-        return Err(anyhow!("[TASK {}] Proxy CONNECT failed: {}", room_name, response.trim()));
+        return Err(anyhow!("[TASK {}] Proxy CONNECT failed: {}", log_display_name, response.trim()));
     }
     Ok(stream)
 }

@@ -1,16 +1,15 @@
 // packages/frontend/src/kline-browser-manager.ts
 import * as dbManager from './db-manager';
-import type { KlineData, LightweightChartKline, KlineUpdatePayload } from './types'; // ✨ 引入 KlineUpdatePayload
+import type { KlineData, LightweightChartKline, KlineUpdatePayload } from './types';
 import { socket } from './socket';
 
 const HISTORICAL_API_URL = 'https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}';
 const API_MAX_LIMIT = 500;
 
-// ✨ 核心修改 1: 添加链配置，与后端保持一致
 const CHAIN_CONFIG: Record<string, { internalPoolId: number }> = {
     bsc: { internalPoolId: 14 },
     sol: { internalPoolId: 16 },
-    solana: { internalPoolId: 16 }, // 兼容 'sol' 和 'solana'
+    solana: { internalPoolId: 16 }, 
     base: { internalPoolId: 199 }
 };
 
@@ -37,17 +36,18 @@ class KlineBrowserManager {
     private contractAddress: string;
     private chain: string;
     private interval: string;
+    // private symbol: string; // <-- 移除
     private roomName: string;
     private onDataLoaded: DataCallback | null = null;
     private onUpdate: UpdateCallback | null = null;
     private isSubscribed: boolean = false;
 
+    // <-- 构造函数恢复原状
     constructor(contractAddress: string, chain: string, interval: string) {
         this.contractAddress = contractAddress;
         this.chain = chain.toLowerCase();
         this.interval = interval;
         
-        // ✨ 核心修改 2: 动态生成 roomName
         const poolId = CHAIN_CONFIG[this.chain]?.internalPoolId;
         if (!poolId) {
             console.error(`❌ [KlineManager] Unsupported chain: ${this.chain}. Cannot construct room name.`);
@@ -102,22 +102,24 @@ class KlineBrowserManager {
     private startRealtimeUpdates(): void {
         if (this.isSubscribed) return;
         socket.on('kline_update', this.handleKlineUpdate);
-        const payload = { address: this.contractAddress, chain: this.chain, interval: this.interval };
+        
+        // <-- payload 恢复原状
+        const payload = { 
+            address: this.contractAddress, 
+            chain: this.chain, 
+            interval: this.interval,
+        };
         socket.emit('subscribe_kline', payload);
         this.isSubscribed = true;
         console.log(`🔼 [SUB] Sent subscribe request for ${this.roomName}`);
     }
 
-    // ✨ 核心修改 3: 增加详细日志
     private handleKlineUpdate = (payload: KlineUpdatePayload) => {
-        // console.log(`[Socket RECV] kline_update event for room: ${payload.room}`); // 调试时可开启此行
         if (payload.room === this.roomName) {
-            console.log(`✅ [RT ${this.roomName}] Room match! Received update:`, payload.data);
+            // console.log(`✅ [RT ${this.roomName}] Room match! Received update:`, payload.data);
             if (this.onUpdate) {
                 this.onUpdate(payload.data);
             }
-        } else {
-            // console.log(`[RT ${this.roomName}] Ignoring update for different room: ${payload.room}`); // 调试时可开启此行
         }
     };
 
@@ -129,13 +131,6 @@ class KlineBrowserManager {
     public async start(): Promise<void> {
         let cachedKlines = await dbManager.getKlines(this.contractAddress, this.chain, this.interval);
         cachedKlines.sort((a, b) => a.timestamp - b.timestamp);
-        
-        if (this.onDataLoaded && cachedKlines.length > 0) {
-            console.log(`[Manager ${this.roomName}] 👉 Firing 'onDataLoaded' with ${cachedKlines.length} CACHED candles.`);
-            this.onDataLoaded(cachedKlines.map(this.mapToLightweightChartKline));
-        } else {
-            console.log(`[Manager ${this.roomName}] No cached data to show initially.`);
-        }
 
         const lastKline = cachedKlines.length > 0 ? cachedKlines[cachedKlines.length - 1] : null;
         let fetchLimit = API_MAX_LIMIT;
@@ -144,39 +139,42 @@ class KlineBrowserManager {
         if (lastKline) {
             const timeDiff = Date.now() - lastKline.timestamp;
             const intervalMs = intervalToMs(this.interval);
-            const missingCandles = Math.ceil(timeDiff / intervalMs);
+            const missingCandles = Math.floor(timeDiff / intervalMs) + 1;
+            
             if (missingCandles > API_MAX_LIMIT) {
                 console.log(`[CACHE ${this.roomName}] Data is too old (${missingCandles} missing). Clearing cache and refetching full ${API_MAX_LIMIT}.`);
                 await dbManager.clearKlines(this.contractAddress, this.chain, this.interval);
+                cachedKlines = []; 
                 fetchLimit = API_MAX_LIMIT;
             } else if (missingCandles <= 1) {
                 console.log(`[CACHE ${this.roomName}] Data is up-to-date. No fetch needed.`);
                 shouldFetch = false;
             } else {
-                fetchLimit = missingCandles; 
+                fetchLimit = missingCandles > API_MAX_LIMIT ? API_MAX_LIMIT : missingCandles;
                 console.log(`[CACHE ${this.roomName}] Missing approx ${missingCandles} candles. Fetching limit=${fetchLimit}.`);
             }
         }
 
+        let allKlines = cachedKlines;
         if (shouldFetch) {
             const newKlines = await this.fetchHistoricalData(fetchLimit);
             if (newKlines.length > 0) {
-                await dbManager.saveKlines(newKlines);
+                const klineMap = new Map<number, KlineData>();
+                for (const kline of cachedKlines) { klineMap.set(kline.timestamp, kline); }
+                for (const kline of newKlines) { klineMap.set(kline.timestamp, kline); }
+                allKlines = Array.from(klineMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+                await dbManager.saveKlines(allKlines);
                 await dbManager.pruneOldKlines(this.contractAddress, this.chain, this.interval);
-                
-                if (cachedKlines.length === 0 && this.onDataLoaded) {
-                    let allKlines = await dbManager.getKlines(this.contractAddress, this.chain, this.interval);
-                    allKlines.sort((a, b) => a.timestamp - b.timestamp);
-                    console.log(`[Manager ${this.roomName}] 👉 Firing 'onDataLoaded' with ${allKlines.length} FRESHLY FETCHED candles.`);
-                    this.onDataLoaded(allKlines.map(this.mapToLightweightChartKline));
-                } 
-                else if (this.onUpdate) {
-                    console.log(`[Manager ${this.roomName}] 👉 Firing 'onUpdate' for ${newKlines.length} newly fetched historical candles.`);
-                    newKlines.sort((a, b) => a.timestamp - b.timestamp);
-                    for (const kline of newKlines) {
-                        this.onUpdate(this.mapToLightweightChartKline(kline));
-                    }
-                }
+            }
+        }
+
+        if (this.onDataLoaded) {
+            if (allKlines.length > 0) {
+                console.log(`[Manager ${this.roomName}] 👉 Firing 'onDataLoaded' with ${allKlines.length} finalized candles.`);
+                this.onDataLoaded(allKlines.map(this.mapToLightweightChartKline));
+            } else {
+                 console.log(`[Manager ${this.roomName}] No data to display.`);
+                 this.onDataLoaded([]);
             }
         }
         
@@ -185,7 +183,7 @@ class KlineBrowserManager {
 
     public stop(): void {
         if (this.isSubscribed) {
-            const payload = { address: this.contractAddress, chain: this.chain, interval: this.interval };
+            const payload = { address: this.contractAddress, chain: this.chain, interval: this.interval }; // <-- unsubscribe 也恢复原状
             socket.emit('unsubscribe_kline', payload);
             socket.off('kline_update', this.handleKlineUpdate);
             this.isSubscribed = false;

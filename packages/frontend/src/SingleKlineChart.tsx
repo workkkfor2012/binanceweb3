@@ -17,7 +17,7 @@ interface SingleKlineChartProps {
     onViewportChange?: (state: ViewportState | null) => void;
     activeChartId: string | null;
     onSetActiveChart?: (id: string | null) => void;
-    showAxes?: boolean; // ✨ 核心修改 1: 添加新属性以控制坐标轴的显示
+    showAxes?: boolean;
 }
 
 const customPriceFormatter = (price: number): string => {
@@ -51,7 +51,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         setLastBarIndex(null);
     };
 
-    const loadChart = (addr: string, ch: string, interval: string) => {
+    const loadChart = (addr: string, ch: string, interval: string) => { // <-- loadChart 签名恢复
         cleanup(); 
         loadChartVersion++;
         const currentVersion = loadChartVersion;
@@ -59,7 +59,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         console.log(`[ChartComponent ${symbol}@${interval}] 🚀 --- LOAD CHART (Version: ${currentVersion}) ---`);
         if (!chartContainer) return;
 
-        // ✨ 核心修改 2: 根据 showAxes 属性动态配置图表选项
         chart = createChart(chartContainer, {
             width: chartContainer.clientWidth, height: chartContainer.clientHeight,
             layout: { 
@@ -71,18 +70,16 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 horzLines: { color: '#f0f3fa' } 
             },
             timeScale: { 
-                visible: !!props.showAxes, // 控制时间轴可见性
+                visible: !!props.showAxes,
                 borderColor: '#cccccc',
                 timeVisible: true,
                 secondsVisible: false,
             },
             rightPriceScale: { 
-                visible: !!props.showAxes, // 控制价格轴可见性
+                visible: !!props.showAxes,
                 borderColor: '#cccccc',
             },
-            leftPriceScale: { 
-                visible: false,
-            },
+            leftPriceScale: { visible: false },
             handleScroll: true, handleScale: true,
         });
         
@@ -115,6 +112,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             wickUpColor: '#28a745',
         });
         
+        // <-- 构造函数调用恢复
         klineManager = new KlineBrowserManager(addr, ch, interval);
 
         klineManager.on('data', (initialData: LightweightChartKline[]) => {
@@ -145,8 +143,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         klineManager.on('update', (updatedCandle: LightweightChartKline) => {
             if (currentVersion !== loadChartVersion) return;
             candlestickSeries?.update(updatedCandle as CandlestickData<number>);
-            const lbi = lastBarIndex();
-            if (lbi !== null) setLastBarIndex(lbi + 1);
         });
 
         console.log(`[ChartComponent ${symbol}@${interval}] Starting KlineManager...`);
@@ -188,7 +184,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             
             lastLoadedAddress = newAddress;
             lastLoadedTimeframe = tf;
-            setTimeout(() => loadChart(newAddress!, info!.chain, tf), 0);
+            setTimeout(() => loadChart(newAddress!, info!.chain, tf), 0); // <-- 调用恢复
         } else {
             console.log(`[ChartComponent] > Token info is undefined. Cleaning up.`);
             lastLoadedAddress = undefined;

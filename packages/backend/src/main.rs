@@ -17,25 +17,24 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use dashmap::DashMap; // <-- 引入 DashMap
 
 #[derive(Clone)]
 pub struct ServerState {
     pub app_state: state::AppState,
     pub config: Arc<Config>,
     pub io: SocketIo,
+    // ✨ 核心修改 1: 添加地址到符号的映射
+    pub token_symbols: Arc<DashMap<String, String>>,
 }
 
 #[tokio::main]
 async fn main() {
     init_tracing();
 
-    // --- 核心修改：使用 SocketIo::builder() 来增大缓冲区 ---
     let (layer, io) = SocketIo::builder()
-        // 默认值是 128，我们将其扩大 32 倍以吸收重启时的数据洪峰
-        // 这意味着在报错前，可以为每个 socket 缓存 4096 条待发送的消息
         .max_buffer_size(40960) 
         .build_layer();
-    // --- 修改结束 ---
     
     let config = Arc::new(Config::new());
 
@@ -43,6 +42,8 @@ async fn main() {
         app_state: state::new_app_state(),
         config: config.clone(),
         io: io.clone(),
+        // ✨ 核心修改 2: 初始化这个新的 map
+        token_symbols: Arc::new(DashMap::new()),
     };
 
     let socket_state = server_state.clone();
