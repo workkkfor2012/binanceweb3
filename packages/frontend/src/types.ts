@@ -1,32 +1,25 @@
 // packages/frontend/src/types.ts
-export interface Kline {
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
-    timestamp: number; // K线开始的毫秒级时间戳
-    time: number; // lightweight-charts uses seconds
-}
+// ✨ 整个文件简化，只保留与图表直接相关的类型
 
+// 后端返回的、用于 lightweight-charts 的K线数据结构
+// 注意：time 是秒级时间戳
 export interface LightweightChartKline {
-    time: number; // UNIX timestamp in seconds
+    time: number;
     open: number;
     high: number;
     low: number;
     close: number;
+    volume: number; // 可选，图表不直接使用，但可能用于其他地方
 }
 
-// 这是存储在IndexedDB中的完整结构
-export interface KlineData extends Kline {
-    primaryKey: string; // e.g., "0x..._bsc_1m"
-    address: string;
-    chain: string;
-    interval: string;
-}
-
-// ✨ 新增: 定义从后端接收的 kline_update 事件的 payload 结构
+// 实时K线更新的 payload (Binance WebSocket 推送的)
 export interface KlineUpdatePayload {
     room: string;
     data: LightweightChartKline;
+}
+
+// K线历史数据请求失败的 payload
+export interface KlineFetchErrorPayload {
+    key: string; // e.g., "0x..._bsc_1m"
+    error: string;
 }

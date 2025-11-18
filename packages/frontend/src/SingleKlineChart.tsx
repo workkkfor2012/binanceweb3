@@ -1,11 +1,11 @@
 // packages/frontend/src/SingleKlineChart.tsx
 /** @jsxImportSource solid-js */
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, LogicalRange } from 'lightweight-charts';
-import KlineBrowserManager from './kline-browser-manager';
-import type { LightweightChartKline } from './types';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, LogicalRange } from 'lightweight-charts';
+import { socket } from './socket'; // ✨ 引入全局 socket 实例
+import type { LightweightChartKline, KlineUpdatePayload, KlineFetchErrorPayload } from './types';
 import type { MarketItem } from 'shared-types';
-import { ViewportState } from './ChartPageLayout';
+import type { ViewportState } from './ChartPageLayout';
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -30,187 +30,169 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let chartContainer: HTMLDivElement;
     let chart: IChartApi | null = null;
     let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
-    let klineManager: KlineBrowserManager | null = null;
     let resizeObserver: ResizeObserver | null = null;
 
+    const [status, setStatus] = createSignal('Initializing...');
     const [lastBarIndex, setLastBarIndex] = createSignal<number | null>(null);
-
-    let loadChartVersion = 0;
-    let lastLoadedAddress: string | undefined = undefined;
-    let lastLoadedTimeframe: string | undefined = undefined;
     let isSettingRangeProgrammatically = false;
 
-    const cleanup = () => {
-        const symbol = props.tokenInfo?.symbol || 'N/A';
-        const tf = props.timeframe || 'N/A';
-        console.log(`[ChartComponent ${symbol}@${tf}] Running cleanup...`);
-        klineManager?.stop();
-        klineManager = null;
-        if (chart) chart.remove();
+    // --- 新的后端驱动的数据加载逻辑 ---
+    
+    const cleanupChart = () => {
+        chart?.remove();
         chart = null;
+        candlestickSeries = null;
         setLastBarIndex(null);
     };
 
-    const loadChart = (addr: string, ch: string, interval: string) => { // <-- loadChart 签名恢复
-        cleanup(); 
-        loadChartVersion++;
-        const currentVersion = loadChartVersion;
-        const symbol = props.tokenInfo?.symbol;
-        console.log(`[ChartComponent ${symbol}@${interval}] 🚀 --- LOAD CHART (Version: ${currentVersion}) ---`);
-        if (!chartContainer) return;
+    const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
+        console.log(`[RT UNSUB] Unsubscribing from realtime updates for ${payload.address}`);
+        socket.off('kline_update', handleKlineUpdate);
+        socket.emit('unsubscribe_kline', payload);
+    };
+    
+    // 统一的K线更新处理器
+    const handleKlineUpdate = (update: KlineUpdatePayload) => {
+        const info = props.tokenInfo;
+        if (!info) return;
+        // 简单的 room name 构造，用于匹配
+        // 注意：这里的 poolId 需要和后端逻辑一致，这是一个潜在的脆弱点
+        const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
+        const poolId = chainToPoolId[info.chain.toLowerCase()];
+        const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
 
-        chart = createChart(chartContainer, {
-            width: chartContainer.clientWidth, height: chartContainer.clientHeight,
-            layout: { 
-                background: { type: ColorType.Solid, color: '#ffffff' }, 
-                textColor: '#333',
-            },
-            grid: { 
-                vertLines: { color: '#f0f3fa' }, 
-                horzLines: { color: '#f0f3fa' } 
-            },
-            timeScale: { 
-                visible: !!props.showAxes,
-                borderColor: '#cccccc',
-                timeVisible: true,
-                secondsVisible: false,
-            },
-            rightPriceScale: { 
-                visible: !!props.showAxes,
-                borderColor: '#cccccc',
-            },
+        if (update.room === expectedRoom) {
+            candlestickSeries?.update(update.data as CandlestickData<number>);
+        }
+    };
+
+    createEffect(() => {
+        const info = props.tokenInfo;
+        const timeframe = props.timeframe;
+
+        if (!info || !timeframe) {
+            cleanupChart();
+            setStatus('No token selected.');
+            return;
+        }
+
+        cleanupChart();
+        setStatus(`Loading ${info.symbol} ${timeframe} data...`);
+        
+        // 创建图表实例
+        chart = createChart(chartContainer, { /* ... chart options ... */
+             width: chartContainer.clientWidth, height: chartContainer.clientHeight,
+            layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
+            grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+            timeScale: { visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false },
+            rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc' },
             leftPriceScale: { visible: false },
             handleScroll: true, handleScale: true,
         });
+
+        candlestickSeries = chart.addSeries('Candlestick', {
+            priceFormat: { type: 'price', precision: 8, minMove: 0.00000001, formatter: customPriceFormatter },
+            upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
+            borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+        });
         
+        // 뷰포트 변경 핸들러
         chart.timeScale().subscribeVisibleLogicalRangeChange((newRange) => {
             if (newRange && props.onViewportChange && !isSettingRangeProgrammatically) {
                 if (props.activeChartId === props.tokenInfo?.contractAddress) {
                     const lbi = lastBarIndex();
                     if (lbi === null) return;
-                    
                     const width = newRange.to - newRange.from;
                     const offset = lbi - newRange.to;
-                    
                     props.onViewportChange({ width, offset });
                 }
             }
         });
 
-        candlestickSeries = chart.addSeries(CandlestickSeries, {
-            priceFormat: {
-                type: 'price',
-                precision: 8,
-                minMove: 0.00000001,
-                formatter: customPriceFormatter,
-            },
-            upColor: '#28a745',
-            downColor: '#dc3545',
-            borderDownColor: '#dc3545',
-            borderUpColor: '#28a745',
-            wickDownColor: '#dc3545',
-            wickUpColor: '#28a745',
-        });
-        
-        // <-- 构造函数调用恢复
-        klineManager = new KlineBrowserManager(addr, ch, interval);
 
-        klineManager.on('data', (initialData: LightweightChartKline[]) => {
-            console.log(`[ChartComponent ${symbol}@${interval}] 📦 Received 'data' event. My version: ${currentVersion}, Global version: ${loadChartVersion}, Data length: ${initialData.length}`);
-            if (currentVersion !== loadChartVersion) {
-                console.warn(`[ChartComponent ${symbol}@${interval}] ⚠️ Aborting data load. Version mismatch.`);
-                return;
-            }
-            if (candlestickSeries && initialData.length > 0) {
-                console.log(`[ChartComponent ${symbol}@${interval}] ✅ Versions match. Calling setData with ${initialData.length} candles.`);
-                candlestickSeries.setData(initialData as CandlestickData<number>[]);
-                const newLastBarIndex = initialData.length - 1;
-                setLastBarIndex(newLastBarIndex);
+        const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
+        // --- 数据加载流程 ---
+        const handleInitialData = (data: LightweightChartKline[]) => {
+            if (data.length > 0) {
+                candlestickSeries?.setData(data as CandlestickData<number>[]);
+                setLastBarIndex(data.length - 1);
+                // 同步其他图表的视口
                 const vs = props.viewportState;
-                if (vs && newLastBarIndex !== null) {
-                    const to = newLastBarIndex - vs.offset;
-                    const from = to - vs.width;
-                    setTimeout(() => chart?.timeScale().setVisibleLogicalRange({ from, to }), 0);
+                if (vs) {
+                     const to = data.length - 1 - vs.offset;
+                     const from = to - vs.width;
+                     setTimeout(() => chart?.timeScale().setVisibleLogicalRange({ from, to }), 0);
                 } else {
                     chart?.timeScale().fitContent();
                 }
-            } else {
-                 console.log(`[ChartComponent ${symbol}@${interval}] 🤔 Data received, but series is not ready or data is empty.`);
             }
-        });
+            setStatus(`Live: ${info.symbol} ${timeframe}`);
+        };
         
-        klineManager.on('update', (updatedCandle: LightweightChartKline) => {
-            if (currentVersion !== loadChartVersion) return;
-            candlestickSeries?.update(updatedCandle as CandlestickData<number>);
-        });
+        const handleCompletedData = (data: LightweightChartKline[]) => {
+            const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
+            const newDataMap = new Map(currentData.map(d => [d.time, d]));
+            data.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
+            const sortedData = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+            candlestickSeries?.setData(sortedData);
+            setLastBarIndex(sortedData.length - 1);
+        };
+        
+        const handleFetchError = (err: KlineFetchErrorPayload) => {
+             const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
+             if(err.key === key) {
+                setStatus(`Error loading data for ${info.symbol}: ${err.error}`);
+                console.error(`[KLINE_FETCH_ERROR]`, err);
+             }
+        };
 
-        console.log(`[ChartComponent ${symbol}@${interval}] Starting KlineManager...`);
-        klineManager.start();
-    };
-    
+        // 绑定监听器
+        socket.on('historical_kline_initial', handleInitialData);
+        socket.on('historical_kline_completed', handleCompletedData);
+        socket.on('kline_fetch_error', handleFetchError);
+        socket.on('kline_update', handleKlineUpdate);
+
+        // 发起请求
+        socket.emit('request_historical_kline', payload);
+        socket.emit('subscribe_kline', payload); // 订阅实时更新
+
+        onCleanup(() => {
+            console.log(`[CLEANUP] Cleaning up chart for ${info.symbol} ${timeframe}`);
+            unsubscribeRealtime(payload);
+            socket.off('historical_kline_initial', handleInitialData);
+            socket.off('historical_kline_completed', handleCompletedData);
+            socket.off('kline_fetch_error', handleFetchError);
+            cleanupChart();
+        });
+    });
+
+    // Effect for syncing viewport from other charts
     createEffect(() => {
         const vs = props.viewportState;
         if (chart && vs && props.activeChartId !== props.tokenInfo?.contractAddress) {
             const lbi = lastBarIndex();
             if (lbi === null) return;
-
             const to = lbi - vs.offset;
             const from = to - vs.width;
-            
             isSettingRangeProgrammatically = true;
             chart.timeScale().setVisibleLogicalRange({ from, to });
             setTimeout(() => { isSettingRangeProgrammatically = false; }, 100);
         }
     });
 
-    createEffect(() => {
-        const info = props.tokenInfo;
-        const tf = props.timeframe;
-        const newAddress = info?.contractAddress;
-        
-        console.log(`[ChartComponent ${info?.symbol}@${tf}] EFFECT TRIGGERED. New Address: ${newAddress}, Last Address: ${lastLoadedAddress}`);
-
-        if (newAddress === lastLoadedAddress && tf === lastLoadedTimeframe) {
-            console.log(`[ChartComponent ${info?.symbol}@${tf}] > Props changed but address and timeframe are the same. Skipping chart reload.`);
-            return;
-        }
-
-        if (newAddress) {
-            console.log(`[ChartComponent ${info?.symbol}@${tf}] > Address or timeframe changed. Proceeding to load chart.`);
-            if (tf !== lastLoadedTimeframe && props.onViewportChange) {
-                 props.onViewportChange(null);
-            }
-            
-            lastLoadedAddress = newAddress;
-            lastLoadedTimeframe = tf;
-            setTimeout(() => loadChart(newAddress!, info!.chain, tf), 0); // <-- 调用恢复
-        } else {
-            console.log(`[ChartComponent] > Token info is undefined. Cleaning up.`);
-            lastLoadedAddress = undefined;
-            lastLoadedTimeframe = undefined;
-            cleanup();
-        }
-    });
-
     onMount(() => {
         resizeObserver = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                if (entry.target === chartContainer && chart) {
-                    chart.applyOptions({ width: entry.contentRect.width, height: entry.contentRect.height });
-                }
+            if (chart && chartContainer) {
+                const { width, height } = entries[0].contentRect;
+                chart.applyOptions({ width, height });
             }
         });
         resizeObserver.observe(chartContainer);
     });
 
-    onCleanup(() => {
-        console.log(`[ChartComponent ${props.tokenInfo?.symbol}@${props.timeframe}] Component is unmounting. Full cleanup.`);
-        resizeObserver?.disconnect();
-        cleanup();
-        loadChartVersion++;
-    });
-
+    onCleanup(() => resizeObserver?.disconnect());
+    
     return (
         <div 
             class="single-chart-wrapper"
@@ -218,7 +200,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             onMouseLeave={() => props.onSetActiveChart?.(null)}
         >
             <div class="chart-header">
-                <Show when={props.tokenInfo} fallback={<span class="placeholder">...</span>}>
+                <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
                     <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
                     <span class="symbol-title">{props.tokenInfo!.symbol}</span>
                     <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>

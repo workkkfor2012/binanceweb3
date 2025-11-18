@@ -7,6 +7,7 @@ use super::{
     },
 };
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use socketioxide::SocketIo;
 use std::{sync::Arc, time::SystemTime};
@@ -29,27 +30,31 @@ type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
 type WsRead = futures_util::stream::SplitStream<WsStream>;
 
-// --- 用于复合过滤规则的常量 ---
-const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0; 
+const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0;
 const LOW_VOLUME_THRESHOLD: f64 = 10.0;
 
-
-// --- 核心修正：添加 pub 关键字，使此函数对其他模块可见 ---
-pub async fn binance_websocket_task(io: SocketIo, room_name: String, symbol: String, config: Arc<Config>) {
-    // 基于传入的 symbol 创建一个专门用于日志的标识符
+pub async fn binance_websocket_task(
+    io: SocketIo,
+    room_name: String,
+    symbol: String,
+    config: Arc<Config>,
+) {
     let log_display_name = {
         let parts: Vec<&str> = room_name.split('@').collect();
         if parts.len() == 4 {
             format!("{}@{}@{}@{}", parts[0], parts[1], &symbol, parts[3])
         } else {
-            room_name.clone() // 格式不匹配时回退
+            room_name.clone()
         }
     };
-    
+
     let address = match room_name.split('@').nth(2) {
         Some(addr) => addr.to_lowercase(),
         None => {
-            error!("[TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.", log_display_name);
+            error!(
+                "[TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.",
+                log_display_name
+            );
             return;
         }
     };
@@ -57,14 +62,26 @@ pub async fn binance_websocket_task(io: SocketIo, room_name: String, symbol: Str
 
     loop {
         match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config).await {
-            Ok(_) => warn!("[TASK {}] Disconnected gracefully. Reconnecting...", log_display_name),
-            Err(e) => error!("[TASK {}] Connection failed: {:#?}. Retrying...", log_display_name, e),
+            Ok(_) => warn!(
+                "[TASK {}] Disconnected gracefully. Reconnecting...",
+                log_display_name
+            ),
+            Err(e) => error!(
+                "[TASK {}] Connection failed: {:#?}. Retrying...",
+                log_display_name, e
+            ),
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 
-async fn connect_and_run(io: &SocketIo, room_name: &str, log_display_name: &str, address: Arc<String>, config: &Config) -> Result<()> {
+async fn connect_and_run(
+    io: &SocketIo,
+    room_name: &str,
+    log_display_name: &str,
+    address: Arc<String>,
+    config: &Config,
+) -> Result<()> {
     let stream = establish_http_tunnel(log_display_name, config).await?;
     let host = Url::parse(&config.binance_wss_url)?
         .host_str()
@@ -85,47 +102,79 @@ async fn connect_and_run(io: &SocketIo, room_name: &str, log_display_name: &str,
     let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
         .await
         .context("WebSocket handshake failed")?;
-    info!("✅ [TASK {}] WebSocket handshake successful. Status: {}", log_display_name, response.status());
+    info!(
+        "✅ [TASK {}] WebSocket handshake successful. Status: {}",
+        log_display_name,
+        response.status()
+    );
 
     let (mut write, mut read) = ws_stream.split();
     subscribe_all(&mut write, room_name, log_display_name).await?;
-    
+
     let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
-    
-    message_loop(io, room_name, log_display_name, config, &mut write, &mut read, current_kline, address).await
+
+    message_loop(
+        io,
+        room_name,
+        log_display_name,
+        config,
+        &mut write,
+        &mut read,
+        current_kline,
+        address,
+    )
+    .await
 }
 
-async fn subscribe_all(write: &mut WsWrite, kline_room_name: &str, log_display_name: &str) -> Result<()> {
+async fn subscribe_all(
+    write: &mut WsWrite,
+    kline_room_name: &str,
+    log_display_name: &str,
+) -> Result<()> {
     let parts: Vec<&str> = kline_room_name.split('@').collect();
     if parts.len() != 4 {
-        return Err(anyhow!("Invalid kline room name format: {}", kline_room_name));
+        return Err(anyhow!(
+            "Invalid kline room name format: {}",
+            kline_room_name
+        ));
     }
     let pool_id = parts[1];
     let address = parts[2];
 
-    // --- Subscription for Tick Stream (tx) ---
     let tick_param = format!("tx@{}_{}", pool_id, address);
-    let tick_request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis();
+    let tick_request_id = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_millis();
     let tick_subscribe_msg = serde_json::json!({
         "id": tick_request_id,
         "method": "SUBSCRIBE",
         "params": [tick_param]
     });
-    info!("[SEND SUB {}] Sending subscription for tick stream. Payload: {}", log_display_name, tick_subscribe_msg);
-    write.send(Message::Text(tick_subscribe_msg.to_string().into())).await?;
-    
+    info!(
+        "[SEND SUB {}] Sending subscription for tick stream. Payload: {}",
+        log_display_name, tick_subscribe_msg
+    );
+    write
+        .send(Message::Text(tick_subscribe_msg.to_string().into()))
+        .await?;
+
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // --- Subscription for K-line Stream (kl) ---
-    let kline_request_id = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() + 1;
+    let kline_request_id =
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() + 1;
     let kline_subscribe_msg = serde_json::json!({
         "id": kline_request_id,
         "method": "SUBSCRIBE",
         "params": [kline_room_name]
     });
-    info!("[SEND SUB {}] Sending subscription for k-line stream. Payload: {}", log_display_name, kline_subscribe_msg);
-    write.send(Message::Text(kline_subscribe_msg.to_string().into())).await?;
-    
+    info!(
+        "[SEND SUB {}] Sending subscription for k-line stream. Payload: {}",
+        log_display_name, kline_subscribe_msg
+    );
+    write
+        .send(Message::Text(kline_subscribe_msg.to_string().into()))
+        .await?;
+
     Ok(())
 }
 
@@ -179,8 +228,9 @@ async fn handle_message(
                 match serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {
                     Ok(wrapper) => {
                         let values = &wrapper.data.kline_data.values;
+                        let timestamp_seconds = values.5.parse::<i64>().unwrap_or_default() / 1000;
                         let new_kline = KlineTick {
-                            time: values.5.parse::<i64>().unwrap_or_default() / 1000,
+                            time: DateTime::from_timestamp(timestamp_seconds, 0).unwrap_or_default().with_timezone(&Utc),
                             open: values.0.parse().unwrap_or_default(),
                             high: values.1.parse().unwrap_or_default(),
                             low: values.2.parse().unwrap_or_default(),
@@ -199,14 +249,12 @@ async fn handle_message(
                 match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
                     Ok(wrapper) => {
                         let tick = &wrapper.data.tick_data;
-                        
-                        // --- 核心修改：动态选择价格 ---
+
                         let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
                             tick.t0pu
                         } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
                             tick.t1pu
                         } else {
-                            // 这个 tick 与我们追踪的地址无关，极不寻常，记录并忽略
                             warn!("[PRICE LOGIC ERROR {}] Tick does not contain tracked address {}. Tick data: {:?}. Raw: {}", log_display_name, tracked_address, tick, text);
                             return Ok(true);
                         };
@@ -217,7 +265,6 @@ async fn handle_message(
                         if let Some(kline) = kline_guard.as_mut() {
                             let last_price = kline.close;
 
-                            // --- 唯一的过滤规则 ---
                             if last_price > 0.0 {
                                 let price_ratio = if price > last_price { price / last_price } else { last_price / price };
                                 if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && volume < LOW_VOLUME_THRESHOLD {
@@ -228,7 +275,6 @@ async fn handle_message(
                                     return Ok(true);
                                 }
                             }
-                            // --- 过滤逻辑结束 ---
 
                             kline.high = kline.high.max(price);
                             kline.low = kline.low.min(price);
@@ -245,16 +291,25 @@ async fn handle_message(
                     }
                 }
             } else if text.contains("result") {
-                info!("[TASK {}] Received subscription confirmation: {}", log_display_name, text);
+                info!(
+                    "[TASK {}] Received subscription confirmation: {}",
+                    log_display_name, text
+                );
             } else {
                 warn!("[UNHANDLED MSG {}] {}", log_display_name, text);
             }
         }
         Message::Ping(ping_data) => {
-            write.send(Message::Pong(ping_data)).await.context("Failed to send Pong")?;
+            write
+                .send(Message::Pong(ping_data))
+                .await
+                .context("Failed to send Pong")?;
         }
         Message::Close(close_frame) => {
-            warn!("[TASK {}] Received Close frame: {:?}", log_display_name, close_frame);
+            warn!(
+                "[TASK {}] Received Close frame: {:?}",
+                log_display_name, close_frame
+            );
             return Ok(false);
         }
         _ => {}
@@ -267,8 +322,16 @@ async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
         room: room_name.to_string(),
         data: kline,
     };
-    if let Err(e) = io.to(room_name.to_string()).emit("kline_update", &broadcast_data).await {
-        error!("[TASK {}] Failed to broadcast kline update: {:?}", room_name, e);
+    // 核心修改: `emit` 现在是 async
+    if let Err(e) = io
+        .to(room_name.to_string())
+        .emit("kline_update", &broadcast_data)
+        .await
+    {
+        error!(
+            "[TASK {}] Failed to broadcast kline update: {:?}",
+            room_name, e
+        );
     }
 }
 
@@ -278,23 +341,44 @@ async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Resul
     let port = url_obj.port_or_known_default().unwrap_or(443);
     let target_addr = format!("{}:{}", host, port);
 
-    let mut stream = TcpStream::connect(&config.proxy_addr).await.context("HTTP proxy connection failed")?;
-    let connect_req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", target_addr, target_addr);
-    stream.write_all(connect_req.as_bytes()).await.context("Failed to send CONNECT request")?;
+    let mut stream = TcpStream::connect(&config.proxy_addr)
+        .await
+        .context("HTTP proxy connection failed")?;
+    let connect_req = format!(
+        "CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        target_addr, target_addr
+    );
+    stream
+        .write_all(connect_req.as_bytes())
+        .await
+        .context("Failed to send CONNECT request")?;
 
     let mut buf = vec![0; 1024];
-    let n = stream.read(&mut buf).await.context("Failed to read proxy response")?;
-    
+    let n = stream
+        .read(&mut buf)
+        .await
+        .context("Failed to read proxy response")?;
+
     let response = String::from_utf8_lossy(&buf[..n]);
 
     if !response.starts_with("HTTP/1.1 200") {
-        return Err(anyhow!("[TASK {}] Proxy CONNECT failed: {}", log_display_name, response.trim()));
+        return Err(anyhow!(
+            "[TASK {}] Proxy CONNECT failed: {}",
+            log_display_name,
+            response.trim()
+        ));
     }
     Ok(stream)
 }
 
-async fn wrap_stream_with_tls(stream: TcpStream, host: &str) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
+async fn wrap_stream_with_tls(
+    stream: TcpStream,
+    host: &str,
+) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
     let tls_connector = native_tls::TlsConnector::builder().build()?;
     let tokio_tls_connector = TokioTlsConnector::from(tls_connector);
-    tokio_tls_connector.connect(host, stream).await.context("TLS Handshake failed")
+    tokio_tls_connector
+        .connect(host, stream)
+        .await
+        .context("TLS Handshake failed")
 }

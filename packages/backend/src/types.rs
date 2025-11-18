@@ -1,14 +1,11 @@
 // packages/backend/src/types.rs
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
+use sqlx::FromRow;
 use std::collections::HashSet;
 use tokio::task::JoinHandle;
-// use shared_types::MarketItem; // <-- 移除错误的导入
 
-// --- 核心修复: 在 Rust 中定义 MarketItem 结构 ---
-// 这个结构必须与 extractor 发送的 JSON 数据结构完全匹配。
-// 使用 Option<T> 来处理可能为空的字段，增加健壮性。
-// `rename_all = "camelCase"` 自动将 Rust 的 snake_case 字段名映射到 JSON 的 camelCase 字段名。
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketItem {
@@ -18,9 +15,6 @@ pub struct MarketItem {
     pub chain: Option<String>,
     pub price: Option<f64>,
     pub market_cap: Option<f64>,
-    // --- 核心修改 ---
-    // 将 chain_id 的类型从 i64 改为 String，以匹配 extractor 发送的实际数据类型。
-    // 日志显示该字段可能为 "8453" 或 "CT_501" 等字符串。
     pub chain_id: Option<String>,
     pub volume1m: Option<f64>,
     pub volume5m: Option<f64>,
@@ -35,8 +29,6 @@ pub struct MarketItem {
 }
 
 
-// --- WebSocket & Socket.IO Payloads ---
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct KlineSubscribePayload {
     pub address: String,
@@ -50,8 +42,6 @@ pub struct DataPayload {
     pub data: Vec<MarketItem>,
 }
 
-
-// --- Binance Incoming Data Structures ---
 
 #[derive(Debug, Deserialize)]
 pub struct BinanceStreamWrapper<T> {
@@ -90,18 +80,18 @@ pub struct BinanceTickDetail {
 }
 
 
-// --- Data Sent to Frontend ---
-
 #[derive(Debug, Serialize, Clone)]
 pub struct KlineBroadcastData {
     pub room: String,
     pub data: KlineTick,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+// --- 核心修复：从下面的 derive 宏中移除 `FromRow` ---
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct KlineTick {
-    pub time: i64,
+    #[serde(with = "chrono::serde::ts_seconds")]
+    pub time: DateTime<Utc>,
     pub open: f64,
     pub high: f64,
     pub low: f64,
@@ -110,15 +100,12 @@ pub struct KlineTick {
 }
 
 
-// --- Application State Component ---
-
 pub struct Room {
     pub clients: HashSet<Sid>,
     pub task_handle: JoinHandle<()>,
-    pub symbol: String, 
+    pub symbol: String,
 }
 
-// --- HTTP Payloads ---
 
 #[derive(Debug, Deserialize)]
 pub struct ImageProxyQuery {
@@ -128,4 +115,10 @@ pub struct ImageProxyQuery {
 #[derive(Serialize, Deserialize)]
 pub struct CacheMeta {
     pub content_type: String,
+}
+
+
+#[derive(Debug, Deserialize)]
+pub struct HistoricalDataWrapper {
+    pub data: Vec<Vec<serde_json::Value>>,
 }

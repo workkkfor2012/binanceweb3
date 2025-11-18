@@ -1,18 +1,14 @@
 // packages/backend/src/socket_handlers.rs
 use super::{
     binance_task,
-    // config::Config,      // <-- 移除
-    // state::AppState,     // <-- 移除
+    kline_handler,
     types::{DataPayload, KlineSubscribePayload, Room},
     ServerState,
 };
-// use dashmap::DashMap;   // <-- 移除
 use socketioxide::{
     extract::{Data, SocketRef},
-    // SocketIo,           // <-- 移除
 };
 use std::collections::HashSet;
-// use std::sync::Arc;    // <-- 移除
 use tracing::{error, info, warn};
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
@@ -21,7 +17,20 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     register_data_update_handler(&s, state.clone());
     register_kline_subscribe_handler(&s, state.clone());
     register_kline_unsubscribe_handler(&s, state.clone());
-    register_disconnect_handler(&s, state);
+    register_disconnect_handler(&s, state.clone());
+    register_kline_history_handler(&s, state);
+}
+
+fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "request_historical_kline",
+        move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
+            let state = state.clone();
+            async move {
+                kline_handler::handle_kline_request(s, payload, state).await;
+            }
+        },
+    );
 }
 
 fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
@@ -37,7 +46,6 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                 match serde_json::from_value::<DataPayload>(payload.0) {
                     Ok(parsed_payload) => {
                         for item in parsed_payload.data {
-                            // 使用 if let 来安全地解包 Option
                             if let (Some(address), Some(symbol)) = (item.contract_address, item.symbol) {
                                 state.token_symbols.insert(address.to_lowercase(), symbol);
                             }
@@ -52,15 +60,12 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
     );
 }
 
-
 fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
     socket.on(
         "subscribe_kline",
         move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
-                info!("✅ [HANDLER TRIGGERED] 'subscribe_kline' with payload: {:?}", payload);
-
                 let address_lowercase = payload.address.to_lowercase();
                 let symbol = state.token_symbols
                     .get(&address_lowercase)
@@ -81,6 +86,7 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
 
                 info!("🔼 [JOIN] Client {} joining room: {}", s.id, log_display_name);
+                // 核心修改: `join` 是同步的，不返回Result，直接调用
                 s.join(room_name.clone());
 
                 state.app_state
@@ -129,6 +135,7 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
                 let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
 
                 info!("🔽 [UNSUB] Client {} from room: {}", s.id, log_display_name);
+                // 核心修改: `leave` 是同步的，直接调用
                 s.leave(room_name.clone());
 
                 if let Some(mut room) = state.app_state.get_mut(&room_name) {

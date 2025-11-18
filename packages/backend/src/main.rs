@@ -1,61 +1,76 @@
 // packages/backend/src/main.rs
 mod binance_task;
 mod cache;
+mod cache_manager;
 mod config;
 mod error;
 mod http_handlers;
+mod kline_handler;
 mod socket_handlers;
 mod state;
 mod types;
-mod cache_manager;
 
 use axum::{routing::get, Router};
 use config::Config;
+use dashmap::DashMap;
 use http::HeaderValue;
 use socketioxide::{extract::SocketRef, SocketIo};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions}; // 这个导入现在会生效
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use dashmap::DashMap; // <-- 引入 DashMap
 
 #[derive(Clone)]
 pub struct ServerState {
     pub app_state: state::AppState,
     pub config: Arc<Config>,
     pub io: SocketIo,
-    // ✨ 核心修改 1: 添加地址到符号的映射
     pub token_symbols: Arc<DashMap<String, String>>,
+    pub db_pool: SqlitePool,
 }
 
 #[tokio::main]
 async fn main() {
     init_tracing();
 
-    let (layer, io) = SocketIo::builder()
-        .max_buffer_size(40960) 
-        .build_layer();
-    
+    let (layer, io) = SocketIo::builder().max_buffer_size(40960).build_layer();
+
     let config = Arc::new(Config::new());
+
+    if let Some(parent) = std::path::Path::new(&config.database_url.replace("sqlite:", "")).parent()
+    {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).expect("Failed to create database directory");
+        }
+    }
+
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(10)
+        .connect(&config.database_url)
+        .await
+        .expect("Failed to connect to SQLite database");
+    info!("🗃️ Database connection pool established.");
+
+    kline_handler::init_db(&db_pool)
+        .await
+        .expect("Failed to initialize database schema");
 
     let server_state = ServerState {
         app_state: state::new_app_state(),
         config: config.clone(),
         io: io.clone(),
-        // ✨ 核心修改 2: 初始化这个新的 map
         token_symbols: Arc::new(DashMap::new()),
+        db_pool,
     };
 
     let socket_state = server_state.clone();
-    io.ns(
-        "/",
-        move |s: SocketRef| {
-            let state = socket_state.clone();
-            async move {
-                socket_handlers::on_socket_connect(s, state).await;
-            }
-        },
-    );
+    io.ns("/", move |s: SocketRef| {
+        let state = socket_state.clone();
+        async move {
+            socket_handlers::on_socket_connect(s, state).await;
+        }
+    });
 
     tokio::spawn(cache_manager::cache_manager_task(config));
 
@@ -91,7 +106,7 @@ fn init_tracing() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "backend=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "backend=info,tower_http=info,sqlx=warn".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
