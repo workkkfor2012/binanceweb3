@@ -1,4 +1,5 @@
 // packages/backend/src/binance_task.rs
+
 use super::{
     config::Config,
     types::{
@@ -38,6 +39,8 @@ pub async fn binance_websocket_task(
     room_name: String,
     symbol: String,
     config: Arc<Config>,
+    // ✨ 接收共享的状态
+    current_kline: Arc<Mutex<Option<KlineTick>>>,
 ) {
     let log_display_name = {
         let parts: Vec<&str> = room_name.split('@').collect();
@@ -61,7 +64,7 @@ pub async fn binance_websocket_task(
     let address = Arc::new(address);
 
     loop {
-        match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config).await {
+        match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config, current_kline.clone()).await {
             Ok(_) => warn!(
                 "🔁 [TASK {}] Disconnected gracefully. Reconnecting...",
                 log_display_name
@@ -81,6 +84,7 @@ async fn connect_and_run(
     log_display_name: &str,
     address: Arc<String>,
     config: &Config,
+    current_kline: Arc<Mutex<Option<KlineTick>>>, 
 ) -> Result<()> {
     let stream = establish_http_tunnel(log_display_name, config).await?;
     let host = Url::parse(&config.binance_wss_url)?
@@ -111,8 +115,6 @@ async fn connect_and_run(
     let (mut write, mut read) = ws_stream.split();
     subscribe_all(&mut write, room_name, log_display_name).await?;
 
-    let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
-
     message_loop(
         io,
         room_name,
@@ -120,7 +122,7 @@ async fn connect_and_run(
         config,
         &mut write,
         &mut read,
-        current_kline,
+        current_kline, 
         address,
     )
     .await
@@ -237,7 +239,11 @@ async fn handle_message(
                             close: values.3.parse().unwrap_or_default(),
                             volume: values.4.parse().unwrap_or_default(),
                         };
-                        // info!("📊 [KLINE {}] C:{}", room_name, new_kline.close);
+                        
+                        // ✨ Step 6: 这里就是 WebSocket K 线数据到达的地方
+                        // 它会更新/替换掉我们通过 HTTP 注入的那一根
+                        info!("🌊 [WS KLINE {}] Incoming Update. Time: {}, Close: {}", log_display_name, new_kline.time, new_kline.close);
+                        
                         broadcast_update(io, room_name, new_kline.clone()).await;
                         *current_kline.lock().await = Some(new_kline);
                     },
@@ -280,7 +286,9 @@ async fn handle_message(
                             kline.close = price;
                             kline.volume += volume;
                             
-                            // info!("⚡ [TICK UPDATE {}] Price: {}", room_name, price);
+                            // ✨ 开启这行日志，证明注入生效（Tick 正在工作）
+                            info!("⚡ [WS TICK {}] Calculated P: {}", log_display_name, price);
+                            
                             broadcast_update(io, room_name, kline.clone()).await;
                         }
                     },

@@ -163,8 +163,6 @@ async fn complete_kline_data(
         },
     };
 
-    // ✨ 核心修改：移除 "limit <= 1" 的跳过逻辑
-    // 哪怕 limit 是 1，也要去请求，因为这一根可能是未收盘的，数据变了。
     if limit <= 0 {
         return Ok(None);
     }
@@ -178,12 +176,40 @@ async fn complete_kline_data(
         limit = API_MAX_LIMIT;
     }
 
-    // 执行网络请求 (利用连接池，这里应该非常快)
+    // 执行网络请求
     let new_klines = fetch_historical_data_with_pool(&state.client_pool, payload, limit).await?;
 
     if new_klines.is_empty() {
         warn!("⚠️ [API EMPTY] Returned 0 candles for {}", primary_key);
         return Ok(Some(0));
+    }
+
+    // ✨✨✨ 核心逻辑：注入数据到 Room，让 WebSocket 的 tx 数据立即可用 ✨✨✨
+    // 1. 计算 Room Name (需要和 socket_handlers.rs 逻辑一致)
+    let chain_lower = payload.chain.to_lowercase();
+    let pool_id = match chain_lower.as_str() {
+        "bsc" => 14,
+        "sol" | "solana" => 16,
+        "base" => 199,
+        _ => 0, // 这种情况下通常不会走到这里，或者在 socket handler 就拦截了
+    };
+    
+    if pool_id != 0 {
+        let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+        
+        // 2. 查找房间并注入
+        if let Some(room) = state.app_state.get(&room_name) {
+             if let Some(last_candle) = new_klines.last() {
+                 let mut lock = room.current_kline.lock().await;
+                 // 只有当它是 None 时才注入（避免覆盖了可能已经到达的 WS kl 数据）
+                 // 或者：强制注入也没问题，因为 HTTP 的数据是 "snapshot"，通常很新
+                 // 为了保险，我们只在 None 时注入，因为如果它不是 None，说明 WS 已经正常工作了
+                 if lock.is_none() {
+                     *lock = Some(last_candle.clone());
+                     info!("💉 [INJECT] Successfully injected HTTP candle into WebSocket state for {}", room_name);
+                 }
+             }
+        }
     }
 
     // 立即发送给前端
@@ -201,7 +227,7 @@ async fn complete_kline_data(
         // info!("🚀 [PERF EMIT] Data sent to client in {:?} (Before DB write)", emit_start.elapsed());
     }
 
-    // 异步存库 (这里会执行 INSERT OR REPLACE，所以最新 K 线的旧数据会被新状态覆盖)
+    // 异步存库
     save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
     prune_old_klines_from_db(&state.db_pool, primary_key).await?;
 

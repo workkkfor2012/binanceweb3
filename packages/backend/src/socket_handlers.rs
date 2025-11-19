@@ -1,14 +1,17 @@
 // packages/backend/src/socket_handlers.rs
+
 use super::{
     binance_task,
     kline_handler,
-    types::{DataPayload, KlineSubscribePayload, Room},
+    types::{DataPayload, KlineSubscribePayload, Room, KlineTick}, // ✨ 引入 KlineTick
     ServerState,
 };
 use socketioxide::{
     extract::{Data, SocketRef},
 };
 use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex; // ✨ 引入 Mutex
 use tracing::{error, info, warn};
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
@@ -67,7 +70,7 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
-                let chain_lower = payload.chain.to_lowercase(); // ✨ 核心修复：转小写
+                let chain_lower = payload.chain.to_lowercase();
                 
                 let address_lowercase = payload.address.to_lowercase();
                 let symbol = state.token_symbols
@@ -77,7 +80,6 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                         |s| s.value().clone()
                     );
 
-                // ✨ 核心修复：使用转小写后的 chain_lower 进行匹配
                 let pool_id = match chain_lower.as_str() {
                     "bsc" => 14, 
                     "sol" | "solana" => 16, 
@@ -98,16 +100,24 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                     .entry(room_name.clone())
                     .or_insert_with(|| {
                         info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
+                        
+                        // ✨ 1. 创建共享状态
+                        let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
+                        
+                        // ✨ 2. 将状态传给 Task
                         let task_handle = tokio::spawn(binance_task::binance_websocket_task(
                             state.io.clone(),
                             room_name.clone(),
                             symbol.clone(), 
                             state.config.clone(),
+                            current_kline.clone(), // 传递进去
                         ));
+                        
                         Room {
                             clients: HashSet::new(),
                             task_handle,
                             symbol,
+                            current_kline, // ✨ 3. 保存到 Room 以便 HTTP Handler 访问
                         }
                     })
                     .value_mut()
@@ -124,13 +134,12 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
-                let chain_lower = payload.chain.to_lowercase(); // ✨ 核心修复：转小写
+                let chain_lower = payload.chain.to_lowercase();
 
                  let symbol = state.token_symbols
                     .get(&payload.address.to_lowercase())
                     .map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
 
-                // ✨ 核心修复：使用转小写后的 chain_lower 进行匹配
                 let pool_id = match chain_lower.as_str() {
                     "bsc" => 14, 
                     "sol" | "solana" => 16, 

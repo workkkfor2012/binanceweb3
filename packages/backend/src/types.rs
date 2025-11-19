@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
 use sqlx::FromRow;
 use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex; // ✨ 引入 Mutex
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -29,7 +31,6 @@ pub struct MarketItem {
     pub price_change24h: Option<f64>,
 }
 
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct KlineSubscribePayload {
     pub address: String,
@@ -42,7 +43,6 @@ pub struct DataPayload {
     pub r#type: String,
     pub data: Vec<MarketItem>,
 }
-
 
 #[derive(Debug, Deserialize)]
 pub struct BinanceStreamWrapper<T> {
@@ -80,14 +80,12 @@ pub struct BinanceTickDetail {
     pub tp: String,
 }
 
-
 #[derive(Debug, Serialize, Clone)]
 pub struct KlineBroadcastData {
     pub room: String,
     pub data: KlineTick,
 }
 
-// --- 核心修复：从下面的 derive 宏中移除 `FromRow` ---
 #[derive(Debug, Serialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct KlineTick {
@@ -100,7 +98,6 @@ pub struct KlineTick {
     pub volume: f64,
 }
 
-// ✨ 新增：用于历史数据响应的包装结构，包含元数据
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct KlineHistoryResponse {
@@ -110,13 +107,13 @@ pub struct KlineHistoryResponse {
     pub data: Vec<KlineTick>,
 }
 
-
 pub struct Room {
     pub clients: HashSet<Sid>,
     pub task_handle: JoinHandle<()>,
     pub symbol: String,
+    // ✨ 新增：共享的 K 线状态，允许 HTTP Handler 注入初始数据
+    pub current_kline: Arc<Mutex<Option<KlineTick>>>,
 }
-
 
 #[derive(Debug, Deserialize)]
 pub struct ImageProxyQuery {
@@ -127,7 +124,6 @@ pub struct ImageProxyQuery {
 pub struct CacheMeta {
     pub content_type: String,
 }
-
 
 #[derive(Debug, Deserialize)]
 pub struct HistoricalDataWrapper {
