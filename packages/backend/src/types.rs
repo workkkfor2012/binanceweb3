@@ -1,4 +1,5 @@
 // packages/backend/src/types.rs
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
@@ -97,6 +98,16 @@ pub struct KlineTick {
     pub low: f64,
     pub close: f64,
     pub volume: f64,
+}
+
+// ✨ 新增：用于历史数据响应的包装结构，包含元数据
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KlineHistoryResponse {
+    pub address: String,
+    pub chain: String,
+    pub interval: String,
+    pub data: Vec<KlineTick>,
 }
 
 

@@ -1,9 +1,11 @@
 // packages/frontend/src/SingleKlineChart.tsx
+
 /** @jsxImportSource solid-js */
+
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, LogicalRange } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries } from 'lightweight-charts';
 import { socket } from './socket'; // ✨ 引入全局 socket 实例
-import type { LightweightChartKline, KlineUpdatePayload, KlineFetchErrorPayload } from './types';
+import type { LightweightChartKline, KlineUpdatePayload, KlineFetchErrorPayload, KlineHistoryResponse } from './types';
 import type { MarketItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
 
@@ -20,8 +22,12 @@ interface SingleKlineChartProps {
     showAxes?: boolean;
 }
 
+// 优化格式化函数，处理科学计数法
 const customPriceFormatter = (price: number): string => {
-    if (price < 0.0001) return price.toPrecision(4);
+    if (price === 0) return '0';
+    if (price < 0.000001) {
+        return price.toFixed(12).replace(/\.?0+$/, "");
+    }
     if (price < 1) return price.toFixed(6);
     return price.toFixed(2);
 };
@@ -36,32 +42,34 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     const [lastBarIndex, setLastBarIndex] = createSignal<number | null>(null);
     let isSettingRangeProgrammatically = false;
 
-    // --- 新的后端驱动的数据加载逻辑 ---
-    
+    // 🏷️ 生成一个用于日志的唯一ID
+    const getLogId = () => `[${props.tokenInfo?.symbol || '???'} @ ${props.timeframe}]`;
+
     const cleanupChart = () => {
-        chart?.remove();
-        chart = null;
-        candlestickSeries = null;
-        setLastBarIndex(null);
+        if (chart) {
+            // console.log(`${getLogId()} Cleanup chart.`);
+            chart.remove();
+            chart = null;
+            candlestickSeries = null;
+            setLastBarIndex(null);
+        }
     };
 
     const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
-        console.log(`[RT UNSUB] Unsubscribing from realtime updates for ${payload.address}`);
+        console.log(`${getLogId()} 🔻 Unsubscribing realtime...`);
         socket.off('kline_update', handleKlineUpdate);
         socket.emit('unsubscribe_kline', payload);
     };
     
-    // 统一的K线更新处理器
     const handleKlineUpdate = (update: KlineUpdatePayload) => {
         const info = props.tokenInfo;
         if (!info) return;
-        // 简单的 room name 构造，用于匹配
-        // 注意：这里的 poolId 需要和后端逻辑一致，这是一个潜在的脆弱点
         const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
         const poolId = chainToPoolId[info.chain.toLowerCase()];
         const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
 
         if (update.room === expectedRoom) {
+            // console.log(`${getLogId()} ⚡ Realtime update received: ${update.data.time}`);
             candlestickSeries?.update(update.data as CandlestickData<number>);
         }
     };
@@ -77,26 +85,45 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         }
 
         cleanupChart();
-        setStatus(`Loading ${info.symbol} ${timeframe} data...`);
+        setStatus(`Loading ${info.symbol}...`);
         
-        // 创建图表实例
-        chart = createChart(chartContainer, { /* ... chart options ... */
-             width: chartContainer.clientWidth, height: chartContainer.clientHeight,
-            layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
-            grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
-            timeScale: { visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false },
-            rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc' },
-            leftPriceScale: { visible: false },
-            handleScroll: true, handleScale: true,
-        });
+        if (!chartContainer) {
+            return;
+        }
 
-        candlestickSeries = chart.addSeries('Candlestick', {
-            priceFormat: { type: 'price', precision: 8, minMove: 0.00000001, formatter: customPriceFormatter },
-            upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
-            borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
-        });
-        
-        // 뷰포트 변경 핸들러
+        const logId = `[${info.symbol} @ ${timeframe}]`;
+        console.log(`${logId} 🚀 Chart Initialization Started.`);
+
+        try {
+            chart = createChart(chartContainer, {
+                width: chartContainer.clientWidth, 
+                height: chartContainer.clientHeight,
+                layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
+                grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+                timeScale: { visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false },
+                rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
+                leftPriceScale: { visible: false },
+                handleScroll: true, 
+                handleScale: true,
+            });
+
+            candlestickSeries = chart.addSeries(CandlestickSeries, {
+                priceFormat: { 
+                    type: 'price', 
+                    precision: 10,
+                    minMove: 0.00000001, 
+                    formatter: customPriceFormatter 
+                },
+                upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
+                borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+            });
+
+        } catch (e) {
+            console.error(`${logId} ❌ Failed to create chart:`, e);
+            setStatus(`Chart Error: ${e}`);
+            return;
+        }
+
         chart.timeScale().subscribeVisibleLogicalRangeChange((newRange) => {
             if (newRange && props.onViewportChange && !isSettingRangeProgrammatically) {
                 if (props.activeChartId === props.tokenInfo?.contractAddress) {
@@ -109,56 +136,108 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             }
         });
 
-
         const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
-        // --- 数据加载流程 ---
-        const handleInitialData = (data: LightweightChartKline[]) => {
-            if (data.length > 0) {
-                candlestickSeries?.setData(data as CandlestickData<number>[]);
-                setLastBarIndex(data.length - 1);
-                // 同步其他图表的视口
-                const vs = props.viewportState;
-                if (vs) {
-                     const to = data.length - 1 - vs.offset;
-                     const from = to - vs.width;
-                     setTimeout(() => chart?.timeScale().setVisibleLogicalRange({ from, to }), 0);
-                } else {
-                    chart?.timeScale().fitContent();
-                }
+        // ✨ 调试日志：处理初始数据
+        const handleInitialData = (response: any) => {
+            // 1. 基本检查
+            if (Array.isArray(response)) {
+                console.error(`${logId} ❌ Received Array (Old Backend Format?)! Expecting Object.`);
+                return;
             }
-            setStatus(`Live: ${info.symbol} ${timeframe}`);
+
+            // 2. 检查元数据匹配
+            if (
+                response.interval !== timeframe || 
+                response.address.toLowerCase() !== info.contractAddress.toLowerCase()
+            ) {
+                // 忽略不匹配的数据（广播机制）
+                return; 
+            }
+
+            const dataCount = response.data?.length || 0;
+            console.log(`${logId} 📥 RX Initial Data. Count: ${dataCount}`);
+
+            const data = response.data;
+            if (data && data.length > 0) {
+                try {
+                    candlestickSeries?.setData(data as CandlestickData<number>[]);
+                    setLastBarIndex(data.length - 1);
+                    
+                    const vs = props.viewportState;
+                    if (vs) {
+                        const to = data.length - 1 - vs.offset;
+                        const from = to - vs.width;
+                        setTimeout(() => chart?.timeScale().setVisibleLogicalRange({ from, to }), 0);
+                    } else {
+                        chart?.timeScale().fitContent();
+                    }
+                    setStatus(`Live: ${info.symbol} ${timeframe}`);
+                } catch (e) {
+                    console.error(`${logId} ❌ Failed to set initial data:`, e);
+                }
+            } else {
+                console.warn(`${logId} ⚠️ Initial data was empty.`);
+                setStatus(`Waiting for data...`);
+            }
         };
         
-        const handleCompletedData = (data: LightweightChartKline[]) => {
-            const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
-            const newDataMap = new Map(currentData.map(d => [d.time, d]));
-            data.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
-            const sortedData = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
-            candlestickSeries?.setData(sortedData);
-            setLastBarIndex(sortedData.length - 1);
+        // ✨ 调试日志：处理完整数据 (API Fetch 结果)
+        const handleCompletedData = (response: any) => {
+            if (
+                response.interval !== timeframe || 
+                response.address.toLowerCase() !== info.contractAddress.toLowerCase()
+            ) {
+                return; 
+            }
+
+            const dataCount = response.data?.length || 0;
+            console.log(`${logId} 📥 RX Completed Data (API). Count: ${dataCount}`);
+            
+            const data = response.data;
+            if (data && data.length > 0) {
+                try {
+                    const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
+                    // 合并数据逻辑
+                    const newDataMap = new Map(currentData.map(d => [d.time, d]));
+                    data.forEach((d: any) => newDataMap.set(d.time as number, d as CandlestickData<number>));
+                    
+                    const sortedData = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+                    
+                    candlestickSeries?.setData(sortedData);
+                    setLastBarIndex(sortedData.length - 1);
+                    setStatus(`Live: ${info.symbol} ${timeframe}`);
+                    
+                    if (currentData.length === 0) {
+                         chart?.timeScale().fitContent();
+                    }
+
+                } catch (e) {
+                    console.error(`${logId} ❌ Failed to update completed data:`, e);
+                }
+            } else {
+                 console.warn(`${logId} ⚠️ Completed data was empty.`);
+            }
         };
         
         const handleFetchError = (err: KlineFetchErrorPayload) => {
              const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
              if(err.key === key) {
-                setStatus(`Error loading data for ${info.symbol}: ${err.error}`);
-                console.error(`[KLINE_FETCH_ERROR]`, err);
+                console.error(`${logId} ❌ Backend Report Error:`, err);
+                setStatus(`Error: ${err.error}`);
              }
         };
 
-        // 绑定监听器
         socket.on('historical_kline_initial', handleInitialData);
         socket.on('historical_kline_completed', handleCompletedData);
         socket.on('kline_fetch_error', handleFetchError);
         socket.on('kline_update', handleKlineUpdate);
 
-        // 发起请求
+        console.log(`${logId} 📤 Sending 'request_historical_kline' & 'subscribe_kline'`);
         socket.emit('request_historical_kline', payload);
-        socket.emit('subscribe_kline', payload); // 订阅实时更新
+        socket.emit('subscribe_kline', payload); 
 
         onCleanup(() => {
-            console.log(`[CLEANUP] Cleaning up chart for ${info.symbol} ${timeframe}`);
             unsubscribeRealtime(payload);
             socket.off('historical_kline_initial', handleInitialData);
             socket.off('historical_kline_completed', handleCompletedData);
@@ -167,7 +246,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
     });
 
-    // Effect for syncing viewport from other charts
     createEffect(() => {
         const vs = props.viewportState;
         if (chart && vs && props.activeChartId !== props.tokenInfo?.contractAddress) {
@@ -188,7 +266,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 chart.applyOptions({ width, height });
             }
         });
-        resizeObserver.observe(chartContainer);
+        if (chartContainer) {
+            resizeObserver.observe(chartContainer);
+        }
     });
 
     onCleanup(() => resizeObserver?.disconnect());

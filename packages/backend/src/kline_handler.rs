@@ -1,33 +1,28 @@
 // packages/backend/src/kline_handler.rs
+
 use crate::{
-    types::{HistoricalDataWrapper, KlineSubscribePayload, KlineTick},
+    client_pool::ClientPool,
+    types::{HistoricalDataWrapper, KlineHistoryResponse, KlineSubscribePayload, KlineTick},
     ServerState,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde_json::Value;
 use socketioxide::extract::{Data, SocketRef};
 use sqlx::{
-    sqlite::{SqlitePool, SqliteRow}, // 这个导入现在会生效
+    sqlite::{SqlitePool, SqliteRow},
     Row,
 };
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::time::Instant;
 use tokio_retry::{strategy::ExponentialBackoff, Retry};
 use tracing::{error, info, warn};
-
-// ... (文件余下内容保持不变) ...
 
 const API_URL_TEMPLATE: &str = "https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}";
 const API_MAX_LIMIT: i64 = 500;
 const DB_MAX_RECORDS: i64 = 1000;
 const DB_PRUNE_TO_COUNT: i64 = 500;
-const FETCH_RETRY_COUNT: usize = 10;
-
-static KLINE_FETCH_LOCKS: Lazy<DashMap<String, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
+const FETCH_RETRY_COUNT: usize = 3;
 
 pub async fn init_db(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
@@ -53,80 +48,79 @@ pub async fn handle_kline_request(
     Data(payload): Data<KlineSubscribePayload>,
     state: ServerState,
 ) {
+    let start_total = Instant::now();
     let primary_key = get_primary_key(&payload);
-    info!(
-        "[KLINE_REQ] Received for {} from client {}",
-        primary_key, s.id
-    );
 
+    // --- 步骤 1: 立即查询数据库并返回 (同步路径) ---
+    let db_start = Instant::now();
     let initial_data = match get_klines_from_db(&state.db_pool, &primary_key).await {
-        Ok(data) => data,
+        Ok(data) => {
+            let db_duration = db_start.elapsed();
+            if !data.is_empty() {
+                let last_time = data.last().unwrap().time;
+                info!(
+                    "💾 [DB HIT] {} records for {}. Last Candle: {} (Took {:?})",
+                    data.len(),
+                    primary_key,
+                    last_time,
+                    db_duration
+                );
+            } else {
+                info!(
+                    "💾 [DB MISS] No records found for {} (Took {:?})",
+                    primary_key,
+                    db_duration
+                );
+            }
+            data
+        }
         Err(e) => {
-            error!(
-                "[KLINE_DB_ERR] Failed to get initial klines for {}: {}",
-                primary_key, e
-            );
+            error!("❌ [DB ERROR] for {}: {}", primary_key, e);
             vec![]
         }
     };
-    
-    if let Err(e) = s.emit("historical_kline_initial", &initial_data) {
-        error!(
-            "[KLINE_EMIT_ERR] Failed to send initial klines for {}: {}",
-            primary_key, e
-        );
+
+    // 发送初始数据
+    let initial_response = KlineHistoryResponse {
+        address: payload.address.clone(),
+        chain: payload.chain.clone(),
+        interval: payload.interval.clone(),
+        data: initial_data,
+    };
+
+    if let Err(e) = s.emit("historical_kline_initial", &initial_response) {
+        error!("❌ [EMIT ERROR] initial for {}: {}", primary_key, e);
     }
 
-    tokio::spawn(async move {
-        let lock = KLINE_FETCH_LOCKS
-            .entry(primary_key.clone())
-            .or_default()
-            .clone();
-        let Ok(_guard) = lock.try_lock() else {
-            info!("[KLINE_FETCH_LOCK] Completion task for {} is already running. Skipping.", primary_key);
-            return;
-        };
+    info!(
+        "🚀 [PERF STEP 1] {} -> DB Data Sent to Client in {:?}",
+        primary_key,
+        start_total.elapsed()
+    );
 
-        info!(
-            "[KLINE_FETCH_TASK] Starting completion task for {}",
-            primary_key
-        );
-        match complete_kline_data(&payload, &state, &primary_key).await {
-            Ok(Some(completed_data)) => {
-                if !completed_data.is_empty() {
-                    if let Err(e) = s.emit("historical_kline_completed", &completed_data) {
-                        error!(
-                            "[KLINE_EMIT_ERR] Failed to send completed klines for {}: {}",
-                            primary_key, e
-                        );
-                    }
-                    info!(
-                        "[KLINE_FETCH_TASK] Successfully completed and sent data for {}",
-                        primary_key
-                    );
-                } else {
-                    info!(
-                        "[KLINE_FETCH_TASK] Task for {} finished, no new data to send.",
-                        primary_key
-                    );
-                }
-            }
-            Ok(None) => {
+    // --- 步骤 2: 后台补全缺失数据 (异步路径) ---
+    tokio::spawn(async move {
+        let api_process_start = Instant::now();
+
+        match complete_kline_data(&payload, &state, &primary_key, &s).await {
+            Ok(Some(count)) => {
+                let api_duration = api_process_start.elapsed();
+                let total_duration = start_total.elapsed();
                 info!(
-                    "[KLINE_FETCH_TASK] Task for {} finished, data was up to date.",
-                    primary_key
+                    "📡 [PERF STEP 2] {} -> Fetched & Sent {} NEW/UPDATED candles. (API: {:?}, Total E2E: {:?})",
+                    primary_key,
+                    count,
+                    api_duration,
+                    total_duration
                 );
             }
+            Ok(None) => {
+                // 理论上现在很少会进入这里，除非 limit <= 0
+            }
             Err(e) => {
-                error!("[KLINE_FETCH_TASK_ERR] for {}: {:?}", primary_key, e);
-                let err_payload =
-                    serde_json::json!({ "key": primary_key, "error": e.to_string() });
-                if let Err(e_emit) = s.emit("kline_fetch_error", &err_payload) {
-                    error!(
-                        "[KLINE_EMIT_ERR] Failed to send fetch error for {}: {}",
-                        primary_key, e_emit
-                    );
-                }
+                error!("❌ [FETCH FAILED] for {}: {:?}", primary_key, e);
+                let err_payload = serde_json::json!({ "key": primary_key, "error": e.to_string() });
+                s.emit("kline_fetch_error", &err_payload).ok();
             }
         }
     });
@@ -136,69 +130,139 @@ async fn complete_kline_data(
     payload: &KlineSubscribePayload,
     state: &ServerState,
     primary_key: &str,
-) -> Result<Option<Vec<KlineTick>>> {
+    s: &SocketRef,
+) -> Result<Option<usize>> {
     let last_kline = get_last_kline_from_db(&state.db_pool, primary_key).await?;
     let interval_ms = interval_to_ms(&payload.interval);
+    let now = Utc::now();
 
     let mut limit = match last_kline {
         Some(kline) => {
-            let time_diff_ms = Utc::now().timestamp_millis() - kline.time.timestamp_millis();
-            (time_diff_ms / interval_ms).max(1)
+            let time_diff_ms = now.timestamp_millis() - kline.time.timestamp_millis();
+            // 即使时间差很小，只要 interval_ms 大于 0，limit 至少为 1
+            // 这保证了我们总是会去拉取最新的一根 K 线来更新它的状态
+            let missing_count = (time_diff_ms / interval_ms).max(1);
+            
+            if missing_count > 1 {
+                info!(
+                    "🕵️ [CHECK {}] Gap detected. Last: {}, Now: {}, Need ~{} candles.", 
+                    primary_key, kline.time, now, missing_count
+                );
+            } else {
+                info!(
+                    "🔄 [CHECK {}] Database has latest timestamp, but refreshing active candle (Limit=1).", 
+                    primary_key
+                );
+            }
+            
+            missing_count
         }
-        None => API_MAX_LIMIT,
+        None => {
+            info!("🕵️ [CHECK {}] Empty DB. Triggering full fetch (500).", primary_key);
+            API_MAX_LIMIT
+        },
     };
 
-    if limit <= 1 {
-        info!("[KLINE_CHECK] Data for {} is up to date.", primary_key);
+    // ✨ 核心修改：移除 "limit <= 1" 的跳过逻辑
+    // 哪怕 limit 是 1，也要去请求，因为这一根可能是未收盘的，数据变了。
+    if limit <= 0 {
         return Ok(None);
     }
-    
+
     if limit > API_MAX_LIMIT {
         warn!(
-            "[KLINE_STALE] Data for {} is too old (missing {} candles). Clearing cache.",
-            primary_key, limit
+            "⚠️ [STALE] {} missing {} candles (Too many). Resetting to {}.",
+            primary_key, limit, API_MAX_LIMIT
         );
         clear_klines_from_db(&state.db_pool, primary_key).await?;
         limit = API_MAX_LIMIT;
     }
 
-    info!(
-        "[KLINE_FETCH] Fetching {} candles for {}",
-        limit, primary_key
-    );
-    let new_klines = fetch_historical_data(payload, limit).await?;
+    // 执行网络请求 (利用连接池，这里应该非常快)
+    let new_klines = fetch_historical_data_with_pool(&state.client_pool, payload, limit).await?;
+
     if new_klines.is_empty() {
-        return Ok(Some(vec![]));
+        warn!("⚠️ [API EMPTY] Returned 0 candles for {}", primary_key);
+        return Ok(Some(0));
     }
-    
+
+    // 立即发送给前端
+    let emit_start = Instant::now();
+    let completed_response = KlineHistoryResponse {
+        address: payload.address.clone(),
+        chain: payload.chain.clone(),
+        interval: payload.interval.clone(),
+        data: new_klines.clone(),
+    };
+
+    if let Err(e) = s.emit("historical_kline_completed", &completed_response) {
+        error!("❌ [EMIT ERROR] completed for {}: {}", primary_key, e);
+    } else {
+        // info!("🚀 [PERF EMIT] Data sent to client in {:?} (Before DB write)", emit_start.elapsed());
+    }
+
+    // 异步存库 (这里会执行 INSERT OR REPLACE，所以最新 K 线的旧数据会被新状态覆盖)
     save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
     prune_old_klines_from_db(&state.db_pool, primary_key).await?;
-    
-    Ok(Some(new_klines))
+
+    Ok(Some(new_klines.len()))
 }
 
-
-async fn fetch_historical_data(
+async fn fetch_historical_data_with_pool(
+    pool: &ClientPool,
     payload: &KlineSubscribePayload,
     limit: i64,
 ) -> Result<Vec<KlineTick>> {
-    let retry_strategy = ExponentialBackoff::from_millis(500).take(FETCH_RETRY_COUNT);
-    let client = Client::new();
+    let formatted_interval = format_interval_for_api(&payload.interval);
+    let url = API_URL_TEMPLATE
+        .replace("{address}", &payload.address)
+        .replace("{platform}", &payload.chain)
+        .replace("{interval}", &formatted_interval)
+        .replace("{limit}", &limit.to_string());
 
-    Retry::spawn(retry_strategy, || async {
-        let url = API_URL_TEMPLATE
-            .replace("{address}", &payload.address)
-            .replace("{platform}", &payload.chain)
-            .replace("{interval}", &format_interval_for_api(&payload.interval))
-            .replace("{limit}", &limit.to_string());
+    let interval_label = payload.interval.clone();
+
+    for attempt in 1..=3 {
+        let (client_idx, client) = pool.get_client().await;
         
-        let response = client.get(&url).send().await.context("API request failed")?;
-        if !response.status().is_success() {
-            return Err(anyhow!("API returned non-success status: {}", response.status()));
+        let http_start = Instant::now();
+
+        match client.get(&url).send().await {
+            Ok(response) => {
+                info!("⚡ [PERF HTTP] Request took {:?}", http_start.elapsed());
+                
+                if !response.status().is_success() {
+                     warn!("❌ [API FAIL] Status: {}. Recycling node #{}...", response.status(), client_idx);
+                     pool.recycle_client(client_idx).await;
+                     continue;
+                }
+                
+                let text_response = response.text().await?;
+                match serde_json::from_str::<HistoricalDataWrapper>(&text_response) {
+                    Ok(wrapper) => {
+                        match parse_api_data(&wrapper.data, &interval_label) {
+                            Ok(data) => {
+                                return Ok(data);
+                            },
+                            Err(e) => {
+                                return Err(anyhow!("Data parse error: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("❌ [JSON PARSE FAIL] Error: {}. Recycling node #{}", e, client_idx);
+                        pool.recycle_client(client_idx).await;
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("❌ [NET FAIL] Error: {}. Recycling node #{} and retrying...", e, client_idx);
+                pool.recycle_client(client_idx).await;
+            }
         }
-        let wrapper: HistoricalDataWrapper = response.json().await.context("Failed to parse API JSON response")?;
-        parse_api_data(&wrapper.data)
-    }).await
+    }
+
+    Err(anyhow!("All 3 attempts failed."))
 }
 
 async fn get_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<Vec<KlineTick>> {
@@ -221,8 +285,14 @@ async fn get_last_kline_from_db(pool: &SqlitePool, primary_key: &str) -> Result<
     .context("Failed to fetch last kline from DB")
 }
 
-async fn save_klines_to_db(pool: &SqlitePool, primary_key: &str, klines: &[KlineTick]) -> Result<()> {
-    if klines.is_empty() { return Ok(()); }
+async fn save_klines_to_db(
+    pool: &SqlitePool,
+    primary_key: &str,
+    klines: &[KlineTick],
+) -> Result<()> {
+    if klines.is_empty() {
+        return Ok(());
+    }
     let mut tx = pool.begin().await?;
     for kline in klines {
         sqlx::query(
@@ -238,7 +308,9 @@ async fn save_klines_to_db(pool: &SqlitePool, primary_key: &str, klines: &[Kline
         .execute(&mut *tx)
         .await?;
     }
-    tx.commit().await.context("Failed to commit transaction for saving klines")
+    tx.commit()
+        .await
+        .context("Failed to commit transaction for saving klines")
 }
 
 async fn clear_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<()> {
@@ -258,11 +330,10 @@ async fn prune_old_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Resul
 
     if count > DB_MAX_RECORDS {
         let limit = count - DB_PRUNE_TO_COUNT;
-        info!("[DB_PRUNE] Pruning {} old records for {}", limit, primary_key);
         sqlx::query(
             "DELETE FROM klines WHERE rowid IN (
                 SELECT rowid FROM klines WHERE primary_key = ? ORDER BY time ASC LIMIT ?
-            )"
+            )",
         )
         .bind(primary_key)
         .bind(limit)
@@ -295,24 +366,40 @@ fn interval_to_ms(interval: &str) -> i64 {
 
 fn format_interval_for_api(interval: &str) -> String {
     if let Some(val) = interval.strip_suffix('m') {
-        format!("{}in", val)
+        format!("{}min", val)
     } else {
         interval.to_string()
     }
 }
 
-fn parse_api_data(data: &[Vec<Value>]) -> Result<Vec<KlineTick>> {
+fn parse_api_data(data: &[Vec<Value>], interval_label: &str) -> Result<Vec<KlineTick>> {
+    let extract_f64 = |v: &Value, name: &str| -> Result<f64> {
+        if let Some(f) = v.as_f64() {
+            return Ok(f);
+        }
+        if let Some(s) = v.as_str() {
+            return s.parse::<f64>().map_err(|_| {
+                anyhow!("Invalid float string for {}: {}", name, s)
+            });
+        }
+        if let Some(i) = v.as_i64() {
+            return Ok(i as f64);
+        }
+        Ok(0.0)
+    };
+
     data.iter()
         .map(|d| -> Result<KlineTick> {
+            let timestamp_ms = d.get(5).and_then(|v| v.as_i64()).unwrap_or(0);
             Ok(KlineTick {
-                 time: DateTime::from_timestamp(d[5].as_i64().unwrap_or(0) / 1000, 0)
+                time: DateTime::from_timestamp(timestamp_ms / 1000, 0)
                     .context("Invalid timestamp")?
                     .with_timezone(&Utc),
-                open: d[0].as_str().unwrap_or("0").parse()?,
-                high: d[1].as_str().unwrap_or("0").parse()?,
-                low: d[2].as_str().unwrap_or("0").parse()?,
-                close: d[3].as_str().unwrap_or("0").parse()?,
-                volume: d[4].as_str().unwrap_or("0").parse()?,
+                open: extract_f64(d.get(0).unwrap_or(&Value::Null), "open")?,
+                high: extract_f64(d.get(1).unwrap_or(&Value::Null), "high")?,
+                low: extract_f64(d.get(2).unwrap_or(&Value::Null), "low")?,
+                close: extract_f64(d.get(3).unwrap_or(&Value::Null), "close")?,
+                volume: extract_f64(d.get(4).unwrap_or(&Value::Null), "volume")?,
             })
         })
         .collect()

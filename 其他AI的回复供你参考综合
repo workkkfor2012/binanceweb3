@@ -1,0 +1,1218 @@
+这是一个非常棒的思路！这正是“混合架构”的精髓所在。
+
+你的方案完全可行且非常合理：
+
+HTTP 请求拿到的是截至当前时刻的完整 K 线历史（包含最新那一根）。
+
+WebSocket 任务刚启动时，内存是空的（None）。
+
+桥接：我们可以把 HTTP 请求回来的最后一根 K 线，直接“注入”到 WebSocket 任务的内存状态中。
+
+效果：这样 current_kline 就不再是 None，随后的 tx (Tick) 数据立刻就能基于这个“初始值”进行计算和推送，实现了零等待、零丢弃。
+
+我们需要修改 4 个文件来实现这个状态共享和注入机制。
+
+1. 修改 packages/backend/src/types.rs
+
+我们需要在 Room 结构体中添加 current_kline 字段，这样这个状态就能在 socket_handlers（管理房间）和 kline_handler（下载数据）之间共享。
+
+packages/backend/src/types.rs
+
+code
+Rust
+download
+content_copy
+expand_less
+// packages/backend/src/types.rs
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use socketioxide::socket::Sid;
+use sqlx::FromRow;
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex; // ✨ 需要引入 Mutex
+use tokio::task::JoinHandle;
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketItem {
+    pub contract_address: Option<String>,
+    pub symbol: Option<String>,
+    pub icon: Option<String>,
+    pub chain: Option<String>,
+    pub price: Option<f64>,
+    pub market_cap: Option<f64>,
+    pub chain_id: Option<String>,
+    pub volume1m: Option<f64>,
+    pub volume5m: Option<f64>,
+    pub volume1h: Option<f64>,
+    pub volume4h: Option<f64>,
+    pub volume24h: Option<f64>,
+    pub price_change1m: Option<f64>,
+    pub price_change5m: Option<f64>,
+    pub price_change1h: Option<f64>,
+    pub price_change4h: Option<f64>,
+    pub price_change24h: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KlineSubscribePayload {
+    pub address: String,
+    pub chain: String,
+    pub interval: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DataPayload {
+    pub r#type: String,
+    pub data: Vec<MarketItem>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceStreamWrapper<T> {
+    pub stream: String,
+    pub data: T,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceKlineDataWrapper {
+    #[serde(rename = "d")]
+    pub kline_data: BinanceKlineDetail,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+pub struct BinanceKlineDetail {
+    #[serde(rename = "u")]
+    pub values: (String, String, String, String, String, String),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceTickDataWrapper {
+    #[serde(rename = "d")]
+    pub tick_data: BinanceTickDetail,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+pub struct BinanceTickDetail {
+    pub t0a: String,
+    pub t1a: String,
+    pub t0pu: f64,
+    pub t1pu: f64,
+    pub v: f64,
+    pub tp: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct KlineBroadcastData {
+    pub room: String,
+    pub data: KlineTick,
+}
+
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KlineTick {
+    #[serde(with = "chrono::serde::ts_seconds")]
+    pub time: DateTime<Utc>,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KlineHistoryResponse {
+    pub address: String,
+    pub chain: String,
+    pub interval: String,
+    pub data: Vec<KlineTick>,
+}
+
+pub struct Room {
+    pub clients: HashSet<Sid>,
+    pub task_handle: JoinHandle<()>,
+    pub symbol: String,
+    // ✨ 新增：共享的 K 线状态，允许 HTTP Handler 注入初始数据
+    pub current_kline: Arc<Mutex<Option<KlineTick>>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageProxyQuery {
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CacheMeta {
+    pub content_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HistoricalDataWrapper {
+    pub data: Vec<Vec<serde_json::Value>>,
+}
+2. 修改 packages/backend/src/socket_handlers.rs
+
+在创建房间时，初始化 current_kline，并将其传递给 binance_task。
+
+packages/backend/src/socket_handlers.rs
+
+code
+Rust
+download
+content_copy
+expand_less
+// packages/backend/src/socket_handlers.rs
+
+use super::{
+    binance_task,
+    kline_handler,
+    types::{DataPayload, KlineSubscribePayload, Room, KlineTick}, // ✨ 引入 KlineTick
+    ServerState,
+};
+use socketioxide::{
+    extract::{Data, SocketRef},
+};
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex; // ✨ 引入 Mutex
+use tracing::{error, info, warn};
+
+pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
+    info!("🔌 [Socket.IO] Client connected: {}", s.id);
+
+    register_data_update_handler(&s, state.clone());
+    register_kline_subscribe_handler(&s, state.clone());
+    register_kline_unsubscribe_handler(&s, state.clone());
+    register_disconnect_handler(&s, state.clone());
+    register_kline_history_handler(&s, state);
+}
+
+fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "request_historical_kline",
+        move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
+            let state = state.clone();
+            async move {
+                // info!("📜 [REQ HISTORY] Client {} requested kline history for {}@{}", s.id, payload.0.chain, payload.0.address);
+                kline_handler::handle_kline_request(s, payload, state).await;
+            }
+        },
+    );
+}
+
+fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "data-update",
+        move |s: SocketRef, payload: Data<serde_json::Value>| {
+            let state = state.clone();
+            async move {
+                if let Err(e) = s.broadcast().emit("data-broadcast", &payload.0).await {
+                    error!("[Socket.IO] Failed to broadcast data for {}: {:?}", s.id, e);
+                }
+
+                match serde_json::from_value::<DataPayload>(payload.0) {
+                    Ok(parsed_payload) => {
+                        for item in parsed_payload.data {
+                            if let (Some(address), Some(symbol)) = (item.contract_address, item.symbol) {
+                                state.token_symbols.insert(address.to_lowercase(), symbol);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[SYMBOL MAP] Failed to parse data-update payload: {}", e);
+                    }
+                }
+            }
+        },
+    );
+}
+
+fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "subscribe_kline",
+        move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
+            let state = state.clone();
+            async move {
+                let chain_lower = payload.chain.to_lowercase();
+                
+                let address_lowercase = payload.address.to_lowercase();
+                let symbol = state.token_symbols
+                    .get(&address_lowercase)
+                    .map_or_else(
+                        || format!("{}...", &payload.address[0..6]),
+                        |s| s.value().clone()
+                    );
+
+                let pool_id = match chain_lower.as_str() {
+                    "bsc" => 14, 
+                    "sol" | "solana" => 16, 
+                    "base" => 199,
+                    unsupported_chain => {
+                        warn!("⚠️ [SUBSCRIBE FAIL] Unsupported chain '{}' (original: '{}') for {}. Ignored.", unsupported_chain, payload.chain, s.id);
+                        return;
+                    }
+                };
+
+                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+                let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
+
+                info!("🔔 [SUB] Client {} -> Room: {}", s.id, log_display_name);
+                s.join(room_name.clone());
+
+                state.app_state
+                    .entry(room_name.clone())
+                    .or_insert_with(|| {
+                        info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
+                        
+                        // ✨ 1. 创建共享状态
+                        let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
+                        
+                        // ✨ 2. 将状态传给 Task
+                        let task_handle = tokio::spawn(binance_task::binance_websocket_task(
+                            state.io.clone(),
+                            room_name.clone(),
+                            symbol.clone(), 
+                            state.config.clone(),
+                            current_kline.clone(), // 传递进去
+                        ));
+                        
+                        Room {
+                            clients: HashSet::new(),
+                            task_handle,
+                            symbol,
+                            current_kline, // ✨ 3. 保存到 Room 以便 HTTP Handler 访问
+                        }
+                    })
+                    .value_mut()
+                    .clients
+                    .insert(s.id);
+            }
+        },
+    );
+}
+
+fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "unsubscribe_kline",
+        move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
+            let state = state.clone();
+            async move {
+                let chain_lower = payload.chain.to_lowercase();
+
+                 let symbol = state.token_symbols
+                    .get(&payload.address.to_lowercase())
+                    .map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
+
+                let pool_id = match chain_lower.as_str() {
+                    "bsc" => 14, 
+                    "sol" | "solana" => 16, 
+                    "base" => 199,
+                    _ => { return; }
+                };
+                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+                let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
+
+                info!("🔽 [UNSUB] Client {} leaving room: {}", s.id, log_display_name);
+                s.leave(room_name.clone());
+
+                if let Some(mut room) = state.app_state.get_mut(&room_name) {
+                    room.clients.remove(&s.id);
+                    if room.clients.is_empty() {
+                        drop(room);
+                        if let Some((_, room_to_abort)) = state.app_state.remove(&room_name) {
+                            info!("🗑️ [ROOM EMPTY] Last client left '{}'. Aborting Binance task.", log_display_name);
+                            room_to_abort.task_handle.abort();
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
+    socket.on_disconnect(move |s: SocketRef| {
+        let state = state.clone();
+        async move {
+            // info!("🔌 [Socket.IO] Client disconnected: {}", s.id);
+            let mut empty_rooms: Vec<(String, String)> = Vec::new();
+
+            for mut entry in state.app_state.iter_mut() {
+                if entry.value_mut().clients.remove(&s.id) {
+                    let log_display_name = {
+                        let parts: Vec<&str> = entry.key().split('@').collect();
+                        if parts.len() == 4 {
+                             format!("{}@{}@{}@{}", parts[0], parts[1], &entry.value().symbol, parts[3])
+                        } else {
+                            entry.key().to_string()
+                        }
+                    };
+                    if entry.clients.is_empty() {
+                        empty_rooms.push((entry.key().clone(), log_display_name));
+                    }
+                }
+            }
+
+            for (room_name, log_display_name) in empty_rooms {
+                if let Some((_, room)) = state.app_state.remove(&room_name) {
+                    info!("🗑️ [ROOM CLEANUP] Room '{}' is now empty. Aborting task.", log_display_name);
+                    room.task_handle.abort();
+                }
+            }
+        }
+    });
+}
+3. 修改 packages/backend/src/binance_task.rs
+
+更新函数签名，不再在内部创建 current_kline，而是接收外部传入的。
+
+packages/backend/src/binance_task.rs
+
+code
+Rust
+download
+content_copy
+expand_less
+// packages/backend/src/binance_task.rs
+
+use super::{
+    config::Config,
+    types::{
+        BinanceKlineDataWrapper, BinanceStreamWrapper, BinanceTickDataWrapper, KlineBroadcastData,
+        KlineTick,
+    },
+};
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
+use socketioxide::SocketIo;
+use std::{sync::Arc, time::SystemTime};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::Mutex,
+    time::interval,
+};
+use tokio_native_tls::TlsConnector as TokioTlsConnector;
+use tokio_tungstenite::{
+    client_async_with_config,
+    tungstenite::{client::IntoClientRequest, Message},
+    WebSocketStream,
+};
+use tracing::{error, info, warn};
+
+type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
+type WsWrite = SplitSink<WsStream, Message>;
+type WsRead = futures_util::stream::SplitStream<WsStream>;
+
+const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0;
+const LOW_VOLUME_THRESHOLD: f64 = 10.0;
+
+pub async fn binance_websocket_task(
+    io: SocketIo,
+    room_name: String,
+    symbol: String,
+    config: Arc<Config>,
+    // ✨ 新增参数：接收共享的状态
+    current_kline: Arc<Mutex<Option<KlineTick>>>,
+) {
+    let log_display_name = {
+        let parts: Vec<&str> = room_name.split('@').collect();
+        if parts.len() == 4 {
+            format!("{}@{}@{}@{}", parts[0], parts[1], &symbol, parts[3])
+        } else {
+            room_name.clone()
+        }
+    };
+
+    let address = match room_name.split('@').nth(2) {
+        Some(addr) => addr.to_lowercase(),
+        None => {
+            error!(
+                "❌ [TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.",
+                log_display_name
+            );
+            return;
+        }
+    };
+    let address = Arc::new(address);
+
+    loop {
+        match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config, current_kline.clone()).await {
+            Ok(_) => warn!(
+                "🔁 [TASK {}] Disconnected gracefully. Reconnecting...",
+                log_display_name
+            ),
+            Err(e) => error!(
+                "🔁 [TASK {}] Connection failed: {:#?}. Retrying in 3s...",
+                log_display_name, e
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
+async fn connect_and_run(
+    io: &SocketIo,
+    room_name: &str,
+    log_display_name: &str,
+    address: Arc<String>,
+    config: &Config,
+    current_kline: Arc<Mutex<Option<KlineTick>>>, // ✨ 传递
+) -> Result<()> {
+    let stream = establish_http_tunnel(log_display_name, config).await?;
+    let host = Url::parse(&config.binance_wss_url)?
+        .host_str()
+        .unwrap_or_default()
+        .to_string();
+    let tls_stream = wrap_stream_with_tls(stream, &host).await?;
+
+    let mut request = config.binance_wss_url.as_str().into_client_request()?;
+    let headers = request.headers_mut();
+
+    headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse()?);
+    headers.insert("Origin", "https://web3.binance.com".parse()?);
+    headers.insert("Accept-Encoding", "gzip, deflate, br, zstd".parse()?);
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse()?);
+    headers.insert("Pragma", "no-cache".parse()?);
+    headers.insert("Cache-Control", "no-cache".parse()?);
+
+    let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
+        .await
+        .context("WebSocket handshake failed")?;
+    info!(
+        "✅ [TASK {}] WebSocket handshake successful. Status: {}",
+        log_display_name,
+        response.status()
+    );
+
+    let (mut write, mut read) = ws_stream.split();
+    subscribe_all(&mut write, room_name, log_display_name).await?;
+
+    // ✨ 移除：不再本地创建
+    // let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
+
+    message_loop(
+        io,
+        room_name,
+        log_display_name,
+        config,
+        &mut write,
+        &mut read,
+        current_kline, // 使用传入的
+        address,
+    )
+    .await
+}
+
+async fn subscribe_all(
+    write: &mut WsWrite,
+    kline_room_name: &str,
+    log_display_name: &str,
+) -> Result<()> {
+    let parts: Vec<&str> = kline_room_name.split('@').collect();
+    if parts.len() != 4 {
+        return Err(anyhow!(
+            "Invalid kline room name format: {}",
+            kline_room_name
+        ));
+    }
+    let pool_id = parts[1];
+    let address = parts[2];
+
+    let tick_param = format!("tx@{}_{}", pool_id, address);
+    let tick_request_id = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_millis();
+    let tick_subscribe_msg = serde_json::json!({
+        "id": tick_request_id,
+        "method": "SUBSCRIBE",
+        "params": [tick_param]
+    });
+    info!(
+        "📤 [SEND SUB {}] Tick Stream Payload: {}",
+        log_display_name, tick_subscribe_msg
+    );
+    write
+        .send(Message::Text(tick_subscribe_msg.to_string().into()))
+        .await?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let kline_request_id =
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() + 1;
+    let kline_subscribe_msg = serde_json::json!({
+        "id": kline_request_id,
+        "method": "SUBSCRIBE",
+        "params": [kline_room_name]
+    });
+    info!(
+        "📤 [SEND SUB {}] Kline Stream Payload: {}",
+        log_display_name, kline_subscribe_msg
+    );
+    write
+        .send(Message::Text(kline_subscribe_msg.to_string().into()))
+        .await?;
+
+    Ok(())
+}
+
+async fn message_loop(
+    io: &SocketIo,
+    room_name: &str,
+    log_display_name: &str,
+    config: &Config,
+    write: &mut WsWrite,
+    read: &mut WsRead,
+    current_kline: Arc<Mutex<Option<KlineTick>>>,
+    address: Arc<String>,
+) -> Result<()> {
+    let mut heartbeat = interval(config.heartbeat_interval);
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                // info!("[HEARTBEAT {}] Sending Ping...", log_display_name);
+                write.send(Message::Ping(vec![].into())).await.context("Failed to send heartbeat Ping")?;
+            }
+            msg_result = read.next() => {
+                match msg_result {
+                    Some(Ok(msg)) => {
+                        let should_continue = handle_message(msg, io, room_name, log_display_name, write, current_kline.clone(), &address).await?;
+                        if !should_continue {
+                            break;
+                        }
+                    },
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break,
+                }
+            }
+        }
+    }
+    warn!("[TASK {}] Message loop exited.", log_display_name);
+    Ok(())
+}
+
+async fn handle_message(
+    msg: Message,
+    io: &SocketIo,
+    room_name: &str,
+    log_display_name: &str,
+    write: &mut WsWrite,
+    current_kline: Arc<Mutex<Option<KlineTick>>>,
+    tracked_address: &str,
+) -> Result<bool> {
+    match msg {
+        Message::Text(text) if !text.is_empty() => {
+            if text.contains("\"stream\":\"kl@") {
+                match serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {
+                    Ok(wrapper) => {
+                        let values = &wrapper.data.kline_data.values;
+                        let timestamp_seconds = values.5.parse::<i64>().unwrap_or_default() / 1000;
+                        let new_kline = KlineTick {
+                            time: DateTime::from_timestamp(timestamp_seconds, 0).unwrap_or_default().with_timezone(&Utc),
+                            open: values.0.parse().unwrap_or_default(),
+                            high: values.1.parse().unwrap_or_default(),
+                            low: values.2.parse().unwrap_or_default(),
+                            close: values.3.parse().unwrap_or_default(),
+                            volume: values.4.parse().unwrap_or_default(),
+                        };
+                        // info!("📊 [KLINE {}] C:{}", room_name, new_kline.close);
+                        broadcast_update(io, room_name, new_kline.clone()).await;
+                        *current_kline.lock().await = Some(new_kline);
+                    },
+                    Err(e) => {
+                        error!("❌ [KLINE PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
+                    }
+                }
+            } else if text.contains("\"stream\":\"tx@") {
+                match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
+                    Ok(wrapper) => {
+                        let tick = &wrapper.data.tick_data;
+
+                        let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
+                            tick.t0pu
+                        } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
+                            tick.t1pu
+                        } else {
+                            return Ok(true);
+                        };
+                        
+                        let volume = tick.v;
+                        
+                        let mut kline_guard = current_kline.lock().await;
+                        // ⬇️ 这里的 Some(kline) 现在如果被 HTTP Handler 注入过，就会成功！
+                        if let Some(kline) = kline_guard.as_mut() {
+                            let last_price = kline.close;
+
+                            if last_price > 0.0 {
+                                let price_ratio = if price > last_price { price / last_price } else { last_price / price };
+                                if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && volume < LOW_VOLUME_THRESHOLD {
+                                    warn!(
+                                        "🚫 [REJECT SPIKE {}] Price jump {:.2}x with low vol ${:.4}. Last: {}, New: {}",
+                                        log_display_name, price_ratio, volume, last_price, price
+                                    );
+                                    return Ok(true);
+                                }
+                            }
+
+                            kline.high = kline.high.max(price);
+                            kline.low = kline.low.min(price);
+                            kline.close = price;
+                            kline.volume += volume;
+                            
+                            // info!("⚡ [TICK UPDATE {}] Price: {}", room_name, price);
+                            broadcast_update(io, room_name, kline.clone()).await;
+                        } else {
+                             // ✨ [DIAGNOSTIC] 如果这里打印了，说明 HTTP 数据还没回来，Tick 还是被丢弃了 (race condition)
+                             // debug!("⚠️ [TICK IGNORE {}] No base kline yet.", log_display_name);
+                        }
+                    },
+                    Err(e) => {
+                        // error!("❌ [TICK PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
+                    }
+                }
+            } else if text.contains("result") {
+                info!(
+                    "✅ [CONFIRM {}] Subscription active. Server said: {}",
+                    log_display_name, text
+                );
+            } else {
+                // warn!("❓ [UNHANDLED MSG {}] {}", log_display_name, text);
+            }
+        }
+        Message::Ping(ping_data) => {
+            write
+                .send(Message::Pong(ping_data))
+                .await
+                .context("Failed to send Pong")?;
+        }
+        Message::Close(close_frame) => {
+            warn!(
+                "🛑 [TASK {}] Received Close frame: {:?}",
+                log_display_name, close_frame
+            );
+            return Ok(false);
+        }
+        _ => {}
+    }
+    Ok(true)
+}
+
+async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
+    let broadcast_data = KlineBroadcastData {
+        room: room_name.to_string(),
+        data: kline,
+    };
+    if let Err(e) = io
+        .to(room_name.to_string())
+        .emit("kline_update", &broadcast_data)
+        .await
+    {
+        error!(
+            "❌ [BROADCAST FAIL {}] {:?}",
+            room_name, e
+        );
+    }
+}
+
+async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Result<TcpStream> {
+    let url_obj = Url::parse(&config.binance_wss_url)?;
+    let host = url_obj.host_str().unwrap_or_default();
+    let port = url_obj.port_or_known_default().unwrap_or(443);
+    let target_addr = format!("{}:{}", host, port);
+
+    // info!("connecting to proxy...");
+    let mut stream = TcpStream::connect(&config.proxy_addr)
+        .await
+        .context("HTTP proxy connection failed")?;
+    let connect_req = format!(
+        "CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        target_addr, target_addr
+    );
+    stream
+        .write_all(connect_req.as_bytes())
+        .await
+        .context("Failed to send CONNECT request")?;
+
+    let mut buf = vec![0; 1024];
+    let n = stream
+        .read(&mut buf)
+        .await
+        .context("Failed to read proxy response")?;
+
+    let response = String::from_utf8_lossy(&buf[..n]);
+
+    if !response.starts_with("HTTP/1.1 200") {
+        return Err(anyhow!(
+            "❌ [TASK {}] Proxy CONNECT failed: {}",
+            log_display_name,
+            response.trim()
+        ));
+    }
+    Ok(stream)
+}
+
+async fn wrap_stream_with_tls(
+    stream: TcpStream,
+    host: &str,
+) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
+    let tls_connector = native_tls::TlsConnector::builder().build()?;
+    let tokio_tls_connector = TokioTlsConnector::from(tls_connector);
+    tokio_tls_connector
+        .connect(host, stream)
+        .await
+        .context("TLS Handshake failed")
+}
+4. 修改 packages/backend/src/kline_handler.rs
+
+在 complete_kline_data 函数中，获取到新数据后，找到对应的房间并注入最新的一根 K 线。
+
+packages/backend/src/kline_handler.rs
+
+code
+Rust
+download
+content_copy
+expand_less
+// packages/backend/src/kline_handler.rs
+
+use crate::{
+    client_pool::ClientPool,
+    types::{HistoricalDataWrapper, KlineHistoryResponse, KlineSubscribePayload, KlineTick},
+    ServerState,
+};
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Duration, Utc};
+use reqwest::Client;
+use serde_json::Value;
+use socketioxide::extract::{Data, SocketRef};
+use sqlx::{
+    sqlite::{SqlitePool, SqliteRow},
+    Row,
+};
+use std::time::Instant;
+use tokio_retry::{strategy::ExponentialBackoff, Retry};
+use tracing::{error, info, warn};
+
+const API_URL_TEMPLATE: &str = "https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}";
+const API_MAX_LIMIT: i64 = 500;
+const DB_MAX_RECORDS: i64 = 1000;
+const DB_PRUNE_TO_COUNT: i64 = 500;
+const FETCH_RETRY_COUNT: usize = 3;
+
+pub async fn init_db(pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS klines (
+            primary_key TEXT NOT NULL,
+            time INTEGER NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            PRIMARY KEY (primary_key, time)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    info!("🗃️ 'klines' table is ready.");
+    Ok(())
+}
+
+pub async fn handle_kline_request(
+    s: SocketRef,
+    Data(payload): Data<KlineSubscribePayload>,
+    state: ServerState,
+) {
+    let start_total = Instant::now();
+    let primary_key = get_primary_key(&payload);
+
+    // --- 步骤 1: 立即查询数据库并返回 (同步路径) ---
+    let db_start = Instant::now();
+    let initial_data = match get_klines_from_db(&state.db_pool, &primary_key).await {
+        Ok(data) => {
+            let db_duration = db_start.elapsed();
+            if !data.is_empty() {
+                let last_time = data.last().unwrap().time;
+                info!(
+                    "💾 [DB HIT] {} records for {}. Last Candle: {} (Took {:?})",
+                    data.len(),
+                    primary_key,
+                    last_time,
+                    db_duration
+                );
+            } else {
+                info!(
+                    "💾 [DB MISS] No records found for {} (Took {:?})",
+                    primary_key,
+                    db_duration
+                );
+            }
+            data
+        }
+        Err(e) => {
+            error!("❌ [DB ERROR] for {}: {}", primary_key, e);
+            vec![]
+        }
+    };
+
+    let initial_response = KlineHistoryResponse {
+        address: payload.address.clone(),
+        chain: payload.chain.clone(),
+        interval: payload.interval.clone(),
+        data: initial_data,
+    };
+
+    if let Err(e) = s.emit("historical_kline_initial", &initial_response) {
+        error!("❌ [EMIT ERROR] initial for {}: {}", primary_key, e);
+    }
+
+    info!(
+        "🚀 [PERF STEP 1] {} -> DB Data Sent to Client in {:?}",
+        primary_key,
+        start_total.elapsed()
+    );
+
+    // --- 步骤 2: 后台补全缺失数据 (异步路径) ---
+    tokio::spawn(async move {
+        let api_process_start = Instant::now();
+
+        match complete_kline_data(&payload, &state, &primary_key, &s).await {
+            Ok(Some(count)) => {
+                let api_duration = api_process_start.elapsed();
+                let total_duration = start_total.elapsed();
+                info!(
+                    "📡 [PERF STEP 2] {} -> Fetched & Sent {} NEW/UPDATED candles. (API: {:?}, Total E2E: {:?})",
+                    primary_key,
+                    count,
+                    api_duration,
+                    total_duration
+                );
+            }
+            Ok(None) => {}
+            Err(e) => {
+                error!("❌ [FETCH FAILED] for {}: {:?}", primary_key, e);
+                let err_payload = serde_json::json!({ "key": primary_key, "error": e.to_string() });
+                s.emit("kline_fetch_error", &err_payload).ok();
+            }
+        }
+    });
+}
+
+async fn complete_kline_data(
+    payload: &KlineSubscribePayload,
+    state: &ServerState,
+    primary_key: &str,
+    s: &SocketRef,
+) -> Result<Option<usize>> {
+    let last_kline = get_last_kline_from_db(&state.db_pool, primary_key).await?;
+    let interval_ms = interval_to_ms(&payload.interval);
+    let now = Utc::now();
+
+    let mut limit = match last_kline {
+        Some(kline) => {
+            let time_diff_ms = now.timestamp_millis() - kline.time.timestamp_millis();
+            let missing_count = (time_diff_ms / interval_ms).max(1);
+            
+            if missing_count > 1 {
+                info!(
+                    "🕵️ [CHECK {}] Gap detected. Last: {}, Now: {}, Need ~{} candles.", 
+                    primary_key, kline.time, now, missing_count
+                );
+            } else {
+                info!(
+                    "🔄 [CHECK {}] Database has latest timestamp, but refreshing active candle (Limit=1).", 
+                    primary_key
+                );
+            }
+            missing_count
+        }
+        None => {
+            info!("🕵️ [CHECK {}] Empty DB. Triggering full fetch (500).", primary_key);
+            API_MAX_LIMIT
+        },
+    };
+
+    if limit <= 0 {
+        return Ok(None);
+    }
+
+    if limit > API_MAX_LIMIT {
+        warn!(
+            "⚠️ [STALE] {} missing {} candles (Too many). Resetting to {}.",
+            primary_key, limit, API_MAX_LIMIT
+        );
+        clear_klines_from_db(&state.db_pool, primary_key).await?;
+        limit = API_MAX_LIMIT;
+    }
+
+    let new_klines = fetch_historical_data_with_pool(&state.client_pool, payload, limit).await?;
+
+    if new_klines.is_empty() {
+        warn!("⚠️ [API EMPTY] Returned 0 candles for {}", primary_key);
+        return Ok(Some(0));
+    }
+
+    // ✨✨✨ 核心逻辑：注入数据到 Room，让 WebSocket 的 tx 数据立即可用 ✨✨✨
+    // 1. 计算 Room Name (需要和 socket_handlers.rs 逻辑一致)
+    let chain_lower = payload.chain.to_lowercase();
+    let pool_id = match chain_lower.as_str() {
+        "bsc" => 14,
+        "sol" | "solana" => 16,
+        "base" => 199,
+        _ => 0, // 这种情况下通常不会走到这里，或者在 socket handler 就拦截了
+    };
+    
+    if pool_id != 0 {
+        let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+        
+        // 2. 查找房间并注入
+        if let Some(room) = state.app_state.get(&room_name) {
+             if let Some(last_candle) = new_klines.last() {
+                 let mut lock = room.current_kline.lock().await;
+                 // 只有当它是 None 时才注入（避免覆盖了可能已经到达的 WS kl 数据）
+                 // 或者：强制注入也没问题，因为 HTTP 的数据是 "snapshot"，通常很新
+                 // 为了保险，我们只在 None 时注入，因为如果它不是 None，说明 WS 已经正常工作了
+                 if lock.is_none() {
+                     *lock = Some(last_candle.clone());
+                     info!("💉 [INJECT] Successfully injected HTTP candle into WebSocket state for {}", room_name);
+                 }
+             }
+        }
+    }
+
+    // 立即发送给前端
+    let completed_response = KlineHistoryResponse {
+        address: payload.address.clone(),
+        chain: payload.chain.clone(),
+        interval: payload.interval.clone(),
+        data: new_klines.clone(),
+    };
+
+    if let Err(e) = s.emit("historical_kline_completed", &completed_response) {
+        error!("❌ [EMIT ERROR] completed for {}: {}", primary_key, e);
+    }
+
+    // 异步存库
+    save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
+    prune_old_klines_from_db(&state.db_pool, primary_key).await?;
+
+    Ok(Some(new_klines.len()))
+}
+
+async fn fetch_historical_data_with_pool(
+    pool: &ClientPool,
+    payload: &KlineSubscribePayload,
+    limit: i64,
+) -> Result<Vec<KlineTick>> {
+    let formatted_interval = format_interval_for_api(&payload.interval);
+    let url = API_URL_TEMPLATE
+        .replace("{address}", &payload.address)
+        .replace("{platform}", &payload.chain)
+        .replace("{interval}", &formatted_interval)
+        .replace("{limit}", &limit.to_string());
+
+    let interval_label = payload.interval.clone();
+
+    for attempt in 1..=3 {
+        let (client_idx, client) = pool.get_client().await;
+        
+        let http_start = Instant::now();
+
+        match client.get(&url).send().await {
+            Ok(response) => {
+                info!("⚡ [PERF HTTP] Request took {:?}", http_start.elapsed());
+                
+                if !response.status().is_success() {
+                     warn!("❌ [API FAIL] Status: {}. Recycling node #{}...", response.status(), client_idx);
+                     pool.recycle_client(client_idx).await;
+                     continue;
+                }
+                
+                let text_response = response.text().await?;
+                match serde_json::from_str::<HistoricalDataWrapper>(&text_response) {
+                    Ok(wrapper) => {
+                        match parse_api_data(&wrapper.data, &interval_label) {
+                            Ok(data) => {
+                                return Ok(data);
+                            },
+                            Err(e) => {
+                                return Err(anyhow!("Data parse error: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("❌ [JSON PARSE FAIL] Error: {}. Recycling node #{}", e, client_idx);
+                        pool.recycle_client(client_idx).await;
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("❌ [NET FAIL] Error: {}. Recycling node #{} and retrying...", e, client_idx);
+                pool.recycle_client(client_idx).await;
+            }
+        }
+    }
+
+    Err(anyhow!("All 3 attempts failed."))
+}
+
+async fn get_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<Vec<KlineTick>> {
+    sqlx::query_as::<_, KlineTick>(
+        "SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time ASC",
+    )
+    .bind(primary_key)
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch all klines from DB")
+}
+
+async fn get_last_kline_from_db(pool: &SqlitePool, primary_key: &str) -> Result<Option<KlineTick>> {
+    sqlx::query_as(
+        "SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time DESC LIMIT 1",
+    )
+    .bind(primary_key)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to fetch last kline from DB")
+}
+
+async fn save_klines_to_db(
+    pool: &SqlitePool,
+    primary_key: &str,
+    klines: &[KlineTick],
+) -> Result<()> {
+    if klines.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for kline in klines {
+        sqlx::query(
+            "INSERT OR REPLACE INTO klines (primary_key, time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(primary_key)
+        .bind(kline.time.timestamp())
+        .bind(kline.open)
+        .bind(kline.high)
+        .bind(kline.low)
+        .bind(kline.close)
+        .bind(kline.volume)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit()
+        .await
+        .context("Failed to commit transaction for saving klines")
+}
+
+async fn clear_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<()> {
+    sqlx::query("DELETE FROM klines WHERE primary_key = ?")
+        .bind(primary_key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn prune_old_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<()> {
+    let count: i64 = sqlx::query("SELECT COUNT(*) FROM klines WHERE primary_key = ?")
+        .bind(primary_key)
+        .fetch_one(pool)
+        .await?
+        .get(0);
+
+    if count > DB_MAX_RECORDS {
+        let limit = count - DB_PRUNE_TO_COUNT;
+        sqlx::query(
+            "DELETE FROM klines WHERE rowid IN (
+                SELECT rowid FROM klines WHERE primary_key = ? ORDER BY time ASC LIMIT ?
+            )",
+        )
+        .bind(primary_key)
+        .bind(limit)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+fn get_primary_key(payload: &KlineSubscribePayload) -> String {
+    format!(
+        "{}@{}@{}",
+        payload.address.to_lowercase(),
+        payload.chain.to_lowercase(),
+        payload.interval
+    )
+}
+
+fn interval_to_ms(interval: &str) -> i64 {
+    let value_str: String = interval.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let unit: String = interval.chars().skip_while(|c| c.is_ascii_digit()).collect();
+    let value = value_str.parse::<i64>().unwrap_or(0);
+    match unit.as_str() {
+        "m" => Duration::minutes(value).num_milliseconds(),
+        "h" => Duration::hours(value).num_milliseconds(),
+        "d" => Duration::days(value).num_milliseconds(),
+        _ => 0,
+    }
+}
+
+fn format_interval_for_api(interval: &str) -> String {
+    if let Some(val) = interval.strip_suffix('m') {
+        format!("{}min", val)
+    } else {
+        interval.to_string()
+    }
+}
+
+fn parse_api_data(data: &[Vec<Value>], interval_label: &str) -> Result<Vec<KlineTick>> {
+    let extract_f64 = |v: &Value, name: &str| -> Result<f64> {
+        if let Some(f) = v.as_f64() {
+            return Ok(f);
+        }
+        if let Some(s) = v.as_str() {
+            return s.parse::<f64>().map_err(|_| {
+                anyhow!("Invalid float string for {}: {}", name, s)
+            });
+        }
+        if let Some(i) = v.as_i64() {
+            return Ok(i as f64);
+        }
+        Ok(0.0)
+    };
+
+    data.iter()
+        .map(|d| -> Result<KlineTick> {
+            let timestamp_ms = d.get(5).and_then(|v| v.as_i64()).unwrap_or(0);
+            Ok(KlineTick {
+                time: DateTime::from_timestamp(timestamp_ms / 1000, 0)
+                    .context("Invalid timestamp")?
+                    .with_timezone(&Utc),
+                open: extract_f64(d.get(0).unwrap_or(&Value::Null), "open")?,
+                high: extract_f64(d.get(1).unwrap_or(&Value::Null), "high")?,
+                low: extract_f64(d.get(2).unwrap_or(&Value::Null), "low")?,
+                close: extract_f64(d.get(3).unwrap_or(&Value::Null), "close")?,
+                volume: extract_f64(d.get(4).unwrap_or(&Value::Null), "volume")?,
+            })
+        })
+        .collect()
+}
+
+impl sqlx::FromRow<'_, SqliteRow> for KlineTick {
+    fn from_row(row: &SqliteRow) -> sqlx::Result<Self> {
+        let timestamp_secs: i64 = row.try_get("time")?;
+        Ok(KlineTick {
+            time: DateTime::from_timestamp(timestamp_secs, 0)
+                .unwrap_or_default()
+                .with_timezone(&Utc),
+            open: row.try_get("open")?,
+            high: row.try_get("high")?,
+            low: row.try_get("low")?,
+            close: row.try_get("close")?,
+            volume: row.try_get("volume")?,
+        })
+    }
+}

@@ -27,6 +27,7 @@ fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
+                // info!("📜 [REQ HISTORY] Client {} requested kline history for {}@{}", s.id, payload.0.chain, payload.0.address);
                 kline_handler::handle_kline_request(s, payload, state).await;
             }
         },
@@ -52,7 +53,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         }
                     }
                     Err(e) => {
-                        warn!("[SYMBOL MAP] Failed to parse data-update payload for symbol mapping: {}", e);
+                        warn!("[SYMBOL MAP] Failed to parse data-update payload: {}", e);
                     }
                 }
             }
@@ -66,6 +67,8 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
+                let chain_lower = payload.chain.to_lowercase(); // ✨ 核心修复：转小写
+                
                 let address_lowercase = payload.address.to_lowercase();
                 let symbol = state.token_symbols
                     .get(&address_lowercase)
@@ -74,10 +77,13 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                         |s| s.value().clone()
                     );
 
-                let pool_id = match payload.chain.as_str() {
-                    "bsc" => 14, "sol" | "solana" => 16, "base" => 199,
+                // ✨ 核心修复：使用转小写后的 chain_lower 进行匹配
+                let pool_id = match chain_lower.as_str() {
+                    "bsc" => 14, 
+                    "sol" | "solana" => 16, 
+                    "base" => 199,
                     unsupported_chain => {
-                        warn!("Unsupported chain '{}' for {}. Ignored.", unsupported_chain, s.id);
+                        warn!("⚠️ [SUBSCRIBE FAIL] Unsupported chain '{}' (original: '{}') for {}. Ignored.", unsupported_chain, payload.chain, s.id);
                         return;
                     }
                 };
@@ -85,14 +91,13 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
                 let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
 
-                info!("🔼 [JOIN] Client {} joining room: {}", s.id, log_display_name);
-                // 核心修改: `join` 是同步的，不返回Result，直接调用
+                info!("🔔 [SUB] Client {} -> Room: {}", s.id, log_display_name);
                 s.join(room_name.clone());
 
                 state.app_state
                     .entry(room_name.clone())
                     .or_insert_with(|| {
-                        info!("✨ [ROOM] First subscriber for '{}'. Spawning task...", log_display_name);
+                        info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
                         let task_handle = tokio::spawn(binance_task::binance_websocket_task(
                             state.io.clone(),
                             room_name.clone(),
@@ -108,10 +113,6 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                     .value_mut()
                     .clients
                     .insert(s.id);
-
-                if let Some(room) = state.app_state.get(&room_name) {
-                    info!("✓ [JOIN] Client {} added. Total clients in '{}': {}", s.id, log_display_name, room.clients.len());
-                }
             }
         },
     );
@@ -123,19 +124,23 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
+                let chain_lower = payload.chain.to_lowercase(); // ✨ 核心修复：转小写
+
                  let symbol = state.token_symbols
                     .get(&payload.address.to_lowercase())
                     .map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
 
-                let pool_id = match payload.chain.as_str() {
-                    "bsc" => 14, "sol" | "solana" => 16, "base" => 199,
+                // ✨ 核心修复：使用转小写后的 chain_lower 进行匹配
+                let pool_id = match chain_lower.as_str() {
+                    "bsc" => 14, 
+                    "sol" | "solana" => 16, 
+                    "base" => 199,
                     _ => { return; }
                 };
                 let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
                 let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
 
-                info!("🔽 [UNSUB] Client {} from room: {}", s.id, log_display_name);
-                // 核心修改: `leave` 是同步的，直接调用
+                info!("🔽 [UNSUB] Client {} leaving room: {}", s.id, log_display_name);
                 s.leave(room_name.clone());
 
                 if let Some(mut room) = state.app_state.get_mut(&room_name) {
@@ -143,11 +148,9 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
                     if room.clients.is_empty() {
                         drop(room);
                         if let Some((_, room_to_abort)) = state.app_state.remove(&room_name) {
-                            info!("🗑️ [ROOM] Last client left '{}'. Aborting task.", log_display_name);
+                            info!("🗑️ [ROOM EMPTY] Last client left '{}'. Aborting Binance task.", log_display_name);
                             room_to_abort.task_handle.abort();
                         }
-                    } else {
-                        info!("[UNSUB] Room '{}' still has {} clients.", log_display_name, room.clients.len());
                     }
                 }
             }
@@ -159,7 +162,7 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
     socket.on_disconnect(move |s: SocketRef| {
         let state = state.clone();
         async move {
-            info!("🔌 [Socket.IO] Client disconnected: {}", s.id);
+            // info!("🔌 [Socket.IO] Client disconnected: {}", s.id);
             let mut empty_rooms: Vec<(String, String)> = Vec::new();
 
             for mut entry in state.app_state.iter_mut() {
@@ -172,7 +175,6 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
                             entry.key().to_string()
                         }
                     };
-                    info!("🧹 [CLEANUP] Removed client {} from room '{}'.", s.id, &log_display_name);
                     if entry.clients.is_empty() {
                         empty_rooms.push((entry.key().clone(), log_display_name));
                     }
@@ -181,7 +183,7 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
 
             for (room_name, log_display_name) in empty_rooms {
                 if let Some((_, room)) = state.app_state.remove(&room_name) {
-                    info!("🗑️ [ROOM] Room '{}' is now empty. Aborting task.", log_display_name);
+                    info!("🗑️ [ROOM CLEANUP] Room '{}' is now empty. Aborting task.", log_display_name);
                     room.task_handle.abort();
                 }
             }

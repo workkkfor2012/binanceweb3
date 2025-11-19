@@ -2,6 +2,7 @@
 # Dependencies
 /node_modules
 packages/backend - 副本
+packages/backend/database/kline_cache.db
 packages/backend/node_modules
 packages/backend/target
 packages/backend/image_cache

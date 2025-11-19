@@ -52,7 +52,7 @@ pub async fn binance_websocket_task(
         Some(addr) => addr.to_lowercase(),
         None => {
             error!(
-                "[TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.",
+                "❌ [TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.",
                 log_display_name
             );
             return;
@@ -63,11 +63,11 @@ pub async fn binance_websocket_task(
     loop {
         match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config).await {
             Ok(_) => warn!(
-                "[TASK {}] Disconnected gracefully. Reconnecting...",
+                "🔁 [TASK {}] Disconnected gracefully. Reconnecting...",
                 log_display_name
             ),
             Err(e) => error!(
-                "[TASK {}] Connection failed: {:#?}. Retrying...",
+                "🔁 [TASK {}] Connection failed: {:#?}. Retrying in 3s...",
                 log_display_name, e
             ),
         }
@@ -151,7 +151,7 @@ async fn subscribe_all(
         "params": [tick_param]
     });
     info!(
-        "[SEND SUB {}] Sending subscription for tick stream. Payload: {}",
+        "📤 [SEND SUB {}] Tick Stream Payload: {}",
         log_display_name, tick_subscribe_msg
     );
     write
@@ -168,7 +168,7 @@ async fn subscribe_all(
         "params": [kline_room_name]
     });
     info!(
-        "[SEND SUB {}] Sending subscription for k-line stream. Payload: {}",
+        "📤 [SEND SUB {}] Kline Stream Payload: {}",
         log_display_name, kline_subscribe_msg
     );
     write
@@ -192,7 +192,7 @@ async fn message_loop(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                info!("[HEARTBEAT {}] Sending Ping...", log_display_name);
+                // info!("[HEARTBEAT {}] Sending Ping...", log_display_name);
                 write.send(Message::Ping(vec![].into())).await.context("Failed to send heartbeat Ping")?;
             }
             msg_result = read.next() => {
@@ -237,12 +237,12 @@ async fn handle_message(
                             close: values.3.parse().unwrap_or_default(),
                             volume: values.4.parse().unwrap_or_default(),
                         };
-                        info!("[KLINE {}] O:{} H:{} L:{} C:{} V:{}", room_name, new_kline.open, new_kline.high, new_kline.low, new_kline.close, new_kline.volume);
+                        // info!("📊 [KLINE {}] C:{}", room_name, new_kline.close);
                         broadcast_update(io, room_name, new_kline.clone()).await;
                         *current_kline.lock().await = Some(new_kline);
                     },
                     Err(e) => {
-                        error!("[KLINE PARSE ERROR {}] Failed to parse kline message. Error: {}. Raw: {}", log_display_name, e, text);
+                        error!("❌ [KLINE PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
                     }
                 }
             } else if text.contains("\"stream\":\"tx@") {
@@ -255,7 +255,6 @@ async fn handle_message(
                         } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
                             tick.t1pu
                         } else {
-                            warn!("[PRICE LOGIC ERROR {}] Tick does not contain tracked address {}. Tick data: {:?}. Raw: {}", log_display_name, tracked_address, tick, text);
                             return Ok(true);
                         };
                         
@@ -269,8 +268,8 @@ async fn handle_message(
                                 let price_ratio = if price > last_price { price / last_price } else { last_price / price };
                                 if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && volume < LOW_VOLUME_THRESHOLD {
                                     warn!(
-                                        "[LOW VOL SPIKE REJECTED {}] Price ratio {:.2}x with volume ${:.4} is abnormal. Last: {}, New: {}. Full Tick: {:?}. Raw: {}",
-                                        log_display_name, price_ratio, volume, last_price, price, tick, text
+                                        "🚫 [REJECT SPIKE {}] Price jump {:.2}x with low vol ${:.4}. Last: {}, New: {}",
+                                        log_display_name, price_ratio, volume, last_price, price
                                     );
                                     return Ok(true);
                                 }
@@ -280,23 +279,22 @@ async fn handle_message(
                             kline.low = kline.low.min(price);
                             kline.close = price;
                             kline.volume += volume;
-                            info!("[TICK UPDATE {}] Price: {} -> Updated C:{} H:{} L:{}", room_name, price, kline.close, kline.high, kline.low);
+                            
+                            // info!("⚡ [TICK UPDATE {}] Price: {}", room_name, price);
                             broadcast_update(io, room_name, kline.clone()).await;
-                        } else {
-                            warn!("[TICK {}] Received tick data but no base k-line yet. Ignoring.", log_display_name);
                         }
                     },
                     Err(e) => {
-                        error!("[TICK PARSE ERROR {}] Failed to parse tick message. Error: {}. Raw: {}", log_display_name, e, text);
+                        // error!("❌ [TICK PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
                     }
                 }
             } else if text.contains("result") {
                 info!(
-                    "[TASK {}] Received subscription confirmation: {}",
+                    "✅ [CONFIRM {}] Subscription active. Server said: {}",
                     log_display_name, text
                 );
             } else {
-                warn!("[UNHANDLED MSG {}] {}", log_display_name, text);
+                // warn!("❓ [UNHANDLED MSG {}] {}", log_display_name, text);
             }
         }
         Message::Ping(ping_data) => {
@@ -307,7 +305,7 @@ async fn handle_message(
         }
         Message::Close(close_frame) => {
             warn!(
-                "[TASK {}] Received Close frame: {:?}",
+                "🛑 [TASK {}] Received Close frame: {:?}",
                 log_display_name, close_frame
             );
             return Ok(false);
@@ -322,14 +320,13 @@ async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
         room: room_name.to_string(),
         data: kline,
     };
-    // 核心修改: `emit` 现在是 async
     if let Err(e) = io
         .to(room_name.to_string())
         .emit("kline_update", &broadcast_data)
         .await
     {
         error!(
-            "[TASK {}] Failed to broadcast kline update: {:?}",
+            "❌ [BROADCAST FAIL {}] {:?}",
             room_name, e
         );
     }
@@ -341,6 +338,7 @@ async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Resul
     let port = url_obj.port_or_known_default().unwrap_or(443);
     let target_addr = format!("{}:{}", host, port);
 
+    // info!("connecting to proxy...");
     let mut stream = TcpStream::connect(&config.proxy_addr)
         .await
         .context("HTTP proxy connection failed")?;
@@ -363,7 +361,7 @@ async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Resul
 
     if !response.starts_with("HTTP/1.1 200") {
         return Err(anyhow!(
-            "[TASK {}] Proxy CONNECT failed: {}",
+            "❌ [TASK {}] Proxy CONNECT failed: {}",
             log_display_name,
             response.trim()
         ));

@@ -1,7 +1,9 @@
 // packages/backend/src/main.rs
+
 mod binance_task;
 mod cache;
 mod cache_manager;
+mod client_pool; // ✨ 注册新模块
 mod config;
 mod error;
 mod http_handlers;
@@ -11,11 +13,12 @@ mod state;
 mod types;
 
 use axum::{routing::get, Router};
+use client_pool::ClientPool; // ✨ 引入
 use config::Config;
 use dashmap::DashMap;
 use http::HeaderValue;
 use socketioxide::{extract::SocketRef, SocketIo};
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions}; // 这个导入现在会生效
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
@@ -28,6 +31,7 @@ pub struct ServerState {
     pub io: SocketIo,
     pub token_symbols: Arc<DashMap<String, String>>,
     pub db_pool: SqlitePool,
+    pub client_pool: ClientPool, // ✨ 替换 http_client 为 client_pool
 }
 
 #[tokio::main]
@@ -56,12 +60,25 @@ async fn main() {
         .await
         .expect("Failed to initialize database schema");
 
+    // ✨ 初始化连接池：20个并发连接
+    // 注意：这里使用了 config.proxy_addr，请确保你的 config.rs 里 proxy_addr 是完整的 (如 http://127.0.0.1:7890)
+    // 如果 config.proxy_addr 只是 ip:port，你需要在这里加 "http://" 前缀
+    let proxy_url = if config.proxy_addr.starts_with("http") || config.proxy_addr.starts_with("socks") {
+        config.proxy_addr.clone()
+    } else {
+        format!("http://{}", config.proxy_addr)
+    };
+    
+    info!("🏊 Initializing Client Pool with 20 connections via {}...", proxy_url);
+    let client_pool = ClientPool::new(20, proxy_url).await;
+
     let server_state = ServerState {
         app_state: state::new_app_state(),
         config: config.clone(),
         io: io.clone(),
         token_symbols: Arc::new(DashMap::new()),
         db_pool,
+        client_pool, // ✨ 注入池
     };
 
     let socket_state = server_state.clone();

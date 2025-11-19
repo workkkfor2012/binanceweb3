@@ -1,6 +1,699 @@
-这是项目介绍
-首先需要你理解chart.html页面
-左边是价格涨幅排名和成交额排名，右边是9图的tradingview的k线
-`docs\tradingview`这是最新版的文档
-现在的需求是：现在的问题是，我需要将ts写的后端，修改成rust写的后端,仍然要在backend文件夹内实现
+我需要将前端下载，补齐k线的功能挪到rust后端，保持下载补齐缓存的功能逻辑不变，，后端使用sqlite和sqlx
+重构后加载的逻辑是
+1 后端一个品种的一个周期，最多只保存1000根K线，这和重构前一样，
+2 前端请求历史k线，首先从db中查询该品种该周期的历史数据，立刻返回
+3 同时使用根据最后一根历史k线的时间，计算出，补齐需要多少根k线，作为limit参数，去请求补齐历史k线到当前，这和重构前也是一样的，然后返回补齐的历史k线，前端应该可以简单的添加上这些k线
+4 如何下载失败，那么重试10次，然后报错，给出详细错误信息
+5 下载补齐完成后，检查一次，如果一个品种的某个周期的k线超过了1000根，那么删除老的500根，只保留最新的500根
+6 如果下载补齐的时候，计算limit发现大于500了，那么老的数据，完全删除
+删除
+还有什么不清晰的吗，我们可以一一对齐
 
+通过日志分析，问题的核心在于：后端发起了 API 请求 ([API CALL])，但从未完成 ([API DONE])，也没有报错。
+
+这说明后端的 fetch_historical_data 函数在请求外部 API 时卡住了，或者解析失败但错误被吞掉了（因为在重试逻辑中）。
+
+我们需要修改 后端代码 (packages/backend/src/kline_handler.rs)，增加详细的 API 调试日志，特别是打印出 API 返回的原始文本，以便查看为什么解析失败（例如 API 返回了 403、429 或者 JSON 结构变了）。
+
+同时，我也微调了前端代码，保持调试状态。
+
+1. 核心修复：后端 K线处理器 (Rust)
+
+请替换 packages/backend/src/kline_handler.rs。
+修改点：
+
+打印生成的完整 URL。
+
+打印 API 返回的状态码。
+
+关键：如果 JSON 解析失败，打印 API 返回的原始文本内容。这通常能直接揭示问题（比如返回了 "Invalid Symbol" 或 "Rate Limit"）。
+
+code
+Rust
+download
+content_copy
+expand_less
+
+code
+Rust
+download
+content_copy
+expand_less
+// packages/backend/src/kline_handler.rs
+
+use crate::{
+    types::{HistoricalDataWrapper, KlineSubscribePayload, KlineTick, KlineHistoryResponse},
+    ServerState,
+};
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Duration, Utc};
+use reqwest::Client;
+use serde_json::Value;
+use socketioxide::extract::{Data, SocketRef};
+use sqlx::{
+    sqlite::{SqlitePool, SqliteRow},
+    Row,
+};
+use tokio_retry::{strategy::ExponentialBackoff, Retry};
+use tracing::{error, info, warn};
+
+// ... (Constants remain same) ...
+const API_URL_TEMPLATE: &str = "https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}";
+const API_MAX_LIMIT: i64 = 500;
+const DB_MAX_RECORDS: i64 = 1000;
+const DB_PRUNE_TO_COUNT: i64 = 500;
+const FETCH_RETRY_COUNT: usize = 3; 
+
+pub async fn init_db(pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS klines (
+            primary_key TEXT NOT NULL,
+            time INTEGER NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            PRIMARY KEY (primary_key, time)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    info!("🗃️ 'klines' table is ready.");
+    Ok(())
+}
+
+pub async fn handle_kline_request(
+    s: SocketRef,
+    Data(payload): Data<KlineSubscribePayload>,
+    state: ServerState,
+) {
+    let primary_key = get_primary_key(&payload);
+    info!("📥 [HANDLER START] {} for client {}", primary_key, s.id);
+
+    // 1. Fetch from DB
+    let initial_data = match get_klines_from_db(&state.db_pool, &primary_key).await {
+        Ok(data) => {
+            if !data.is_empty() {
+                info!("💾 [DB HIT] Found {} records for {}", data.len(), primary_key);
+            } else {
+                info!("💾 [DB MISS] No records found for {}", primary_key);
+            }
+            data
+        },
+        Err(e) => {
+            error!("❌ [DB ERROR] for {}: {}", primary_key, e);
+            vec![]
+        }
+    };
+    
+    // 2. Send Initial Data
+    let initial_response = KlineHistoryResponse {
+        address: payload.address.clone(),
+        chain: payload.chain.clone(),
+        interval: payload.interval.clone(),
+        data: initial_data,
+    };
+
+    if let Err(e) = s.emit("historical_kline_initial", &initial_response) {
+        error!("❌ [EMIT ERROR] initial for {}: {}", primary_key, e);
+    }
+
+    // 3. Spawn missing data fetcher
+    tokio::spawn(async move {
+        match complete_kline_data(&payload, &state, &primary_key).await {
+            Ok(Some(completed_data)) => {
+                if !completed_data.is_empty() {
+                    info!("📡 [API DONE] {} fetched {} candles.", primary_key, completed_data.len());
+                    
+                    let completed_response = KlineHistoryResponse {
+                        address: payload.address.clone(),
+                        chain: payload.chain.clone(),
+                        interval: payload.interval.clone(),
+                        data: completed_data,
+                    };
+
+                    if let Err(e) = s.emit("historical_kline_completed", &completed_response) {
+                        error!("❌ [EMIT ERROR] completed for {}: {}", primary_key, e);
+                    }
+                } else {
+                    warn!("⚠️ [API DONE] But returned 0 candles for {}", primary_key);
+                }
+            }
+            Ok(None) => {
+                // info!("✅ [UP-TO-DATE] {} is already fresh.", primary_key);
+            }
+            Err(e) => {
+                error!("❌ [FETCH FAILED] for {}: {:?}", primary_key, e);
+                let err_payload = serde_json::json!({ "key": primary_key, "error": e.to_string() });
+                s.emit("kline_fetch_error", &err_payload).ok();
+            }
+        }
+    });
+}
+
+async fn complete_kline_data(
+    payload: &KlineSubscribePayload,
+    state: &ServerState,
+    primary_key: &str,
+) -> Result<Option<Vec<KlineTick>>> {
+    let last_kline = get_last_kline_from_db(&state.db_pool, primary_key).await?;
+    let interval_ms = interval_to_ms(&payload.interval);
+
+    let mut limit = match last_kline {
+        Some(kline) => {
+            let time_diff_ms = Utc::now().timestamp_millis() - kline.time.timestamp_millis();
+            (time_diff_ms / interval_ms).max(1)
+        }
+        None => API_MAX_LIMIT,
+    };
+
+    if limit <= 1 {
+        return Ok(None);
+    }
+    
+    if limit > API_MAX_LIMIT {
+        warn!("⚠️ [STALE] {} missing {} candles. Clearing DB.", primary_key, limit);
+        clear_klines_from_db(&state.db_pool, primary_key).await?;
+        limit = API_MAX_LIMIT;
+    }
+
+    info!("🌍 [API CALL] Fetching {} candles for {}", limit, primary_key);
+    let new_klines = fetch_historical_data(payload, limit).await?;
+    
+    if new_klines.is_empty() {
+        return Ok(Some(vec![]));
+    }
+    
+    save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
+    prune_old_klines_from_db(&state.db_pool, primary_key).await?;
+    
+    Ok(Some(new_klines))
+}
+
+async fn fetch_historical_data(
+    payload: &KlineSubscribePayload,
+    limit: i64,
+) -> Result<Vec<KlineTick>> {
+    let retry_strategy = ExponentialBackoff::from_millis(500).take(FETCH_RETRY_COUNT);
+    let client = Client::new();
+    let interval_label = payload.interval.clone(); 
+
+    Retry::spawn(retry_strategy, || async {
+        let url = API_URL_TEMPLATE
+            .replace("{address}", &payload.address)
+            .replace("{platform}", &payload.chain)
+            .replace("{interval}", &format_interval_for_api(&payload.interval))
+            .replace("{limit}", &limit.to_string());
+        
+        info!("🔗 [REQ] {}", url); // ✨ 打印 URL
+        
+        let response = match client.get(&url).send().await {
+            Ok(res) => res,
+            Err(e) => {
+                warn!("❌ [REQ FAIL] Network error: {}", e);
+                return Err(anyhow!("Network error: {}", e));
+            }
+        };
+
+        if !response.status().is_success() {
+            warn!("❌ [REQ FAIL] Status: {}", response.status());
+            return Err(anyhow!("API status: {}", response.status()));
+        }
+
+        let text_response = match response.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("❌ [REQ FAIL] Body read error: {}", e);
+                return Err(anyhow!("Body read error: {}", e));
+            }
+        };
+
+        // ✨ 尝试解析，如果失败则打印原始文本
+        match serde_json::from_str::<HistoricalDataWrapper>(&text_response) {
+            Ok(wrapper) => {
+                let parsed = parse_api_data(&wrapper.data, &interval_label);
+                info!("✅ [API SUCCESS] {} -> Parsed {} candles.", interval_label, parsed.as_ref().map(|v| v.len()).unwrap_or(0));
+                parsed
+            },
+            Err(e) => {
+                error!("❌ [JSON PARSE ERROR] Error: {}. \n📄 Raw Response: {}", e, text_response);
+                Err(anyhow!("JSON Parse Error: {}", e))
+            }
+        }
+    }).await
+}
+
+async fn get_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<Vec<KlineTick>> {
+    sqlx::query_as::<_, KlineTick>(
+        "SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time ASC",
+    )
+    .bind(primary_key)
+    .fetch_all(pool)
+    .await
+    .context("Failed to fetch all klines from DB")
+}
+
+async fn get_last_kline_from_db(pool: &SqlitePool, primary_key: &str) -> Result<Option<KlineTick>> {
+    sqlx::query_as(
+        "SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time DESC LIMIT 1",
+    )
+    .bind(primary_key)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to fetch last kline from DB")
+}
+
+async fn save_klines_to_db(pool: &SqlitePool, primary_key: &str, klines: &[KlineTick]) -> Result<()> {
+    if klines.is_empty() { return Ok(()); }
+    let mut tx = pool.begin().await?;
+    for kline in klines {
+        sqlx::query(
+            "INSERT OR REPLACE INTO klines (primary_key, time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(primary_key)
+        .bind(kline.time.timestamp())
+        .bind(kline.open)
+        .bind(kline.high)
+        .bind(kline.low)
+        .bind(kline.close)
+        .bind(kline.volume)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await.context("Failed to commit transaction for saving klines")
+}
+
+async fn clear_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<()> {
+    sqlx::query("DELETE FROM klines WHERE primary_key = ?")
+        .bind(primary_key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn prune_old_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<()> {
+    let count: i64 = sqlx::query("SELECT COUNT(*) FROM klines WHERE primary_key = ?")
+        .bind(primary_key)
+        .fetch_one(pool)
+        .await?
+        .get(0);
+
+    if count > DB_MAX_RECORDS {
+        let limit = count - DB_PRUNE_TO_COUNT;
+        sqlx::query(
+            "DELETE FROM klines WHERE rowid IN (
+                SELECT rowid FROM klines WHERE primary_key = ? ORDER BY time ASC LIMIT ?
+            )"
+        )
+        .bind(primary_key)
+        .bind(limit)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+fn get_primary_key(payload: &KlineSubscribePayload) -> String {
+    format!(
+        "{}@{}@{}",
+        payload.address.to_lowercase(),
+        payload.chain.to_lowercase(),
+        payload.interval
+    )
+}
+
+fn interval_to_ms(interval: &str) -> i64 {
+    let value_str: String = interval.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let unit: String = interval.chars().skip_while(|c| c.is_ascii_digit()).collect();
+    let value = value_str.parse::<i64>().unwrap_or(0);
+    match unit.as_str() {
+        "m" => Duration::minutes(value).num_milliseconds(),
+        "h" => Duration::hours(value).num_milliseconds(),
+        "d" => Duration::days(value).num_milliseconds(),
+        _ => 0,
+    }
+}
+
+fn format_interval_for_api(interval: &str) -> String {
+    if let Some(val) = interval.strip_suffix('m') {
+        format!("{}in", val)
+    } else {
+        interval.to_string()
+    }
+}
+
+fn parse_api_data(data: &[Vec<Value>], interval_label: &str) -> Result<Vec<KlineTick>> {
+    if let Some(first) = data.first() {
+        info!("👀 [DATA PEEK {}] First Candle: {:?}", interval_label, first);
+    } else {
+        warn!("👀 [DATA PEEK {}] Received EMPTY data array", interval_label);
+    }
+
+    let extract_f64 = |v: &Value, name: &str| -> Result<f64> {
+        if let Some(f) = v.as_f64() { return Ok(f); }
+        if let Some(s) = v.as_str() {
+            return s.parse::<f64>().map_err(|_| anyhow!("Invalid float string for {}: {}", name, s));
+        }
+        if let Some(i) = v.as_i64() { return Ok(i as f64); }
+        Ok(0.0)
+    };
+
+    data.iter()
+        .map(|d| -> Result<KlineTick> {
+            let timestamp_ms = d.get(5).and_then(|v| v.as_i64()).unwrap_or(0);
+            Ok(KlineTick {
+                 time: DateTime::from_timestamp(timestamp_ms / 1000, 0)
+                    .context("Invalid timestamp")?
+                    .with_timezone(&Utc),
+                open: extract_f64(d.get(0).unwrap_or(&Value::Null), "open")?,
+                high: extract_f64(d.get(1).unwrap_or(&Value::Null), "high")?,
+                low: extract_f64(d.get(2).unwrap_or(&Value::Null), "low")?,
+                close: extract_f64(d.get(3).unwrap_or(&Value::Null), "close")?,
+                volume: extract_f64(d.get(4).unwrap_or(&Value::Null), "volume")?,
+            })
+        })
+        .collect()
+}
+
+impl sqlx::FromRow<'_, SqliteRow> for KlineTick {
+    fn from_row(row: &SqliteRow) -> sqlx::Result<Self> {
+        let timestamp_secs: i64 = row.try_get("time")?;
+        Ok(KlineTick {
+            time: DateTime::from_timestamp(timestamp_secs, 0)
+                .unwrap_or_default()
+                .with_timezone(&Utc),
+            open: row.try_get("open")?,
+            high: row.try_get("high")?,
+            low: row.try_get("low")?,
+            close: row.try_get("close")?,
+            volume: row.try_get("volume")?,
+        })
+    }
+}
+2. 前端 SingleKlineChart.tsx (TypeScript)
+
+保持前端代码不变，继续使用调试模式，直到后端问题解决。
+
+code
+TypeScript
+download
+content_copy
+expand_less
+
+code
+TypeScript
+download
+content_copy
+expand_less
+// packages/frontend/src/SingleKlineChart.tsx
+
+/** @jsxImportSource solid-js */
+
+import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries } from 'lightweight-charts';
+import { socket } from './socket'; // ✨ 引入全局 socket 实例
+import type { LightweightChartKline, KlineUpdatePayload, KlineFetchErrorPayload, KlineHistoryResponse } from './types';
+import type { MarketItem } from 'shared-types';
+import type { ViewportState } from './ChartPageLayout';
+
+const BACKEND_URL = 'http://localhost:3001';
+
+interface SingleKlineChartProps {
+    tokenInfo: MarketItem | undefined;
+    onBlock?: (contractAddress: string) => void;
+    timeframe: string;
+    viewportState: ViewportState | null;
+    onViewportChange?: (state: ViewportState | null) => void;
+    activeChartId: string | null;
+    onSetActiveChart?: (id: string | null) => void;
+    showAxes?: boolean;
+}
+
+// 优化格式化函数，处理科学计数法
+const customPriceFormatter = (price: number): string => {
+    if (price === 0) return '0';
+    if (price < 0.000001) {
+        return price.toFixed(12).replace(/\.?0+$/, "");
+    }
+    if (price < 1) return price.toFixed(6);
+    return price.toFixed(2);
+};
+
+const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
+    let chartContainer: HTMLDivElement;
+    let chart: IChartApi | null = null;
+    let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+
+    const [status, setStatus] = createSignal('Initializing...');
+    const [lastBarIndex, setLastBarIndex] = createSignal<number | null>(null);
+    let isSettingRangeProgrammatically = false;
+
+    const cleanupChart = () => {
+        if (chart) {
+            chart.remove();
+            chart = null;
+            candlestickSeries = null;
+            setLastBarIndex(null);
+        }
+    };
+
+    const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
+        console.log(`[DEBUG ${payload.interval}] Unsubscribing...`);
+        socket.off('kline_update', handleKlineUpdate);
+        socket.emit('unsubscribe_kline', payload);
+    };
+    
+    const handleKlineUpdate = (update: KlineUpdatePayload) => {
+        const info = props.tokenInfo;
+        if (!info) return;
+        const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
+        const poolId = chainToPoolId[info.chain.toLowerCase()];
+        const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
+
+        if (update.room === expectedRoom) {
+            candlestickSeries?.update(update.data as CandlestickData<number>);
+        }
+    };
+
+    createEffect(() => {
+        const info = props.tokenInfo;
+        const timeframe = props.timeframe;
+
+        if (!info || !timeframe) {
+            cleanupChart();
+            setStatus('No token selected.');
+            return;
+        }
+
+        cleanupChart();
+        setStatus(`Loading ${info.symbol}...`);
+        
+        if (!chartContainer) {
+            return;
+        }
+
+        console.log(`[DEBUG INIT] Chart initialized for ${info.symbol} @ ${timeframe}`);
+
+        try {
+            chart = createChart(chartContainer, {
+                width: chartContainer.clientWidth, 
+                height: chartContainer.clientHeight,
+                layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
+                grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+                timeScale: { visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false },
+                rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
+                leftPriceScale: { visible: false },
+                handleScroll: true, 
+                handleScale: true,
+            });
+
+            candlestickSeries = chart.addSeries(CandlestickSeries, {
+                priceFormat: { 
+                    type: 'price', 
+                    precision: 10,
+                    minMove: 0.00000001, 
+                    formatter: customPriceFormatter 
+                },
+                upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
+                borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+            });
+
+        } catch (e) {
+            console.error(`[Chart Critical Error] Failed to create chart:`, e);
+            setStatus(`Chart Error: ${e}`);
+            return;
+        }
+
+        chart.timeScale().subscribeVisibleLogicalRangeChange((newRange) => {
+            if (newRange && props.onViewportChange && !isSettingRangeProgrammatically) {
+                if (props.activeChartId === props.tokenInfo?.contractAddress) {
+                    const lbi = lastBarIndex();
+                    if (lbi === null) return;
+                    const width = newRange.to - newRange.from;
+                    const offset = lbi - newRange.to;
+                    props.onViewportChange({ width, offset });
+                }
+            }
+        });
+
+        const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
+
+        // ✨ 调试日志：处理初始数据
+        const handleInitialData = (response: any) => {
+            console.log(`[DEBUG RX Initial] ${timeframe} raw:`, response);
+
+            if (Array.isArray(response)) {
+                console.error(`[DEBUG ERROR] ${timeframe} received ARRAY. Backend NOT updated!`);
+                return;
+            }
+
+            if (
+                response.interval !== timeframe || 
+                response.address.toLowerCase() !== info.contractAddress.toLowerCase()
+            ) {
+                return; 
+            }
+
+            console.log(`[DEBUG MATCH] ${timeframe} accepted Initial Data. Count: ${response.data?.length}`);
+
+            const data = response.data;
+            if (data && data.length > 0) {
+                try {
+                    candlestickSeries?.setData(data as CandlestickData<number>[]);
+                    setLastBarIndex(data.length - 1);
+                    
+                    const vs = props.viewportState;
+                    if (vs) {
+                        const to = data.length - 1 - vs.offset;
+                        const from = to - vs.width;
+                        setTimeout(() => chart?.timeScale().setVisibleLogicalRange({ from, to }), 0);
+                    } else {
+                        chart?.timeScale().fitContent();
+                    }
+                    setStatus(`Live: ${info.symbol} ${timeframe}`);
+                } catch (e) {
+                    console.error(`[Chart Error] Failed to set initial data:`, e);
+                }
+            } else {
+                setStatus(`Waiting for data...`);
+            }
+        };
+        
+        // ✨ 调试日志：处理完整数据 (API Fetch 结果)
+        const handleCompletedData = (response: any) => {
+            console.log(`[DEBUG RX Completed] ${timeframe} raw:`, response);
+
+            if (Array.isArray(response)) {
+                console.error(`[DEBUG ERROR] ${timeframe} received ARRAY. Backend NOT updated!`);
+                return;
+            }
+
+            if (
+                response.interval !== timeframe || 
+                response.address.toLowerCase() !== info.contractAddress.toLowerCase()
+            ) {
+                return; 
+            }
+
+            const data = response.data;
+            console.log(`[DEBUG MATCH] ${timeframe} accepted Completed Data. Count: ${data?.length}`);
+            
+            if (data && data.length > 0) {
+                try {
+                    const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
+                    const newDataMap = new Map(currentData.map(d => [d.time, d]));
+                    data.forEach((d: any) => newDataMap.set(d.time as number, d as CandlestickData<number>));
+                    
+                    const sortedData = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+                    
+                    candlestickSeries?.setData(sortedData);
+                    setLastBarIndex(sortedData.length - 1);
+                    setStatus(`Live: ${info.symbol} ${timeframe}`);
+                    
+                    if (currentData.length === 0) {
+                         chart?.timeScale().fitContent();
+                    }
+
+                } catch (e) {
+                    console.error(`[Chart Error] Failed to update completed data:`, e);
+                }
+            }
+        };
+        
+        const handleFetchError = (err: KlineFetchErrorPayload) => {
+             const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
+             if(err.key === key) {
+                console.error(`[Socket RX Error] Kline fetch error for ${info.symbol}:`, err);
+                setStatus(`Error: ${err.error}`);
+             }
+        };
+
+        socket.on('historical_kline_initial', handleInitialData);
+        socket.on('historical_kline_completed', handleCompletedData);
+        socket.on('kline_fetch_error', handleFetchError);
+        socket.on('kline_update', handleKlineUpdate);
+
+        console.log(`[DEBUG TX] Sending request for ${timeframe}`);
+        socket.emit('request_historical_kline', payload);
+        socket.emit('subscribe_kline', payload); 
+
+        onCleanup(() => {
+            unsubscribeRealtime(payload);
+            socket.off('historical_kline_initial', handleInitialData);
+            socket.off('historical_kline_completed', handleCompletedData);
+            socket.off('kline_fetch_error', handleFetchError);
+            cleanupChart();
+        });
+    });
+
+    createEffect(() => {
+        const vs = props.viewportState;
+        if (chart && vs && props.activeChartId !== props.tokenInfo?.contractAddress) {
+            const lbi = lastBarIndex();
+            if (lbi === null) return;
+            const to = lbi - vs.offset;
+            const from = to - vs.width;
+            isSettingRangeProgrammatically = true;
+            chart.timeScale().setVisibleLogicalRange({ from, to });
+            setTimeout(() => { isSettingRangeProgrammatically = false; }, 100);
+        }
+    });
+
+    onMount(() => {
+        resizeObserver = new ResizeObserver(entries => {
+            if (chart && chartContainer) {
+                const { width, height } = entries[0].contentRect;
+                chart.applyOptions({ width, height });
+            }
+        });
+        if (chartContainer) {
+            resizeObserver.observe(chartContainer);
+        }
+    });
+
+    onCleanup(() => resizeObserver?.disconnect());
+    
+    return (
+        <div 
+            class="single-chart-wrapper"
+            onMouseEnter={() => props.tokenInfo && props.onSetActiveChart?.(props.tokenInfo.contractAddress)}
+            onMouseLeave={() => props.onSetActiveChart?.(null)}
+        >
+            <div class="chart-header">
+                <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
+                    <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
+                    <span class="symbol-title">{props.tokenInfo!.symbol}</span>
+                    <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
+                    <button class="block-button" title={`屏蔽 ${props.tokenInfo!.symbol}`} onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}>
+                        🚫
+                    </button>
+                </Show>
+            </div>
+            <div ref={chartContainer!} class="chart-container" />
+        </div>
+    );
+};
+
+export default SingleKlineChart;

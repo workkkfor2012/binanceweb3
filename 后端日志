@@ -1,0 +1,27 @@
+CACHE MANAGER] Cleanup successful. Freed 15.21 MB.
+2025-11-19T11:53:18.303482Z  INFO backend::socket_handlers: 🔌 [Socket.IO] Client connected: Cgte4IeJkzjgxYI8
+2025-11-19T12:17:22.503338Z  INFO backend::socket_handlers: 🔽 [UNSUB] Client kd_Ec8_GVN_dHOY- leaving room: kl@14@BAY@5m
+2025-11-19T12:17:22.513499Z  INFO backend::kline_handler: 📥 [HANDLER START] 0x000ae314e2a2172a039b26378814c252734f556a@bsc@5m for client kd_Ec8_GVN_dHOY-
+2025-11-19T12:17:22.513543Z  INFO backend::kline_handler: 📥 [HANDLER START] 0x000ae314e2a2172a039b26378814c252734f556a@bsc@4h for client kd_Ec8_GVN_dHOY-
+2025-11-19T12:17:22.513554Z  INFO backend::socket_handlers: 🔔 [SUB] Client kd_Ec8_GVN_dHOY- -> Room: kl@14@ASTER@5m
+2025-11-19T12:17:22.513565Z  INFO backend::socket_handlers: 🔽 [UNSUB] Client kd_Ec8_GVN_dHOY- leaving room: kl@14@BAY@4h
+2025-11-19T12:17:22.513864Z  INFO backend::socket_handlers: 🔔 [SUB] Client kd_Ec8_GVN_dHOY- -> Room: kl@14@ASTER@4h
+2025-11-19T12:17:22.514039Z  INFO backend::socket_handlers: ✨ [ROOM NEW] First subscriber for 'kl@14@ASTER@5m'. Spawning Binance task...
+2025-11-19T12:17:22.514241Z  INFO backend::socket_handlers: ✨ [ROOM NEW] First subscriber for 'kl@14@ASTER@4h'. Spawning Binance task...
+2025-11-19T12:17:22.516763Z  INFO backend::kline_handler: 💾 [DB MISS] No records found for 0x000ae314e2a2172a039b26378814c252734f556a@bsc@4h
+2025-11-19T12:17:22.517295Z  INFO backend::kline_handler: 💾 [DB MISS] No records found for 0x000ae314e2a2172a039b26378814c252734f556a@bsc@5m
+2025-11-19T12:17:22.519645Z  INFO backend::kline_handler: 🌍 [API CALL] Fetching 500 candles for 0x000ae314e2a2172a039b26378814c252734f556a@bsc@5m
+2025-11-19T12:17:22.521802Z  INFO backend::kline_handler: 🌍 [API CALL] Fetching 500 candles for 0x000ae314e2a2172a039b26378814c252734f556a@bsc@4h
+2025-11-19T12:17:22.840274Z  INFO backend::binance_task: ✅ [TASK kl@14@ASTER@5m] WebSocket handshake successful. Status: 101 Switching Protocols
+2025-11-19T12:17:22.840578Z  INFO backend::binance_task: 📤 [SEND SUB kl@14@ASTER@5m] Tick Stream Payload: {"id":1763554642840,"method":"SUBSCRIBE","params":["tx@14_0x000ae314e2a2172a039b26378814c252734f556a"]}
+2025-11-19T12:17:22.955479Z  INFO backend::binance_task: 📤 [SEND SUB kl@14@ASTER@5m] Kline Stream Payload: {"id":1763554642956,"method":"SUBSCRIBE","params":["kl@14@0x000ae314e2a2172a039b26378814c252734f556a@5m"]}
+2025-11-19T12:17:22.967570Z  INFO backend::binance_task: ✅ [TASK kl@14@ASTER@4h] WebSocket handshake successful. Status: 101 Switching Protocols
+2025-11-19T12:17:22.967821Z  INFO backend::binance_task: 📤 [SEND SUB kl@14@ASTER@4h] Tick Stream Payload: {"id":1763554642967,"method":"SUBSCRIBE","params":["tx@14_0x000ae314e2a2172a039b26378814c252734f556a"]}
+2025-11-19T12:17:23.044563Z  INFO backend::binance_task: ✅ [CONFIRM kl@14@ASTER@5m] Subscription active. Server said: {"result":null,"id":1763554642840}
+2025-11-19T12:17:23.079389Z  INFO backend::binance_task: 📤 [SEND SUB kl@14@ASTER@4h] Kline Stream Payload: {"id":1763554643080,"method":"SUBSCRIBE","params":["kl@14@0x000ae314e2a2172a039b26378814c252734f556a@4h"]}
+2025-11-19T12:17:23.128344Z  INFO backend::binance_task: ✅ [CONFIRM kl@14@ASTER@4h] Subscription active. Server said: {"result":null,"id":1763554642967}
+2025-11-19T12:17:23.139721Z  INFO backend::binance_task: ✅ [CONFIRM kl@14@ASTER@5m] Subscription active. Server said: {"result":null,"id":1763554642956}
+2025-11-19T12:17:23.296170Z  INFO backend::binance_task: ✅ [CONFIRM kl@14@ASTER@4h] Subscription active. Server said: {"result":null,"id":1763554643080}
+2025-11-19T12:17:27.992778Z  INFO backend::kline_handler: 👀 [DATA PEEK 4h] First Candle: [Number(0.6317476014484277), Number(0.9845189606542074), Number(0.45091650279919165), Number(0.5837055968611522), Number(1298085.4306335475), Number(1758240000000)]
+2025-11-19T12:17:27.993174Z  INFO backend::kline_handler: ✅ [API SUCCESS] 4h -> Parsed 370 candles.
+2025-11-19T12:17:28.040058Z  INFO backend::kline_handler: 📡 [API DONE] 0x000ae314e2a2172a039b26378814c252734f556a@bsc@4h fetched 370 candles.

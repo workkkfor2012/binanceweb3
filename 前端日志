@@ -1,0 +1,15 @@
+[DEBUG 5m] Unsubscribing...
+SingleKlineChart.tsx:91 [DEBUG INIT] Chart initialized for ASTER @ 5m
+SingleKlineChart.tsx:237 [DEBUG TX] Sending request for 5m
+SingleKlineChart.tsx:56 [DEBUG 4h] Unsubscribing...
+SingleKlineChart.tsx:91 [DEBUG INIT] Chart initialized for ASTER @ 4h
+SingleKlineChart.tsx:237 [DEBUG TX] Sending request for 4h
+SingleKlineChart.tsx:140 [DEBUG RX Initial] 5m raw: {address: '0x000ae314e2a2172a039b26378814c252734f556a', chain: 'BSC', interval: '4h', data: Array(0)}
+SingleKlineChart.tsx:140 [DEBUG RX Initial] 4h raw: {address: '0x000ae314e2a2172a039b26378814c252734f556a', chain: 'BSC', interval: '4h', data: Array(0)}
+SingleKlineChart.tsx:158 [DEBUG MATCH] 4h accepted Initial Data. Count: 0
+SingleKlineChart.tsx:140 [DEBUG RX Initial] 5m raw: {address: '0x000ae314e2a2172a039b26378814c252734f556a', chain: 'BSC', interval: '5m', data: Array(0)}
+SingleKlineChart.tsx:158 [DEBUG MATCH] 5m accepted Initial Data. Count: 0
+SingleKlineChart.tsx:140 [DEBUG RX Initial] 4h raw: {address: '0x000ae314e2a2172a039b26378814c252734f556a', chain: 'BSC', interval: '5m', data: Array(0)}
+SingleKlineChart.tsx:185 [DEBUG RX Completed] 5m raw: {address: '0x000ae314e2a2172a039b26378814c252734f556a', chain: 'BSC', interval: '4h', data: Array(370)}
+SingleKlineChart.tsx:185 [DEBUG RX Completed] 4h raw: {address: '0x000ae314e2a2172a039b26378814c252734f556a', chain: 'BSC', interval: '4h', data: Array(370)}
+SingleKlineChart.tsx:200 [DEBUG MATCH] 4h accepted Completed Data. Count: 370
