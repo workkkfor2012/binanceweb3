@@ -2,42 +2,47 @@
 import { Component, For, createMemo } from 'solid-js';
 import SingleKlineChart from './SingleKlineChart';
 import type { MarketItem } from 'shared-types';
-import type { ViewportState } from './ChartPageLayout'; // 导入新类型
+import type { ViewportState } from './ChartPageLayout';
 
 interface MultiChartGridProps {
-    tokens: MarketItem[];
-    onBlockToken: (contractAddress: string) => void;
-    timeframe: string;
-    viewportState: ViewportState | null;
-    onViewportChange: (state: ViewportState | null) => void;
-    activeChartId: string | null;
-    onSetActiveChart: (id: string | null) => void;
+tokens: MarketItem[];
+onBlockToken: (contractAddress: string) => void;
+timeframe: string;
+// ✨ 接收新的基于时间的 ViewportState
+viewportState: ViewportState | null;
+onViewportChange: (state: ViewportState | null) => void;
+activeChartId: string | null;
+onSetActiveChart: (id: string | null) => void;
 }
 
 const MultiChartGrid: Component<MultiChartGridProps> = (props) => {
-  const chartData = createMemo(() => {
-    const currentTokens = props.tokens || [];
-    return Array.from({ length: 9 }).map((_, i) => currentTokens[i]);
-  });
-
-  return (
+const chartData = createMemo(() => {
+const currentTokens = props.tokens || [];
+// 始终保持9个格子，不足的留空
+return Array.from({ length: 9 }).map((_, i) => currentTokens[i]);
+});
+    
+return (
     <div id="chart-grid-container">
-      <For each={chartData()}>
-        {(token) => (
-          <SingleKlineChart 
-            tokenInfo={token} 
-            onBlock={props.onBlockToken} 
-            timeframe={props.timeframe}
-            viewportState={props.viewportState}
-            onViewportChange={props.onViewportChange}
-            activeChartId={props.activeChartId}
-            onSetActiveChart={props.onSetActiveChart}
-            showAxes={true}
-          />
-        )}
-      </For>
+        <For each={chartData()}>
+            {(token) => (
+                <SingleKlineChart
+                    tokenInfo={token}
+                    onBlock={props.onBlockToken}
+                    timeframe={props.timeframe}
+                    viewportState={props.viewportState}
+                    onViewportChange={props.onViewportChange}
+                    activeChartId={props.activeChartId}
+                    onSetActiveChart={props.onSetActiveChart}
+                    showAxes={true}
+                />
+            )}
+        </For>
     </div>
-  );
+);
+
+  
+
 };
 
 export default MultiChartGrid;

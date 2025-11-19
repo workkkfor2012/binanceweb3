@@ -242,7 +242,7 @@ async fn handle_message(
                         
                         // ✨ Step 6: 这里就是 WebSocket K 线数据到达的地方
                         // 它会更新/替换掉我们通过 HTTP 注入的那一根
-                        info!("🌊 [WS KLINE {}] Incoming Update. Time: {}, Close: {}", log_display_name, new_kline.time, new_kline.close);
+                        //info!("🌊 [WS KLINE {}] Incoming Update. Time: {}, Close: {}", log_display_name, new_kline.time, new_kline.close);
                         
                         broadcast_update(io, room_name, new_kline.clone()).await;
                         *current_kline.lock().await = Some(new_kline);
@@ -287,7 +287,7 @@ async fn handle_message(
                             kline.volume += volume;
                             
                             // ✨ 开启这行日志，证明注入生效（Tick 正在工作）
-                            info!("⚡ [WS TICK {}] Calculated P: {}", log_display_name, price);
+                            //info!("⚡ [WS TICK {}] Calculated P: {}", log_display_name, price);
                             
                             broadcast_update(io, room_name, kline.clone()).await;
                         }

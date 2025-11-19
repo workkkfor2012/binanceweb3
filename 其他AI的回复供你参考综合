@@ -1,1218 +1,652 @@
-这是一个非常棒的思路！这正是“混合架构”的精髓所在。
+这是一个非常清晰的重构需求。我已仔细阅读了你的项目代码，特别是 ChartPageLayout、MultiChartGrid 和 SingleKlineChart 之间的交互。
 
-你的方案完全可行且非常合理：
+第一部分：前端 9 图渲染流程梳理
 
-HTTP 请求拿到的是截至当前时刻的完整 K 线历史（包含最新那一根）。
+目前的渲染流程大致如下：
 
-WebSocket 任务刚启动时，内存是空的（None）。
+数据接入 (Socket/Data Layer):
 
-桥接：我们可以把 HTTP 请求回来的最后一根 K 线，直接“注入”到 WebSocket 任务的内存状态中。
+App.tsx 或 ChartPageLayout.tsx 里的 Socket 监听 data-broadcast，更新全局 marketData（包含最新价格、Volume 等 snapshot）。
 
-效果：这样 current_kline 就不再是 None，随后的 tx (Tick) 数据立刻就能基于这个“初始值”进行计算和推送，实现了零等待、零丢弃。
+ChartPageLayout 根据 activeRankBy（如成交额、涨幅）和 blockList 过滤并排序出 Top 9 的 rankedTokensForGrid。
 
-我们需要修改 4 个文件来实现这个状态共享和注入机制。
+组件挂载 (Layout Layer):
 
-1. 修改 packages/backend/src/types.rs
+MultiChartGrid 接收这 9 个 Token 数据，并循环渲染 9 个 SingleKlineChart 组件。
 
-我们需要在 Room 结构体中添加 current_kline 字段，这样这个状态就能在 socket_handlers（管理房间）和 kline_handler（下载数据）之间共享。
+图表初始化与数据加载 (Chart Component Layer):
 
-packages/backend/src/types.rs
+每个 SingleKlineChart 在 onMount 时初始化 lightweight-charts 实例。
+
+同时发送 request_historical_kline 和 subscribe_kline 到后端。
+
+Socket 收到 historical_kline_completed 后，调用 candlestickSeries.setData 填充历史数据。
+
+Socket 收到 kline_update 后，调用 candlestickSeries.update 更新实时的一根 K 线。
+
+同步缩放 (Sync Layer - 目前的重点):
+
+用户在某个图表上滚动/缩放 -> 触发 subscribeVisibleLogicalRangeChange。
+
+计算当前可视区域的 Bar Index (K线数量索引) 宽度和相对于最新 K 线的偏移量。
+
+通过父组件 ChartPageLayout 将这个状态广播给其他 8 个图表。
+
+其他图表接收状态，通过 setVisibleLogicalRange 强制设置相同的索引范围。
+
+第二部分：评价目前的同步缩放算法
+
+目前的算法：基于索引对齐 (Index-Based Alignment)
+
+逻辑：计算“当前看到的是倒数第 X 根到倒数第 Y 根 K 线”，并让所有图表都显示这个范围。
+
+评价：不合理 (Unreasonable)。
+
+为什么不合理？
+
+数据对齐问题（核心致命伤）：
+
+假设图表 A 是 BTC（流动性好，每分钟都有 K 线），图表 B 是某个冷门山寨币（可能几分钟才有一笔交易，K 线有断档）。
+
+如果你在 BTC 上看的是“10:00 - 10:05”，这对应的是倒数第 50-55 根 K 线。
+
+在冷门币上，倒数第 50-55 根 K 线可能发生在“昨天下午 14:00”。
+
+结果：用户看到的时间轴是错乱的，无法横向对比同一时间的行情。
+
+数据加载延迟：
+
+如果图表 C 的数据还没加载完（只有 10 根），而图表 A 让你显示“倒数第 100 根”，图表 C 会报错或显示空白，计算逻辑会出现负数索引异常。
+
+视觉误导：
+
+9 图模式的核心价值在于发现同一时间点的共振。基于 Index 的同步破坏了这一价值。
+
+改进建议：基于时间戳对齐 (Time-Based Alignment)
+
+逻辑：计算“当前看到的是 10:00 到 10:30”，将这个时间戳范围广播给其他图表。
+
+优势：无论该品种交易是否活跃，所有图表的时间轴都会强制对齐到同一物理时间段。
+
+第三部分：代码重构
+
+我将修改这三个文件，将同步逻辑从 LogicalRange (索引) 改为 TimeRange (时间戳)。
+
+1. 修改 packages/frontend/src/ChartPageLayout.tsx
+
+定义新的状态接口，存储时间范围而非索引范围。
 
 code
-Rust
 download
 content_copy
 expand_less
-// packages/backend/src/types.rs
+packages/frontend/src/ChartPageLayout.tsx
+// packages/frontend/src/ChartPageLayout.tsx
+import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
+import { createStore, produce } from 'solid-js/store';
+import { socket } from './socket'; // ✨ 使用共享的 socket 实例
+import type { MarketItem, DataPayload } from 'shared-types';
+import CompactRankingListsContainer from './CompactRankingListsContainer';
+import MultiChartGrid from './MultiChartGrid';
+import SingleTokenView from './SingleTokenView';
+import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use socketioxide::socket::Sid;
-use sqlx::FromRow;
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::Mutex; // ✨ 需要引入 Mutex
-use tokio::task::JoinHandle;
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MarketItem {
-    pub contract_address: Option<String>,
-    pub symbol: Option<String>,
-    pub icon: Option<String>,
-    pub chain: Option<String>,
-    pub price: Option<f64>,
-    pub market_cap: Option<f64>,
-    pub chain_id: Option<String>,
-    pub volume1m: Option<f64>,
-    pub volume5m: Option<f64>,
-    pub volume1h: Option<f64>,
-    pub volume4h: Option<f64>,
-    pub volume24h: Option<f64>,
-    pub price_change1m: Option<f64>,
-    pub price_change5m: Option<f64>,
-    pub price_change1h: Option<f64>,
-    pub price_change4h: Option<f64>,
-    pub price_change24h: Option<f64>,
+// ✨ 核心修改: 将 ViewportState 从索引逻辑改为时间戳逻辑
+export interface ViewportState {
+from: number; // Unix Timestamp (seconds)
+to: number; // Unix Timestamp (seconds)
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct KlineSubscribePayload {
-    pub address: String,
-    pub chain: String,
-    pub interval: String,
+const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
+
+const TIMEFRAME_MAP: Record<string, string> = {
+'1': '1m', '2': '5m', '3': '1h', '4': '4h', '5': '1d',
+};
+export const ALL_TIMEFRAMES = Object.values(TIMEFRAME_MAP);
+
+const loadBlockListFromStorage = (): Set<string> => {
+try {
+const storedList = localStorage.getItem(BLOCKLIST_STORAGE_KEY);
+if (storedList) {
+const parsedArray = JSON.parse(storedList);
+if (Array.isArray(parsedArray)) return new Set(parsedArray);
 }
+} catch (error) { console.error('[Blocklist] Failed to load blocklist:', error); }
+return new Set();
+};
 
-#[derive(Debug, Deserialize)]
-pub struct DataPayload {
-    pub r#type: String,
-    pub data: Vec<MarketItem>,
-}
+const saveBlockListToStorage = (blockList: Set<string>): void => {
+try {
+localStorage.setItem(BLOCKLIST_STORAGE_KEY, JSON.stringify(Array.from(blockList)));
+} catch (error) { console.error('[Blocklist] Failed to save blocklist:', error); }
+};
 
-#[derive(Debug, Deserialize)]
-pub struct BinanceStreamWrapper<T> {
-    pub stream: String,
-    pub data: T,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BinanceKlineDataWrapper {
-    #[serde(rename = "d")]
-    pub kline_data: BinanceKlineDetail,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(non_snake_case)]
-pub struct BinanceKlineDetail {
-    #[serde(rename = "u")]
-    pub values: (String, String, String, String, String, String),
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BinanceTickDataWrapper {
-    #[serde(rename = "d")]
-    pub tick_data: BinanceTickDetail,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(non_snake_case)]
-pub struct BinanceTickDetail {
-    pub t0a: String,
-    pub t1a: String,
-    pub t0pu: f64,
-    pub t1pu: f64,
-    pub v: f64,
-    pub tp: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct KlineBroadcastData {
-    pub room: String,
-    pub data: KlineTick,
-}
-
-#[derive(Debug, Serialize, Clone, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct KlineTick {
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub time: DateTime<Utc>,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    pub volume: f64,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct KlineHistoryResponse {
-    pub address: String,
-    pub chain: String,
-    pub interval: String,
-    pub data: Vec<KlineTick>,
-}
-
-pub struct Room {
-    pub clients: HashSet<Sid>,
-    pub task_handle: JoinHandle<()>,
-    pub symbol: String,
-    // ✨ 新增：共享的 K 线状态，允许 HTTP Handler 注入初始数据
-    pub current_kline: Arc<Mutex<Option<KlineTick>>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ImageProxyQuery {
-    pub url: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CacheMeta {
-    pub content_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HistoricalDataWrapper {
-    pub data: Vec<Vec<serde_json::Value>>,
-}
-2. 修改 packages/backend/src/socket_handlers.rs
-
-在创建房间时，初始化 current_kline，并将其传递给 binance_task。
-
-packages/backend/src/socket_handlers.rs
+const ChartPageLayout: Component = () => {
+const [marketData, setMarketData] = createStore<MarketItem[]>([]);
+const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
+const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('volume1m');
+const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
+const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
+const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
+const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
 
 code
-Rust
+Code
 download
 content_copy
 expand_less
-// packages/backend/src/socket_handlers.rs
+const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
+const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
 
-use super::{
-    binance_task,
-    kline_handler,
-    types::{DataPayload, KlineSubscribePayload, Room, KlineTick}, // ✨ 引入 KlineTick
-    ServerState,
+const handleViewportChange = (newState: ViewportState | null) => {
+    setViewportState(newState);
 };
-use socketioxide::{
-    extract::{Data, SocketRef},
-};
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::Mutex; // ✨ 引入 Mutex
-use tracing::{error, info, warn};
 
-pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
-    info!("🔌 [Socket.IO] Client connected: {}", s.id);
+const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
-    register_data_update_handler(&s, state.clone());
-    register_kline_subscribe_handler(&s, state.clone());
-    register_kline_unsubscribe_handler(&s, state.clone());
-    register_disconnect_handler(&s, state.clone());
-    register_kline_history_handler(&s, state);
-}
-
-fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
-    socket.on(
-        "request_historical_kline",
-        move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
-            let state = state.clone();
-            async move {
-                // info!("📜 [REQ HISTORY] Client {} requested kline history for {}@{}", s.id, payload.0.chain, payload.0.address);
-                kline_handler::handle_kline_request(s, payload, state).await;
-            }
-        },
-    );
-}
-
-fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
-    socket.on(
-        "data-update",
-        move |s: SocketRef, payload: Data<serde_json::Value>| {
-            let state = state.clone();
-            async move {
-                if let Err(e) = s.broadcast().emit("data-broadcast", &payload.0).await {
-                    error!("[Socket.IO] Failed to broadcast data for {}: {:?}", s.id, e);
-                }
-
-                match serde_json::from_value::<DataPayload>(payload.0) {
-                    Ok(parsed_payload) => {
-                        for item in parsed_payload.data {
-                            if let (Some(address), Some(symbol)) = (item.contract_address, item.symbol) {
-                                state.token_symbols.insert(address.to_lowercase(), symbol);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[SYMBOL MAP] Failed to parse data-update payload: {}", e);
-                    }
-                }
-            }
-        },
-    );
-}
-
-fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
-    socket.on(
-        "subscribe_kline",
-        move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
-            let state = state.clone();
-            async move {
-                let chain_lower = payload.chain.to_lowercase();
-                
-                let address_lowercase = payload.address.to_lowercase();
-                let symbol = state.token_symbols
-                    .get(&address_lowercase)
-                    .map_or_else(
-                        || format!("{}...", &payload.address[0..6]),
-                        |s| s.value().clone()
-                    );
-
-                let pool_id = match chain_lower.as_str() {
-                    "bsc" => 14, 
-                    "sol" | "solana" => 16, 
-                    "base" => 199,
-                    unsupported_chain => {
-                        warn!("⚠️ [SUBSCRIBE FAIL] Unsupported chain '{}' (original: '{}') for {}. Ignored.", unsupported_chain, payload.chain, s.id);
-                        return;
-                    }
-                };
-
-                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
-                let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
-
-                info!("🔔 [SUB] Client {} -> Room: {}", s.id, log_display_name);
-                s.join(room_name.clone());
-
-                state.app_state
-                    .entry(room_name.clone())
-                    .or_insert_with(|| {
-                        info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
-                        
-                        // ✨ 1. 创建共享状态
-                        let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
-                        
-                        // ✨ 2. 将状态传给 Task
-                        let task_handle = tokio::spawn(binance_task::binance_websocket_task(
-                            state.io.clone(),
-                            room_name.clone(),
-                            symbol.clone(), 
-                            state.config.clone(),
-                            current_kline.clone(), // 传递进去
-                        ));
-                        
-                        Room {
-                            clients: HashSet::new(),
-                            task_handle,
-                            symbol,
-                            current_kline, // ✨ 3. 保存到 Room 以便 HTTP Handler 访问
-                        }
-                    })
-                    .value_mut()
-                    .clients
-                    .insert(s.id);
-            }
-        },
-    );
-}
-
-fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
-    socket.on(
-        "unsubscribe_kline",
-        move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
-            let state = state.clone();
-            async move {
-                let chain_lower = payload.chain.to_lowercase();
-
-                 let symbol = state.token_symbols
-                    .get(&payload.address.to_lowercase())
-                    .map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
-
-                let pool_id = match chain_lower.as_str() {
-                    "bsc" => 14, 
-                    "sol" | "solana" => 16, 
-                    "base" => 199,
-                    _ => { return; }
-                };
-                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
-                let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
-
-                info!("🔽 [UNSUB] Client {} leaving room: {}", s.id, log_display_name);
-                s.leave(room_name.clone());
-
-                if let Some(mut room) = state.app_state.get_mut(&room_name) {
-                    room.clients.remove(&s.id);
-                    if room.clients.is_empty() {
-                        drop(room);
-                        if let Some((_, room_to_abort)) = state.app_state.remove(&room_name) {
-                            info!("🗑️ [ROOM EMPTY] Last client left '{}'. Aborting Binance task.", log_display_name);
-                            room_to_abort.task_handle.abort();
-                        }
-                    }
-                }
-            }
-        },
-    );
-}
-
-fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
-    socket.on_disconnect(move |s: SocketRef| {
-        let state = state.clone();
-        async move {
-            // info!("🔌 [Socket.IO] Client disconnected: {}", s.id);
-            let mut empty_rooms: Vec<(String, String)> = Vec::new();
-
-            for mut entry in state.app_state.iter_mut() {
-                if entry.value_mut().clients.remove(&s.id) {
-                    let log_display_name = {
-                        let parts: Vec<&str> = entry.key().split('@').collect();
-                        if parts.len() == 4 {
-                             format!("{}@{}@{}@{}", parts[0], parts[1], &entry.value().symbol, parts[3])
-                        } else {
-                            entry.key().to_string()
-                        }
-                    };
-                    if entry.clients.is_empty() {
-                        empty_rooms.push((entry.key().clone(), log_display_name));
-                    }
-                }
-            }
-
-            for (room_name, log_display_name) in empty_rooms {
-                if let Some((_, room)) = state.app_state.remove(&room_name) {
-                    info!("🗑️ [ROOM CLEANUP] Room '{}' is now empty. Aborting task.", log_display_name);
-                    room.task_handle.abort();
-                }
-            }
+    if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
+        const newTimeframe = TIMEFRAME_MAP[e.key];
+        console.log(`[Layout] Hotkey '${e.key}' pressed. Changing timeframe to ${newTimeframe}`);
+        setActiveTimeframe(newTimeframe);
+        if (viewMode() === 'grid') {
+            setViewportState(null);
         }
-    });
-}
-3. 修改 packages/backend/src/binance_task.rs
+        return;
+    }
 
-更新函数签名，不再在内部创建 current_kline，而是接收外部传入的。
-
-packages/backend/src/binance_task.rs
-
-code
-Rust
-download
-content_copy
-expand_less
-// packages/backend/src/binance_task.rs
-
-use super::{
-    config::Config,
-    types::{
-        BinanceKlineDataWrapper, BinanceStreamWrapper, BinanceTickDataWrapper, KlineBroadcastData,
-        KlineTick,
-    },
-};
-use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
-use futures_util::{stream::SplitSink, SinkExt, StreamExt};
-use socketioxide::SocketIo;
-use std::{sync::Arc, time::SystemTime};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-    sync::Mutex,
-    time::interval,
-};
-use tokio_native_tls::TlsConnector as TokioTlsConnector;
-use tokio_tungstenite::{
-    client_async_with_config,
-    tungstenite::{client::IntoClientRequest, Message},
-    WebSocketStream,
-};
-use tracing::{error, info, warn};
-
-type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
-type WsWrite = SplitSink<WsStream, Message>;
-type WsRead = futures_util::stream::SplitStream<WsStream>;
-
-const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0;
-const LOW_VOLUME_THRESHOLD: f64 = 10.0;
-
-pub async fn binance_websocket_task(
-    io: SocketIo,
-    room_name: String,
-    symbol: String,
-    config: Arc<Config>,
-    // ✨ 新增参数：接收共享的状态
-    current_kline: Arc<Mutex<Option<KlineTick>>>,
-) {
-    let log_display_name = {
-        let parts: Vec<&str> = room_name.split('@').collect();
-        if parts.len() == 4 {
-            format!("{}@{}@{}@{}", parts[0], parts[1], &symbol, parts[3])
+    if (e.key.toLowerCase() === 'f') {
+        if (viewMode() === 'grid') {
+            const hoveredTokenId = activeChartId();
+            if (hoveredTokenId) {
+                const token = rankedTokensForGrid().find(t => t.contractAddress === hoveredTokenId);
+                if (token) {
+                    console.log(`[Layout] Entering single view for ${token.symbol}`);
+                    setFocusedToken(token);
+                    setViewMode('single');
+                }
+            }
         } else {
-            room_name.clone()
-        }
-    };
-
-    let address = match room_name.split('@').nth(2) {
-        Some(addr) => addr.to_lowercase(),
-        None => {
-            error!(
-                "❌ [TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.",
-                log_display_name
-            );
-            return;
-        }
-    };
-    let address = Arc::new(address);
-
-    loop {
-        match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config, current_kline.clone()).await {
-            Ok(_) => warn!(
-                "🔁 [TASK {}] Disconnected gracefully. Reconnecting...",
-                log_display_name
-            ),
-            Err(e) => error!(
-                "🔁 [TASK {}] Connection failed: {:#?}. Retrying in 3s...",
-                log_display_name, e
-            ),
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    }
-}
-
-async fn connect_and_run(
-    io: &SocketIo,
-    room_name: &str,
-    log_display_name: &str,
-    address: Arc<String>,
-    config: &Config,
-    current_kline: Arc<Mutex<Option<KlineTick>>>, // ✨ 传递
-) -> Result<()> {
-    let stream = establish_http_tunnel(log_display_name, config).await?;
-    let host = Url::parse(&config.binance_wss_url)?
-        .host_str()
-        .unwrap_or_default()
-        .to_string();
-    let tls_stream = wrap_stream_with_tls(stream, &host).await?;
-
-    let mut request = config.binance_wss_url.as_str().into_client_request()?;
-    let headers = request.headers_mut();
-
-    headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse()?);
-    headers.insert("Origin", "https://web3.binance.com".parse()?);
-    headers.insert("Accept-Encoding", "gzip, deflate, br, zstd".parse()?);
-    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse()?);
-    headers.insert("Pragma", "no-cache".parse()?);
-    headers.insert("Cache-Control", "no-cache".parse()?);
-
-    let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
-        .await
-        .context("WebSocket handshake failed")?;
-    info!(
-        "✅ [TASK {}] WebSocket handshake successful. Status: {}",
-        log_display_name,
-        response.status()
-    );
-
-    let (mut write, mut read) = ws_stream.split();
-    subscribe_all(&mut write, room_name, log_display_name).await?;
-
-    // ✨ 移除：不再本地创建
-    // let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
-
-    message_loop(
-        io,
-        room_name,
-        log_display_name,
-        config,
-        &mut write,
-        &mut read,
-        current_kline, // 使用传入的
-        address,
-    )
-    .await
-}
-
-async fn subscribe_all(
-    write: &mut WsWrite,
-    kline_room_name: &str,
-    log_display_name: &str,
-) -> Result<()> {
-    let parts: Vec<&str> = kline_room_name.split('@').collect();
-    if parts.len() != 4 {
-        return Err(anyhow!(
-            "Invalid kline room name format: {}",
-            kline_room_name
-        ));
-    }
-    let pool_id = parts[1];
-    let address = parts[2];
-
-    let tick_param = format!("tx@{}_{}", pool_id, address);
-    let tick_request_id = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_millis();
-    let tick_subscribe_msg = serde_json::json!({
-        "id": tick_request_id,
-        "method": "SUBSCRIBE",
-        "params": [tick_param]
-    });
-    info!(
-        "📤 [SEND SUB {}] Tick Stream Payload: {}",
-        log_display_name, tick_subscribe_msg
-    );
-    write
-        .send(Message::Text(tick_subscribe_msg.to_string().into()))
-        .await?;
-
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    let kline_request_id =
-        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() + 1;
-    let kline_subscribe_msg = serde_json::json!({
-        "id": kline_request_id,
-        "method": "SUBSCRIBE",
-        "params": [kline_room_name]
-    });
-    info!(
-        "📤 [SEND SUB {}] Kline Stream Payload: {}",
-        log_display_name, kline_subscribe_msg
-    );
-    write
-        .send(Message::Text(kline_subscribe_msg.to_string().into()))
-        .await?;
-
-    Ok(())
-}
-
-async fn message_loop(
-    io: &SocketIo,
-    room_name: &str,
-    log_display_name: &str,
-    config: &Config,
-    write: &mut WsWrite,
-    read: &mut WsRead,
-    current_kline: Arc<Mutex<Option<KlineTick>>>,
-    address: Arc<String>,
-) -> Result<()> {
-    let mut heartbeat = interval(config.heartbeat_interval);
-    loop {
-        tokio::select! {
-            _ = heartbeat.tick() => {
-                // info!("[HEARTBEAT {}] Sending Ping...", log_display_name);
-                write.send(Message::Ping(vec![].into())).await.context("Failed to send heartbeat Ping")?;
-            }
-            msg_result = read.next() => {
-                match msg_result {
-                    Some(Ok(msg)) => {
-                        let should_continue = handle_message(msg, io, room_name, log_display_name, write, current_kline.clone(), &address).await?;
-                        if !should_continue {
-                            break;
-                        }
-                    },
-                    Some(Err(e)) => return Err(e.into()),
-                    None => break,
-                }
-            }
+            console.log('[Layout] Exiting single view.');
+            setViewMode('grid');
+            setFocusedToken(null);
         }
     }
-    warn!("[TASK {}] Message loop exited.", log_display_name);
-    Ok(())
-}
+};
 
-async fn handle_message(
-    msg: Message,
-    io: &SocketIo,
-    room_name: &str,
-    log_display_name: &str,
-    write: &mut WsWrite,
-    current_kline: Arc<Mutex<Option<KlineTick>>>,
-    tracked_address: &str,
-) -> Result<bool> {
-    match msg {
-        Message::Text(text) if !text.is_empty() => {
-            if text.contains("\"stream\":\"kl@") {
-                match serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {
-                    Ok(wrapper) => {
-                        let values = &wrapper.data.kline_data.values;
-                        let timestamp_seconds = values.5.parse::<i64>().unwrap_or_default() / 1000;
-                        let new_kline = KlineTick {
-                            time: DateTime::from_timestamp(timestamp_seconds, 0).unwrap_or_default().with_timezone(&Utc),
-                            open: values.0.parse().unwrap_or_default(),
-                            high: values.1.parse().unwrap_or_default(),
-                            low: values.2.parse().unwrap_or_default(),
-                            close: values.3.parse().unwrap_or_default(),
-                            volume: values.4.parse().unwrap_or_default(),
-                        };
-                        // info!("📊 [KLINE {}] C:{}", room_name, new_kline.close);
-                        broadcast_update(io, room_name, new_kline.clone()).await;
-                        *current_kline.lock().await = Some(new_kline);
-                    },
-                    Err(e) => {
-                        error!("❌ [KLINE PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
-                    }
-                }
-            } else if text.contains("\"stream\":\"tx@") {
-                match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
-                    Ok(wrapper) => {
-                        let tick = &wrapper.data.tick_data;
+const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
+    console.log(`[ChartPage Alert] [${alertType.toUpperCase()}] ${logMessage}`);
+};
 
-                        let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
-                            tick.t0pu
-                        } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
-                            tick.t1pu
-                        } else {
-                            return Ok(true);
-                        };
-                        
-                        let volume = tick.v;
-                        
-                        let mut kline_guard = current_kline.lock().await;
-                        // ⬇️ 这里的 Some(kline) 现在如果被 HTTP Handler 注入过，就会成功！
-                        if let Some(kline) = kline_guard.as_mut() {
-                            let last_price = kline.close;
-
-                            if last_price > 0.0 {
-                                let price_ratio = if price > last_price { price / last_price } else { last_price / price };
-                                if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && volume < LOW_VOLUME_THRESHOLD {
-                                    warn!(
-                                        "🚫 [REJECT SPIKE {}] Price jump {:.2}x with low vol ${:.4}. Last: {}, New: {}",
-                                        log_display_name, price_ratio, volume, last_price, price
-                                    );
-                                    return Ok(true);
-                                }
-                            }
-
-                            kline.high = kline.high.max(price);
-                            kline.low = kline.low.min(price);
-                            kline.close = price;
-                            kline.volume += volume;
-                            
-                            // info!("⚡ [TICK UPDATE {}] Price: {}", room_name, price);
-                            broadcast_update(io, room_name, kline.clone()).await;
-                        } else {
-                             // ✨ [DIAGNOSTIC] 如果这里打印了，说明 HTTP 数据还没回来，Tick 还是被丢弃了 (race condition)
-                             // debug!("⚠️ [TICK IGNORE {}] No base kline yet.", log_display_name);
-                        }
-                    },
-                    Err(e) => {
-                        // error!("❌ [TICK PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
-                    }
-                }
-            } else if text.contains("result") {
-                info!(
-                    "✅ [CONFIRM {}] Subscription active. Server said: {}",
-                    log_display_name, text
+onMount(() => {
+    // 确保 socket 连接，如果它断开了，它会自动重连
+    if (!socket.connected) {
+        socket.connect();
+    }
+    
+    socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
+    socket.on('disconnect', () => setLastUpdate('Disconnected'));
+    socket.on('data-broadcast', (payload: DataPayload) => {
+        if (!payload.data || payload.data.length === 0) return;
+        const blocked = blockList();
+        for (const newItem of payload.data) {
+            if (!blocked.has(newItem.contractAddress)) {
+                const oldItem = marketData.find(d => 
+                    d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
                 );
-            } else {
-                // warn!("❓ [UNHANDLED MSG {}] {}", log_display_name, text);
+                if (oldItem) {
+                    checkAndTriggerAlerts(newItem, oldItem, handleNewAlert);
+                }
             }
         }
-        Message::Ping(ping_data) => {
-            write
-                .send(Message::Pong(ping_data))
-                .await
-                .context("Failed to send Pong")?;
-        }
-        Message::Close(close_frame) => {
-            warn!(
-                "🛑 [TASK {}] Received Close frame: {:?}",
-                log_display_name, close_frame
-            );
-            return Ok(false);
-        }
-        _ => {}
-    }
-    Ok(true)
-}
+        setMarketData(produce(currentData => {
+            for (const item of payload.data) {
+                const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
+                if (index > -1) Object.assign(currentData[index], item);
+                else currentData.push(item);
+            }
+        }));
+        setLastUpdate(new Date().toLocaleTimeString());
+    });
+    initializeVoices();
+    window.addEventListener('keydown', handleKeyDown);
 
-async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
-    let broadcast_data = KlineBroadcastData {
-        room: room_name.to_string(),
-        data: kline,
-    };
-    if let Err(e) = io
-        .to(room_name.to_string())
-        .emit("kline_update", &broadcast_data)
-        .await
-    {
-        error!(
-            "❌ [BROADCAST FAIL {}] {:?}",
-            room_name, e
-        );
-    }
-}
+    onCleanup(() => {
+        // 在组件卸载时，只移除此组件关心的事件监听器，而不是断开整个 socket
+        socket.off('connect');
+        socket.off('disconnect');
+        socket.off('data-broadcast');
+        window.removeEventListener('keydown', handleKeyDown);
+    });
+});
 
-async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Result<TcpStream> {
-    let url_obj = Url::parse(&config.binance_wss_url)?;
-    let host = url_obj.host_str().unwrap_or_default();
-    let port = url_obj.port_or_known_default().unwrap_or(443);
-    let target_addr = format!("{}:{}", host, port);
+const handleBlockToken = (contractAddress: string) => {
+    const newBlockList = new Set(blockList());
+    newBlockList.add(contractAddress);
+    setBlockList(newBlockList);
+    saveBlockListToStorage(newBlockList);
+    console.log(`[Blocklist] Token ${contractAddress} added.`);
+};
 
-    // info!("connecting to proxy...");
-    let mut stream = TcpStream::connect(&config.proxy_addr)
-        .await
-        .context("HTTP proxy connection failed")?;
-    let connect_req = format!(
-        "CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        target_addr, target_addr
-    );
-    stream
-        .write_all(connect_req.as_bytes())
-        .await
-        .context("Failed to send CONNECT request")?;
+const rankedTokensForGrid = createMemo(() => {
+    const rankBy = activeRankBy();
+    const blocked = blockList(); 
+    if (!rankBy) return [];
+    return [...marketData]
+        .filter(item => !blocked.has(item.contractAddress))
+        .filter(item => item.icon && item[rankBy] != null)
+        .sort((a, b) => {
+            const valA = a[rankBy]!;
+            const valB = b[rankBy]!;
+            return (typeof valB === 'string' ? parseFloat(valB) : valB) - 
+                   (typeof valA === 'string' ? parseFloat(valA) : valA);
+        })
+        .slice(0, 9);
+});
 
-    let mut buf = vec![0; 1024];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .context("Failed to read proxy response")?;
+const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
+    console.log(`[Layout] User selected new ranking: ${rankBy}.`);
+    setActiveRankBy(rankBy);
+};
 
-    let response = String::from_utf8_lossy(&buf[..n]);
+const handleRankingItemClick = (item: MarketItem) => {
+    const url = `/token.html?address=${item.contractAddress}&chain=${item.chain}`;
+    // 在新标签页中打开
+    window.open(url, '_blank');
+};
 
-    if !response.starts_with("HTTP/1.1 200") {
-        return Err(anyhow!(
-            "❌ [TASK {}] Proxy CONNECT failed: {}",
-            log_display_name,
-            response.trim()
-        ));
-    }
-    Ok(stream)
-}
+return (
+    <div class="chart-page-container">
+        <div class="left-sidebar">
+            <CompactRankingListsContainer 
+                marketData={marketData}
+                lastUpdate={lastUpdate()} 
+                onHeaderClick={handleRankingHeaderClick}
+                blockList={blockList()}
+                onItemClick={handleRankingItemClick}
+            />
+        </div>
+        <div class="right-chart-grid">
+            <Show
+                when={viewMode() === 'single' && focusedToken()}
+                fallback={
+                    <>
+                        <div class="grid-header">
+                            <div class="active-timeframe-indicator">
+                                <span>Timeframe: </span>
+                                <strong>{activeTimeframe().toUpperCase()}</strong>
+                                <span class="hotkey-hint">(Keys: 1-5)</span>
+                            </div>
+                        </div>
+                        <MultiChartGrid 
+                            tokens={rankedTokensForGrid()} 
+                            onBlockToken={handleBlockToken} 
+                            timeframe={activeTimeframe()}
+                            viewportState={viewportState()}
+                            onViewportChange={handleViewportChange}
+                            activeChartId={activeChartId()}
+                            onSetActiveChart={setActiveChartId}
+                        />
+                    </>
+                }
+            >
+                <SingleTokenView 
+                    token={focusedToken()!} 
+                    activeTimeframe={activeTimeframe()} 
+                />
+            </Show>
+        </div>
+    </div>
+);
 
-async fn wrap_stream_with_tls(
-    stream: TcpStream,
-    host: &str,
-) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
-    let tls_connector = native_tls::TlsConnector::builder().build()?;
-    let tokio_tls_connector = TokioTlsConnector::from(tls_connector);
-    tokio_tls_connector
-        .connect(host, stream)
-        .await
-        .context("TLS Handshake failed")
-}
-4. 修改 packages/backend/src/kline_handler.rs
+};
 
-在 complete_kline_data 函数中，获取到新数据后，找到对应的房间并注入最新的一根 K 线。
+export default ChartPageLayout;
 
-packages/backend/src/kline_handler.rs
+2. 修改 packages/frontend/src/MultiChartGrid.tsx
+
+仅需更新类型定义。
 
 code
-Rust
 download
 content_copy
 expand_less
-// packages/backend/src/kline_handler.rs
+packages/frontend/src/MultiChartGrid.tsx
+// packages/frontend/src/MultiChartGrid.tsx
+import { Component, For, createMemo } from 'solid-js';
+import SingleKlineChart from './SingleKlineChart';
+import type { MarketItem } from 'shared-types';
+import type { ViewportState } from './ChartPageLayout';
 
-use crate::{
-    client_pool::ClientPool,
-    types::{HistoricalDataWrapper, KlineHistoryResponse, KlineSubscribePayload, KlineTick},
-    ServerState,
-};
-use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Utc};
-use reqwest::Client;
-use serde_json::Value;
-use socketioxide::extract::{Data, SocketRef};
-use sqlx::{
-    sqlite::{SqlitePool, SqliteRow},
-    Row,
-};
-use std::time::Instant;
-use tokio_retry::{strategy::ExponentialBackoff, Retry};
-use tracing::{error, info, warn};
-
-const API_URL_TEMPLATE: &str = "https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}";
-const API_MAX_LIMIT: i64 = 500;
-const DB_MAX_RECORDS: i64 = 1000;
-const DB_PRUNE_TO_COUNT: i64 = 500;
-const FETCH_RETRY_COUNT: usize = 3;
-
-pub async fn init_db(pool: &SqlitePool) -> Result<()> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS klines (
-            primary_key TEXT NOT NULL,
-            time INTEGER NOT NULL,
-            open REAL NOT NULL,
-            high REAL NOT NULL,
-            low REAL NOT NULL,
-            close REAL NOT NULL,
-            volume REAL NOT NULL,
-            PRIMARY KEY (primary_key, time)
-        )",
-    )
-    .execute(pool)
-    .await?;
-    info!("🗃️ 'klines' table is ready.");
-    Ok(())
+interface MultiChartGridProps {
+tokens: MarketItem[];
+onBlockToken: (contractAddress: string) => void;
+timeframe: string;
+viewportState: ViewportState | null;
+onViewportChange: (state: ViewportState | null) => void;
+activeChartId: string | null;
+onSetActiveChart: (id: string | null) => void;
 }
 
-pub async fn handle_kline_request(
-    s: SocketRef,
-    Data(payload): Data<KlineSubscribePayload>,
-    state: ServerState,
-) {
-    let start_total = Instant::now();
-    let primary_key = get_primary_key(&payload);
+const MultiChartGrid: Component<MultiChartGridProps> = (props) => {
+const chartData = createMemo(() => {
+const currentTokens = props.tokens || [];
+return Array.from({ length: 9 }).map((_, i) => currentTokens[i]);
+});
 
-    // --- 步骤 1: 立即查询数据库并返回 (同步路径) ---
-    let db_start = Instant::now();
-    let initial_data = match get_klines_from_db(&state.db_pool, &primary_key).await {
-        Ok(data) => {
-            let db_duration = db_start.elapsed();
-            if !data.is_empty() {
-                let last_time = data.last().unwrap().time;
-                info!(
-                    "💾 [DB HIT] {} records for {}. Last Candle: {} (Took {:?})",
-                    data.len(),
-                    primary_key,
-                    last_time,
-                    db_duration
-                );
-            } else {
-                info!(
-                    "💾 [DB MISS] No records found for {} (Took {:?})",
-                    primary_key,
-                    db_duration
-                );
-            }
-            data
-        }
-        Err(e) => {
-            error!("❌ [DB ERROR] for {}: {}", primary_key, e);
-            vec![]
-        }
-    };
+return (
+<div id="chart-grid-container">
+<For each={chartData()}>
+{(token) => (
+<SingleKlineChart
+tokenInfo={token}
+onBlock={props.onBlockToken}
+timeframe={props.timeframe}
+viewportState={props.viewportState}
+onViewportChange={props.onViewportChange}
+activeChartId={props.activeChartId}
+onSetActiveChart={props.onSetActiveChart}
+showAxes={true}
+/>
+)}
+</For>
+</div>
+);
+};
 
-    let initial_response = KlineHistoryResponse {
-        address: payload.address.clone(),
-        chain: payload.chain.clone(),
-        interval: payload.interval.clone(),
-        data: initial_data,
-    };
+export default MultiChartGrid;
 
-    if let Err(e) = s.emit("historical_kline_initial", &initial_response) {
-        error!("❌ [EMIT ERROR] initial for {}: {}", primary_key, e);
+3. 修改 packages/frontend/src/SingleKlineChart.tsx
+
+这是核心修改：使用 getVisibleRange() (获取时间) 和 setVisibleRange() (设置时间) 替代原有的 LogicalRange 逻辑。
+
+code
+download
+content_copy
+expand_less
+packages/frontend/src/SingleKlineChart.tsx
+// packages/frontend/src/SingleKlineChart.tsx
+
+/** @jsxImportSource solid-js */
+
+import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time } from 'lightweight-charts';
+import { socket } from './socket';
+import type { LightweightChartKline, KlineUpdatePayload, KlineFetchErrorPayload } from './types';
+import type { MarketItem } from 'shared-types';
+import type { ViewportState } from './ChartPageLayout';
+
+const BACKEND_URL = 'http://localhost:3001';
+
+interface SingleKlineChartProps {
+tokenInfo: MarketItem | undefined;
+onBlock?: (contractAddress: string) => void;
+timeframe: string;
+viewportState: ViewportState | null;
+onViewportChange?: (state: ViewportState | null) => void;
+activeChartId: string | null;
+onSetActiveChart?: (id: string | null) => void;
+showAxes?: boolean;
+}
+
+const customPriceFormatter = (price: number): string => {
+if (price === 0) return '0';
+if (price < 0.000001) {
+return price.toFixed(12).replace(/.?0+$/, "");
+}
+if (price < 1) return price.toFixed(6);
+return price.toFixed(2);
+};
+
+const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
+let chartContainer: HTMLDivElement;
+let chart: IChartApi | null = null;
+let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+let resizeObserver: ResizeObserver | null = null;
+
+code
+Code
+download
+content_copy
+expand_less
+const [status, setStatus] = createSignal('Initializing...');
+// ✨ 移除 lastBarIndex，现在使用纯时间同步
+
+// 标记是否正在通过代码设置范围，避免循环触发事件
+let isProgrammaticUpdate = false;
+
+const getLogId = () => `[${props.tokenInfo?.symbol || '???'} @ ${props.timeframe}]`;
+
+const cleanupChart = () => {
+    if (chart) {
+        chart.remove();
+        chart = null;
+        candlestickSeries = null;
+    }
+};
+
+const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
+    socket.off('kline_update', handleKlineUpdate);
+    socket.emit('unsubscribe_kline', payload);
+};
+
+const handleKlineUpdate = (update: KlineUpdatePayload) => {
+    const info = props.tokenInfo;
+    if (!info) return;
+    const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
+    const poolId = chainToPoolId[info.chain.toLowerCase()];
+    const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
+
+    if (update.room === expectedRoom) {
+        candlestickSeries?.update(update.data as CandlestickData<number>);
+    }
+};
+
+createEffect(() => {
+    const info = props.tokenInfo;
+    const timeframe = props.timeframe;
+
+    if (!info || !timeframe) {
+        cleanupChart();
+        setStatus('No token selected.');
+        return;
     }
 
-    info!(
-        "🚀 [PERF STEP 1] {} -> DB Data Sent to Client in {:?}",
-        primary_key,
-        start_total.elapsed()
-    );
+    cleanupChart();
+    setStatus(`Loading ${info.symbol}...`);
+    
+    if (!chartContainer) {
+        return;
+    }
 
-    // --- 步骤 2: 后台补全缺失数据 (异步路径) ---
-    tokio::spawn(async move {
-        let api_process_start = Instant::now();
+    const logId = `[${info.symbol} @ ${timeframe}]`;
 
-        match complete_kline_data(&payload, &state, &primary_key, &s).await {
-            Ok(Some(count)) => {
-                let api_duration = api_process_start.elapsed();
-                let total_duration = start_total.elapsed();
-                info!(
-                    "📡 [PERF STEP 2] {} -> Fetched & Sent {} NEW/UPDATED candles. (API: {:?}, Total E2E: {:?})",
-                    primary_key,
-                    count,
-                    api_duration,
-                    total_duration
-                );
-            }
-            Ok(None) => {}
-            Err(e) => {
-                error!("❌ [FETCH FAILED] for {}: {:?}", primary_key, e);
-                let err_payload = serde_json::json!({ "key": primary_key, "error": e.to_string() });
-                s.emit("kline_fetch_error", &err_payload).ok();
+    try {
+        chart = createChart(chartContainer, {
+            width: chartContainer.clientWidth, 
+            height: chartContainer.clientHeight,
+            layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
+            grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+            timeScale: { 
+                visible: !!props.showAxes, 
+                borderColor: '#cccccc', 
+                timeVisible: true, 
+                secondsVisible: false 
+            },
+            rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
+            leftPriceScale: { visible: false },
+            handleScroll: true, 
+            handleScale: true,
+        });
+
+        candlestickSeries = chart.addSeries(CandlestickSeries, {
+            priceFormat: { 
+                type: 'price', 
+                precision: 10,
+                minMove: 0.00000001, 
+                formatter: customPriceFormatter 
+            },
+            upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
+            borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+        });
+
+    } catch (e) {
+        console.error(`${logId} ❌ Failed to create chart:`, e);
+        setStatus(`Chart Error: ${e}`);
+        return;
+    }
+
+    // ✨ 核心修改 1: 监听视图变化，转换为时间范围并向上冒泡
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        if (props.activeChartId === props.tokenInfo?.contractAddress && !isProgrammaticUpdate) {
+            const timeRange = chart?.timeScale().getVisibleRange();
+            if (timeRange && props.onViewportChange) {
+                // lightweight-charts 返回的 Time 可以是 string 或 number (seconds)
+                // 我们的数据是 Unix timestamp (seconds)，所以强制转换
+                props.onViewportChange({ 
+                    from: Number(timeRange.from), 
+                    to: Number(timeRange.to) 
+                });
             }
         }
     });
-}
 
-async fn complete_kline_data(
-    payload: &KlineSubscribePayload,
-    state: &ServerState,
-    primary_key: &str,
-    s: &SocketRef,
-) -> Result<Option<usize>> {
-    let last_kline = get_last_kline_from_db(&state.db_pool, primary_key).await?;
-    let interval_ms = interval_to_ms(&payload.interval);
-    let now = Utc::now();
+    const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
-    let mut limit = match last_kline {
-        Some(kline) => {
-            let time_diff_ms = now.timestamp_millis() - kline.time.timestamp_millis();
-            let missing_count = (time_diff_ms / interval_ms).max(1);
-            
-            if missing_count > 1 {
-                info!(
-                    "🕵️ [CHECK {}] Gap detected. Last: {}, Now: {}, Need ~{} candles.", 
-                    primary_key, kline.time, now, missing_count
-                );
+    // 处理数据的通用逻辑
+    const processData = (data: any[], isInitial: boolean) => {
+         try {
+            // 转换和排序
+            const sortedData = data
+                .map(d => ({ ...d, time: Number(d.time) }))
+                .sort((a, b) => a.time - b.time);
+
+            if (isInitial) {
+                candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
+                
+                // ✨ 核心修改 2: 初始化时，如果有父级 viewportState，优先使用
+                if (props.viewportState) {
+                     chart?.timeScale().setVisibleRange({
+                        from: props.viewportState.from as Time,
+                        to: props.viewportState.to as Time
+                    });
+                } else {
+                    chart?.timeScale().fitContent();
+                }
             } else {
-                info!(
-                    "🔄 [CHECK {}] Database has latest timestamp, but refreshing active candle (Limit=1).", 
-                    primary_key
-                );
+                // 合并数据逻辑 (简化版，直接 setData 覆盖通常在轻量级图表里性能尚可，或者做 merge)
+                // 这里为简单起见，我们假设 completed data 是全量更新或者追加
+                const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
+                const newDataMap = new Map(currentData.map(d => [d.time, d]));
+                sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
+                const merged = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+                candlestickSeries?.setData(merged);
+                
+                if (currentData.length === 0 && !props.viewportState) {
+                    chart?.timeScale().fitContent();
+                }
             }
-            missing_count
+            
+            setStatus(`Live: ${info.symbol} ${timeframe}`);
+        } catch (e) {
+            console.error(`${logId} ❌ Failed to process data:`, e);
         }
-        None => {
-            info!("🕵️ [CHECK {}] Empty DB. Triggering full fetch (500).", primary_key);
-            API_MAX_LIMIT
-        },
     };
 
-    if limit <= 0 {
-        return Ok(None);
-    }
-
-    if limit > API_MAX_LIMIT {
-        warn!(
-            "⚠️ [STALE] {} missing {} candles (Too many). Resetting to {}.",
-            primary_key, limit, API_MAX_LIMIT
-        );
-        clear_klines_from_db(&state.db_pool, primary_key).await?;
-        limit = API_MAX_LIMIT;
-    }
-
-    let new_klines = fetch_historical_data_with_pool(&state.client_pool, payload, limit).await?;
-
-    if new_klines.is_empty() {
-        warn!("⚠️ [API EMPTY] Returned 0 candles for {}", primary_key);
-        return Ok(Some(0));
-    }
-
-    // ✨✨✨ 核心逻辑：注入数据到 Room，让 WebSocket 的 tx 数据立即可用 ✨✨✨
-    // 1. 计算 Room Name (需要和 socket_handlers.rs 逻辑一致)
-    let chain_lower = payload.chain.to_lowercase();
-    let pool_id = match chain_lower.as_str() {
-        "bsc" => 14,
-        "sol" | "solana" => 16,
-        "base" => 199,
-        _ => 0, // 这种情况下通常不会走到这里，或者在 socket handler 就拦截了
+    const handleInitialData = (response: any) => {
+        if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
+        if (response.data && response.data.length > 0) {
+            processData(response.data, true);
+        } else {
+            setStatus(`Waiting for data...`);
+        }
     };
     
-    if pool_id != 0 {
-        let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
-        
-        // 2. 查找房间并注入
-        if let Some(room) = state.app_state.get(&room_name) {
-             if let Some(last_candle) = new_klines.last() {
-                 let mut lock = room.current_kline.lock().await;
-                 // 只有当它是 None 时才注入（避免覆盖了可能已经到达的 WS kl 数据）
-                 // 或者：强制注入也没问题，因为 HTTP 的数据是 "snapshot"，通常很新
-                 // 为了保险，我们只在 None 时注入，因为如果它不是 None，说明 WS 已经正常工作了
-                 if lock.is_none() {
-                     *lock = Some(last_candle.clone());
-                     info!("💉 [INJECT] Successfully injected HTTP candle into WebSocket state for {}", room_name);
-                 }
-             }
+    const handleCompletedData = (response: any) => {
+        if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
+        if (response.data && response.data.length > 0) {
+            processData(response.data, false);
         }
-    }
-
-    // 立即发送给前端
-    let completed_response = KlineHistoryResponse {
-        address: payload.address.clone(),
-        chain: payload.chain.clone(),
-        interval: payload.interval.clone(),
-        data: new_klines.clone(),
+    };
+    
+    const handleFetchError = (err: KlineFetchErrorPayload) => {
+         const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
+         if(err.key === key) {
+            setStatus(`Error: ${err.error}`);
+         }
     };
 
-    if let Err(e) = s.emit("historical_kline_completed", &completed_response) {
-        error!("❌ [EMIT ERROR] completed for {}: {}", primary_key, e);
-    }
+    socket.on('historical_kline_initial', handleInitialData);
+    socket.on('historical_kline_completed', handleCompletedData);
+    socket.on('kline_fetch_error', handleFetchError);
+    socket.on('kline_update', handleKlineUpdate);
 
-    // 异步存库
-    save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
-    prune_old_klines_from_db(&state.db_pool, primary_key).await?;
+    socket.emit('request_historical_kline', payload);
+    socket.emit('subscribe_kline', payload); 
 
-    Ok(Some(new_klines.len()))
-}
+    onCleanup(() => {
+        unsubscribeRealtime(payload);
+        socket.off('historical_kline_initial', handleInitialData);
+        socket.off('historical_kline_completed', handleCompletedData);
+        socket.off('kline_fetch_error', handleFetchError);
+        cleanupChart();
+    });
+});
 
-async fn fetch_historical_data_with_pool(
-    pool: &ClientPool,
-    payload: &KlineSubscribePayload,
-    limit: i64,
-) -> Result<Vec<KlineTick>> {
-    let formatted_interval = format_interval_for_api(&payload.interval);
-    let url = API_URL_TEMPLATE
-        .replace("{address}", &payload.address)
-        .replace("{platform}", &payload.chain)
-        .replace("{interval}", &formatted_interval)
-        .replace("{limit}", &limit.to_string());
-
-    let interval_label = payload.interval.clone();
-
-    for attempt in 1..=3 {
-        let (client_idx, client) = pool.get_client().await;
-        
-        let http_start = Instant::now();
-
-        match client.get(&url).send().await {
-            Ok(response) => {
-                info!("⚡ [PERF HTTP] Request took {:?}", http_start.elapsed());
-                
-                if !response.status().is_success() {
-                     warn!("❌ [API FAIL] Status: {}. Recycling node #{}...", response.status(), client_idx);
-                     pool.recycle_client(client_idx).await;
-                     continue;
-                }
-                
-                let text_response = response.text().await?;
-                match serde_json::from_str::<HistoricalDataWrapper>(&text_response) {
-                    Ok(wrapper) => {
-                        match parse_api_data(&wrapper.data, &interval_label) {
-                            Ok(data) => {
-                                return Ok(data);
-                            },
-                            Err(e) => {
-                                return Err(anyhow!("Data parse error: {}", e));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("❌ [JSON PARSE FAIL] Error: {}. Recycling node #{}", e, client_idx);
-                        pool.recycle_client(client_idx).await;
-                    }
-                }
-            },
-            Err(e) => {
-                warn!("❌ [NET FAIL] Error: {}. Recycling node #{} and retrying...", e, client_idx);
-                pool.recycle_client(client_idx).await;
-            }
-        }
-    }
-
-    Err(anyhow!("All 3 attempts failed."))
-}
-
-async fn get_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<Vec<KlineTick>> {
-    sqlx::query_as::<_, KlineTick>(
-        "SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time ASC",
-    )
-    .bind(primary_key)
-    .fetch_all(pool)
-    .await
-    .context("Failed to fetch all klines from DB")
-}
-
-async fn get_last_kline_from_db(pool: &SqlitePool, primary_key: &str) -> Result<Option<KlineTick>> {
-    sqlx::query_as(
-        "SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time DESC LIMIT 1",
-    )
-    .bind(primary_key)
-    .fetch_optional(pool)
-    .await
-    .context("Failed to fetch last kline from DB")
-}
-
-async fn save_klines_to_db(
-    pool: &SqlitePool,
-    primary_key: &str,
-    klines: &[KlineTick],
-) -> Result<()> {
-    if klines.is_empty() {
-        return Ok(());
-    }
-    let mut tx = pool.begin().await?;
-    for kline in klines {
-        sqlx::query(
-            "INSERT OR REPLACE INTO klines (primary_key, time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        )
-        .bind(primary_key)
-        .bind(kline.time.timestamp())
-        .bind(kline.open)
-        .bind(kline.high)
-        .bind(kline.low)
-        .bind(kline.close)
-        .bind(kline.volume)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit()
-        .await
-        .context("Failed to commit transaction for saving klines")
-}
-
-async fn clear_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<()> {
-    sqlx::query("DELETE FROM klines WHERE primary_key = ?")
-        .bind(primary_key)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-async fn prune_old_klines_from_db(pool: &SqlitePool, primary_key: &str) -> Result<()> {
-    let count: i64 = sqlx::query("SELECT COUNT(*) FROM klines WHERE primary_key = ?")
-        .bind(primary_key)
-        .fetch_one(pool)
-        .await?
-        .get(0);
-
-    if count > DB_MAX_RECORDS {
-        let limit = count - DB_PRUNE_TO_COUNT;
-        sqlx::query(
-            "DELETE FROM klines WHERE rowid IN (
-                SELECT rowid FROM klines WHERE primary_key = ? ORDER BY time ASC LIMIT ?
-            )",
-        )
-        .bind(primary_key)
-        .bind(limit)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
-
-fn get_primary_key(payload: &KlineSubscribePayload) -> String {
-    format!(
-        "{}@{}@{}",
-        payload.address.to_lowercase(),
-        payload.chain.to_lowercase(),
-        payload.interval
-    )
-}
-
-fn interval_to_ms(interval: &str) -> i64 {
-    let value_str: String = interval.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let unit: String = interval.chars().skip_while(|c| c.is_ascii_digit()).collect();
-    let value = value_str.parse::<i64>().unwrap_or(0);
-    match unit.as_str() {
-        "m" => Duration::minutes(value).num_milliseconds(),
-        "h" => Duration::hours(value).num_milliseconds(),
-        "d" => Duration::days(value).num_milliseconds(),
-        _ => 0,
-    }
-}
-
-fn format_interval_for_api(interval: &str) -> String {
-    if let Some(val) = interval.strip_suffix('m') {
-        format!("{}min", val)
-    } else {
-        interval.to_string()
-    }
-}
-
-fn parse_api_data(data: &[Vec<Value>], interval_label: &str) -> Result<Vec<KlineTick>> {
-    let extract_f64 = |v: &Value, name: &str| -> Result<f64> {
-        if let Some(f) = v.as_f64() {
-            return Ok(f);
-        }
-        if let Some(s) = v.as_str() {
-            return s.parse::<f64>().map_err(|_| {
-                anyhow!("Invalid float string for {}: {}", name, s)
+// ✨ 核心修改 3: 响应 ViewportState 变化，使用 setVisibleRange (Time Based)
+createEffect(() => {
+    const vs = props.viewportState;
+    // 只有当存在 viewport，且当前图表不是用户正在操作的那个图表时，才应用同步
+    if (chart && vs && props.activeChartId !== props.tokenInfo?.contractAddress) {
+        isProgrammaticUpdate = true;
+        try {
+            chart.timeScale().setVisibleRange({
+                from: vs.from as Time,
+                to: vs.to as Time
             });
+        } catch (e) {
+            // 某些情况下（如数据尚未加载），setVisibleRange 可能会报错，可以忽略或记录
+            // console.warn("Sync error:", e);
         }
-        if let Some(i) = v.as_i64() {
-            return Ok(i as f64);
-        }
-        Ok(0.0)
-    };
-
-    data.iter()
-        .map(|d| -> Result<KlineTick> {
-            let timestamp_ms = d.get(5).and_then(|v| v.as_i64()).unwrap_or(0);
-            Ok(KlineTick {
-                time: DateTime::from_timestamp(timestamp_ms / 1000, 0)
-                    .context("Invalid timestamp")?
-                    .with_timezone(&Utc),
-                open: extract_f64(d.get(0).unwrap_or(&Value::Null), "open")?,
-                high: extract_f64(d.get(1).unwrap_or(&Value::Null), "high")?,
-                low: extract_f64(d.get(2).unwrap_or(&Value::Null), "low")?,
-                close: extract_f64(d.get(3).unwrap_or(&Value::Null), "close")?,
-                volume: extract_f64(d.get(4).unwrap_or(&Value::Null), "volume")?,
-            })
-        })
-        .collect()
-}
-
-impl sqlx::FromRow<'_, SqliteRow> for KlineTick {
-    fn from_row(row: &SqliteRow) -> sqlx::Result<Self> {
-        let timestamp_secs: i64 = row.try_get("time")?;
-        Ok(KlineTick {
-            time: DateTime::from_timestamp(timestamp_secs, 0)
-                .unwrap_or_default()
-                .with_timezone(&Utc),
-            open: row.try_get("open")?,
-            high: row.try_get("high")?,
-            low: row.try_get("low")?,
-            close: row.try_get("close")?,
-            volume: row.try_get("volume")?,
-        })
+        // 恢复标记，使用 setTimeout 确保当前调用栈清空
+        setTimeout(() => { isProgrammaticUpdate = false; }, 0);
     }
-}
+});
+
+onMount(() => {
+    resizeObserver = new ResizeObserver(entries => {
+        if (chart && chartContainer) {
+            const { width, height } = entries[0].contentRect;
+            chart.applyOptions({ width, height });
+        }
+    });
+    if (chartContainer) {
+        resizeObserver.observe(chartContainer);
+    }
+});
+
+onCleanup(() => resizeObserver?.disconnect());
+
+return (
+    <div 
+        class="single-chart-wrapper"
+        onMouseEnter={() => props.tokenInfo && props.onSetActiveChart?.(props.tokenInfo.contractAddress)}
+        onMouseLeave={() => props.onSetActiveChart?.(null)}
+    >
+        <div class="chart-header">
+            <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
+                <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
+                <span class="symbol-title">{props.tokenInfo!.symbol}</span>
+                <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
+                <button class="block-button" title={`屏蔽 ${props.tokenInfo!.symbol}`} onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}>
+                    🚫
+                </button>
+            </Show>
+        </div>
+        <div ref={chartContainer!} class="chart-container" />
+    </div>
+);
+
+};
+
+export default SingleKlineChart;
