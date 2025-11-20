@@ -35,15 +35,16 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 let chartContainer: HTMLDivElement;
 let chart: IChartApi | null = null;
 let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
-let resizeObserver: ResizeObserver | null = null;    
+let resizeObserver: ResizeObserver | null = null;
 const [status, setStatus] = createSignal('Initializing...');
 
-// 🔒 核心并发控制：标记是否正在进行程序化缩放，防止 ViewportState 循环死锁
+// 🔒 核心状态锁
 let isProgrammaticUpdate = false;
+// 🔒 防抖锁
+let isSyncPending = false;
 
-const getLogId = () => `[${props.tokenInfo?.symbol || '???'} @ ${props.timeframe}]`;
+const getMyId = () => props.tokenInfo?.contractAddress || '';
 
-// 清理旧图表资源
 const cleanupChart = () => {
     if (chart) {
         chart.remove();
@@ -52,17 +53,14 @@ const cleanupChart = () => {
     }
 };
 
-// 取消 Socket 订阅
 const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
     socket.off('kline_update', handleKlineUpdate);
     socket.emit('unsubscribe_kline', payload);
 };
 
-// 处理 Socket 实时推送
 const handleKlineUpdate = (update: KlineUpdatePayload) => {
     const info = props.tokenInfo;
     if (!info) return;
-    // 简单的链ID映射
     const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
     const poolId = chainToPoolId[info.chain.toLowerCase()];
     const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
@@ -72,7 +70,6 @@ const handleKlineUpdate = (update: KlineUpdatePayload) => {
     }
 };
 
-// 核心 Effect：当 Token 或 Timeframe 变化时，重建图表
 createEffect(() => {
     const info = props.tokenInfo;
     const timeframe = props.timeframe;
@@ -88,10 +85,9 @@ createEffect(() => {
     
     if (!chartContainer) return;
 
-    const logId = `[${info.symbol} @ ${timeframe}]`;
+    const logId = `[Chart:${info.symbol}]`;
 
     try {
-        // 创建图表实例
         chart = createChart(chartContainer, {
             width: chartContainer.clientWidth, 
             height: chartContainer.clientHeight,
@@ -101,7 +97,20 @@ createEffect(() => {
                 visible: !!props.showAxes, 
                 borderColor: '#cccccc', 
                 timeVisible: true, 
-                secondsVisible: false 
+                secondsVisible: false,
+                
+                // ✨✨✨ 核心修复 ✨✨✨
+                // 1. rightOffset: 12 -> 强制右侧保留 12 根柱子的空隙
+                rightOffset: 12, 
+                
+                // 2. shiftVisibleRangeOnNewBar: true -> 必须为 true
+                //    这保证了当新数据到来时，图表会自动滚动，始终保持 12 根柱子的空隙。
+                //    如果为 false，新数据会把图表顶到更右边，导致空隙消失。
+                shiftVisibleRangeOnNewBar: false, 
+
+                // 3. 移除了 fixRightEdge
+                //    该属性在某些版本中会导致 rightOffset 被强制归零（即贴死右边）。
+                //    移除后，图表将恢复自然的“弹性”边缘。
             },
             rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
             leftPriceScale: { visible: false },
@@ -126,18 +135,24 @@ createEffect(() => {
         return;
     }
 
-    // ✨ [Refactor] 同步逻辑发送端：监听当前图表的视口变化，广播给父组件
-    // 使用 getVisibleRange() 获取基于时间戳的范围
+    // [SENDER]
     chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
-        // 只有当此图表是用户当前激活（鼠标悬浮/操作）的图表时，才发送同步信号
-        // 并且不能是在程序化设置过程中
-        if (props.activeChartId === props.tokenInfo?.contractAddress && !isProgrammaticUpdate) {
-            const timeRange = chart?.timeScale().getVisibleRange();
-            if (timeRange && props.onViewportChange) {
-                // lightweight-charts 返回的可能是 string 或 number，统一转 number
-                props.onViewportChange({ 
-                    from: Number(timeRange.from), 
-                    to: Number(timeRange.to) 
+        if (isProgrammaticUpdate) return;
+
+        const myId = getMyId().toLowerCase();
+        const activeId = props.activeChartId?.toLowerCase();
+
+        if (myId === activeId) {
+            if (!isSyncPending) {
+                isSyncPending = true;
+                requestAnimationFrame(() => {
+                    const timeRange = chart?.timeScale().getVisibleRange();
+                    if (timeRange && props.onViewportChange) {
+                        const from = Number(timeRange.from);
+                        const to = Number(timeRange.to);
+                        props.onViewportChange({ from, to });
+                    }
+                    isSyncPending = false;
                 });
             }
         }
@@ -145,38 +160,31 @@ createEffect(() => {
 
     const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
-    // 通用数据处理函数
     const processData = (data: any[], isInitial: boolean) => {
         try {
-            // 确保按时间排序
             const sortedData = data
                 .map(d => ({ ...d, time: Number(d.time) }))
                 .sort((a, b) => a.time - b.time);
 
             if (isInitial) {
                 candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
-                
-                // ✨ [Refactor] 初始化时应用同步状态
-                // 如果有父组件传来的视口状态（时间范围），直接应用，否则 fitContent
                 if (props.viewportState) {
                      chart?.timeScale().setVisibleRange({
                         from: props.viewportState.from as Time,
                         to: props.viewportState.to as Time
                     });
                 } else {
-                    chart?.timeScale().fitContent();
+                    // ✨ 核心修复: 使用 scrollToRealTime()
+                    // fitContent() 会强制缩放所有内容以填满屏幕，导致 offset 看起来失效
+                    // scrollToRealTime() 会定位到最新数据，并应用 rightOffset
+                    chart?.timeScale().scrollToRealTime();
                 }
             } else {
-                // 处理历史数据补全 (Simple Merge)
                 const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
                 const newDataMap = new Map(currentData.map(d => [d.time, d]));
                 sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
                 const merged = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
                 candlestickSeries?.setData(merged);
-                
-                if (currentData.length === 0 && !props.viewportState) {
-                    chart?.timeScale().fitContent();
-                }
             }
             setStatus(`Live: ${info.symbol} ${timeframe}`);
         } catch (e) {
@@ -224,25 +232,25 @@ createEffect(() => {
     });
 });
 
-// ✨ [Refactor] 同步逻辑接收端：响应 ViewportState 变化
-// 使用 setVisibleRange (基于时间) 而非 LogicalRange
+// [RECEIVER]
 createEffect(() => {
     const vs = props.viewportState;
-    // 仅当存在 ViewportState 且当前图表 *不是* 用户正在操作的主动图表时，才进行被动同步
-    if (chart && vs && props.activeChartId !== props.tokenInfo?.contractAddress) {
-        isProgrammaticUpdate = true;
-        try {
-            chart.timeScale().setVisibleRange({
-                from: vs.from as Time,
-                to: vs.to as Time
-            });
-        } catch (e) {
-            // 数据未加载完成时设置范围可能会失败，属于正常现象
-            // console.warn("Sync warning:", e);
-        }
-        // 异步释放锁，确保此次 update 周期结束
-        setTimeout(() => { isProgrammaticUpdate = false; }, 0);
-    }
+    if (!chart || !vs || !props.tokenInfo) return;
+
+    const myId = getMyId().toLowerCase();
+    const activeId = props.activeChartId?.toLowerCase();
+
+    if (myId === activeId) return;
+
+    isProgrammaticUpdate = true;
+    try {
+        chart.timeScale().setVisibleRange({
+            from: vs.from as Time,
+            to: vs.to as Time
+        });
+    } catch (e) {}
+    
+    setTimeout(() => { isProgrammaticUpdate = false; }, 0);
 });
 
 onMount(() => {
@@ -262,9 +270,11 @@ onCleanup(() => resizeObserver?.disconnect());
 return (
     <div 
         class="single-chart-wrapper"
-        // 鼠标移入时，标记此图表为 Active，它将成为同步源
-        onMouseEnter={() => props.tokenInfo && props.onSetActiveChart?.(props.tokenInfo.contractAddress)}
-        onMouseLeave={() => props.onSetActiveChart?.(null)}
+        onMouseEnter={() => {
+            if (props.tokenInfo) {
+                props.onSetActiveChart?.(props.tokenInfo.contractAddress);
+            }
+        }}
     >
         <div class="chart-header">
             <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
@@ -279,8 +289,6 @@ return (
         <div ref={chartContainer!} class="chart-container" />
     </div>
 );
-
-  
 
 };
 
