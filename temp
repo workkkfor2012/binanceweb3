@@ -1,397 +1,378 @@
-src/tx_server/旧的__lib/图表/binanceHTTP.ts
+这是一个非常典型的 Lightweight-charts (LWC) 错误。
 
+错误原因分析
 
-// src/tx_server/旧的__lib/图表/binanceHTTP.ts
-import { httpRequest } from "../http_ws/httpRequest"
-import { queryString } from "../通用/queryString"
-import { sha256 } from "../通用/sha256"
-import { toType } from "../通用/toType"
-import { APP参数 } from "../../../______________config/APP参数"
-import { BinanceOrderStatus, BinanceOrderType } from "./binanceType"
-import { apiConfigManager } from "../../../______________config/apiConfigManager"
+Error: Cannot update oldest data 的意思是：你正在尝试用 update() 方法更新一个 比当前图表中最后一根 K 线时间更早 的数据。
 
-const __ = <REQ, RES, A, B>(p: {
-isPublic: boolean
-method: 'GET' | 'POST' | 'PUT' | 'DELETE'
-path: string
-mapReqFunc: (v: A) => REQ
-mapResFunc: (v: RES) => B
-forceDirect?: boolean // 【新增】是否强制使用直连配置
-}) => async (a: A) => {
-// --- 修改点：根据 forceDirect 决定使用哪种配置 ---
-// 如果 forceDirect 为 true，强制使用 Mokex 直连配置；否则跟随系统当前策略（可能是直连也可能是代理）
-const apiConfig = p.forceDirect ? apiConfigManager.getDirectConfig() : apiConfigManager.getCurrentConfig();
+LWC 的 series.update(bar) 方法有严格限制：
+
+只能向后追加：传入的 bar.time 必须 大于 当前最后一条数据的 time。
+
+或者原地更新：传入的 bar.time 必须 等于 当前最后一条数据的 time（用于实时变动的收盘价）。
+
+绝对不能回退：如果 bar.time < lastBar.time，就会报你遇到的这个错。
+
+产生场景：
+由于网络延迟或异步加载，WebSocket 推送的 实时包 可能比 历史数据加载完成 更早到达，或者两个实时包到达顺序乱了（比如：先收到了 10:02 的包，处理了；紧接着收到了 10:01 的延迟包，再 update 就会报错）。
+
+解决方案
+
+在调用 update() 之前，必须加一层 防卫逻辑：检查新来的数据时间是否小于当前最后一根 K 线的时间。如果是，则丢弃该“迟到”的数据。
+
+请直接复制替换 packages/frontend/src/SingleKlineChart.tsx，主要修改了 handleKlineUpdate 函数：
+
+packages/frontend/src/SingleKlineChart.tsx
+
+code
+TypeScript
+download
+content_copy
+expand_less
+// packages/frontend/src/SingleKlineChart.tsx
+
+/** @jsxImportSource solid-js */
+
+import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time } from 'lightweight-charts';
+import { socket } from './socket';
+import type { LightweightChartKline, KlineUpdatePayload, KlineFetchErrorPayload } from './types';
+import type { MarketItem } from 'shared-types';
+import type { ViewportState } from './ChartPageLayout';
+
+const BACKEND_URL = 'http://localhost:3001';
+
+// --- 配置区 ---
+// 强制补齐的K线数量，用于统一所有图表的X轴时间跨度，解决新老币种同步拖动不同步的问题
+const FORCE_GHOST_CANDLE_COUNT = 1000;
+
+interface SingleKlineChartProps {
+tokenInfo: MarketItem | undefined;
+onBlock?: (contractAddress: string) => void;
+timeframe: string;
+viewportState: ViewportState | null;
+onViewportChange?: (state: ViewportState | null) => void;
+activeChartId: string | null;
+onSetActiveChart?: (id: string | null) => void;
+showAxes?: boolean;
+}
+
+const customPriceFormatter = (price: number): string => {
+if (price === 0) return '0';
+if (price < 0.000001) {
+return price.toFixed(12).replace(/.?0+$/, "");
+}
+if (price < 1) return price.toFixed(6);
+return price.toFixed(2);
+};
+
+// 辅助：获取时间周期的秒数
+const getIntervalSeconds = (timeframe: string): number => {
+const val = parseInt(timeframe);
+if (timeframe.endsWith('m')) return val * 60;
+if (timeframe.endsWith('h')) return val * 3600;
+if (timeframe.endsWith('d')) return val * 86400;
+return 60; // default 1m
+};
+
+const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
+let chartContainer: HTMLDivElement;
+let chart: IChartApi | null = null;
+let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+let ghostSeries: ISeriesApi<'Line'> | null = null; // 👻 隐形系列引用
+let resizeObserver: ResizeObserver | null = null;
+const [status, setStatus] = createSignal('Initializing...');
 
 code
 Code
 download
 content_copy
 expand_less
-const req = p.mapReqFunc(a)
+// 🔒 状态锁
+let isProgrammaticUpdate = false;
+let isSyncPending = false;
 
-let query = ''
-if (p.isPublic) {
-    const queryObject = req as any;
-    if (Object.keys(queryObject).length > 0) {
-        query = queryString.stringify(req)
+const getMyId = () => props.tokenInfo?.contractAddress || '';
+
+const cleanupChart = () => {
+    if (chart) {
+        chart.remove();
+        chart = null;
+        candlestickSeries = null;
+        ghostSeries = null;
     }
-} else {
-    const aaa = queryString.stringify({
-        ...p.mapReqFunc(a),
-        timestamp: Date.now() - 1000 * 60,
-        recvWindow: 1000 * 60 * 5,
-    })
+};
 
-    const bbb = queryString.stringify({
-        signature: sha256({ key: APP参数.binanceSecretKey, text: aaa }),
-    })
+const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
+    socket.off('kline_update', handleKlineUpdate);
+    socket.emit('unsubscribe_kline', payload);
+};
 
-    query = aaa + '&' + bbb
-}
+const handleKlineUpdate = (update: KlineUpdatePayload) => {
+    const info = props.tokenInfo;
+    if (!info || !candlestickSeries) return;
+    
+    const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
+    const poolId = chainToPoolId[info.chain.toLowerCase()];
+    const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
 
-const fdtype = 'fapi'
-const version = ['account'].includes(p.path) ? 'v2' : 'v1'
-
-const url = `${apiConfig.restApiBase}/${fdtype}/${version}/${p.path}${query ? `?${query}` : ''}`
-
-// 合并 Custom Headers (Mokex 需要这个)
-let finalHeaders: { [key: string]: string } = { ...apiConfig.customHeaders };
-
-if (!p.isPublic) {
-    finalHeaders['X-MBX-APIKEY'] = APP参数.binanceAPIKey;
-}
-
-const res = await httpRequest<RES>({
-    method: p.method,
-    url,
-    headers: finalHeaders,
-})
-
-return res !== undefined ? p.mapResFunc(res) : undefined
-
-}
-
-export const binanceHTTP = {
-exchangeInfo: __({
-isPublic: true,
-method: 'GET',
-path: 'exchangeInfo',
-forceDirect: true, // 【修改】强制走直连 (Mokex) 以获取品种列表
-mapReqFunc: (v: {}) => v,
-mapResFunc: v => {
-let tickDic = Object.create(null) as {
-[symbol: string]: {
-tickSize: number
-stepSize: number
-onboardDate: number
-status: string
-}
-}
-if (v && (v as any).symbols) {
-toType({
-symbols: [{
-symbol: '',
-onboardDate: 1,
-status: '',
-filters: [{
-tickSize: 0.01, //index 0
-stepSize: 1, //index 1
-}],
-}]
-})(v).symbols.forEach(v => {
-
-code
-Code
-download
-content_copy
-expand_less
-tickDic[v.symbol] = {
-                    onboardDate: v.onboardDate,
-                    status: v.status,
-                    tickSize: v.filters[0].tickSize,//index 0 
-                    stepSize: v.filters[1].stepSize,//index 1
-                }
-            })
-        }
-        return tickDic
-    },
-}),
-newOrder: __({
-    isPublic: false,
-    method: 'POST',
-    path: 'order',
-    mapReqFunc: (v: {
-        symbol: string
-        isBuy: boolean
-        平仓: boolean
-        price: number | 'market'
-        size: number
-    }) => {
-        const is多 = v.平仓 ? (!v.isBuy) : v.isBuy
-        const obj = {
-            symbol: v.symbol,
-            side: v.isBuy ? 'BUY' : 'SELL',
-            positionSide: is多 ? 'LONG' : 'SHORT',
-            quantity: v.size,
-        }
-
-        return (v.price === 'market' ? {
-            ...obj,
-            type: 'MARKET',
-        } : {
-            ...obj,
-            type: 'LIMIT',
-            price: v.price,
-            timeInForce: 'GTC',
-        })
-    },
-    mapResFunc: () => ({}),
-}),
-cancelOrder: __({
-    isPublic: false,
-    method: 'DELETE',
-    path: 'order',
-    mapReqFunc: (v: {
-        symbol: string
-        orderID: string
-    }) => ({
-        symbol: v.symbol,
-        orderId: v.orderID,
-    }),
-    mapResFunc: () => ({}),
-}),
-stopOrder: __({
-    isPublic: false,
-    method: 'POST',
-    path: 'order',
-    mapReqFunc: (v: {
-        symbol: string
-        isBuy: boolean
-        price: number
-        size?: number
-    }) => ({
-        symbol: v.symbol,
-        side: v.isBuy ? 'BUY' : 'SELL',
-        positionSide: v.isBuy ? 'SHORT' : 'LONG',
-        type: 'STOP_MARKET',
-        stopPrice: v.price,
-        quantity: v.size,
-        closePosition: v.size === undefined ? true : undefined,
-    }),
-    mapResFunc: () => ({}),
-}),
-突破: __({
-    isPublic: false,
-    method: 'POST',
-    path: 'order',
-    mapReqFunc: (v: {
-        symbol: string
-        isBuy: boolean
-        price: number
-        size: number
-    }) => ({
-        symbol: v.symbol,
-        side: v.isBuy ? 'BUY' : 'SELL',
-        positionSide: v.isBuy ? 'LONG' : 'SHORT',
-        type: 'STOP_MARKET',
-        stopPrice: v.price,
-        quantity: v.size,
-        timeInForce: 'GTC',
-    }),
-    mapResFunc: () => ({}),
-}),
-listenKey: __({
-    isPublic: false,
-    method: 'POST',
-    path: 'listenKey',
-    mapReqFunc: (v: {}) => v,
-    mapResFunc: v => toType({ listenKey: '' })(v),
-}),
-put_listenKey: __({
-    isPublic: false,
-    method: 'PUT',
-    path: 'listenKey',
-    mapReqFunc: (v: {}) => v,
-    mapResFunc: () => ({}),
-}),
-orderList: __({
-    isPublic: false,
-    method: 'GET',
-    path: 'openOrders',
-    mapReqFunc: (v: {}) => v,
-    mapResFunc: v => {
-        const arr = v ? toType([
-            {
-                "avgPrice": "0.00000",
-                "clientOrderId": "abc",
-                "cumQuote": "0",
-                "executedQty": "0",
-                "orderId": 1917641,
-                "origQty": "0.40",
-                "origType": "TRAILING_STOP_MARKET",
-                "price": "0",
-                "reduceOnly": false,
-                "side": "BUY",
-                "positionSide": "SHORT",
-                "status": "NEW",
-                "stopPrice": "9300",
-                "closePosition": false,
-                "symbol": "BTCUSDT",
-                "time": 1579276756075,
-                "timeInForce": "GTC",
-                "type": "TRAILING_STOP_MARKET",
-                "activatePrice": "9020",
-                "priceRate": "0.3",
-                "updateTime": 1579276756075,
-                "workingType": "CONTRACT_PRICE",
-                "priceProtect": false
-            }
-        ])(v) : [];
-
-
-        let orderDic = Object.create(null) as {
-            [symbol: string]: {
-                多仓: { [orderID: string]: BinanceOrderType }
-                空仓: { [orderID: string]: BinanceOrderType }
+    if (update.room === expectedRoom) {
+        const newCandle = update.data as CandlestickData<number>;
+        
+        // ✨✨✨ 核心修复：防止 "Cannot update oldest data" 错误 ✨✨✨
+        // 获取当前系列中的所有数据
+        const currentData = candlestickSeries.data();
+        
+        if (currentData.length > 0) {
+            const lastCandle = currentData[currentData.length - 1] as CandlestickData<number>;
+            // 只有当新数据的时间 >= 最后一根K线的时间时，才允许更新
+            // 如果新数据时间比最后一条还早（乱序到达），则直接丢弃
+            if (newCandle.time < lastCandle.time) {
+                // console.warn(`[Chart] Dropped late packet. Last: ${lastCandle.time}, New: ${newCandle.time}`);
+                return;
             }
         }
+        
+        candlestickSeries.update(newCandle);
+    }
+};
 
-        arr.forEach(v => {
-            if (orderDic[v.symbol] === undefined) {
-                orderDic[v.symbol] = {
-                    多仓: {},
-                    空仓: {},
-                }
-            }
+// 👻 生成隐形数据：从当前时间点倒推 N 根，确保时间轴被撑开
+const generateGhostData = (timeframe: string) => {
+    const intervalSec = getIntervalSeconds(timeframe);
+    // 向下取整对齐时间，确保所有图表的刻度线垂直对齐
+    const now = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
+    const data = [];
+    for (let i = FORCE_GHOST_CANDLE_COUNT; i >= 0; i--) {
+        data.push({
+            time: (now - (i * intervalSec)) as Time,
+            value: 0 // 价格为0，反正不显示
+        });
+    }
+    return data;
+};
 
-            if (v.positionSide !== 'BOTH') {
-                const _dic = v.positionSide === 'LONG' ? orderDic[v.symbol].多仓 : orderDic[v.symbol].空仓
-                if (v.type === 'STOP_MARKET') {
-                    if (v.reduceOnly) {
-                        _dic[String(v.orderId)] = {
-                            type: 'STOP_MARKET',
-                            price: Number(v.stopPrice),
-                            status: v.status as BinanceOrderStatus,
-                        }
-                    } else {
-                        _dic[String(v.orderId)] = {
-                            type: '突破',
-                            price: Number(v.stopPrice),
-                            size: Number(v.origQty),
-                            status: v.status as BinanceOrderStatus,
-                        }
+createEffect(() => {
+    const info = props.tokenInfo;
+    const timeframe = props.timeframe;
+
+    if (!info || !timeframe) {
+        cleanupChart();
+        setStatus('No token selected.');
+        return;
+    }
+
+    cleanupChart();
+    setStatus(`Loading ${info.symbol}...`);
+    
+    if (!chartContainer) return;
+
+    const logId = `[Chart:${info.symbol}]`;
+
+    try {
+        chart = createChart(chartContainer, {
+            width: chartContainer.clientWidth, 
+            height: chartContainer.clientHeight,
+            layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
+            grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+            timeScale: { 
+                visible: !!props.showAxes, 
+                borderColor: '#cccccc', 
+                timeVisible: true, 
+                secondsVisible: false,
+                rightOffset: 12, 
+                shiftVisibleRangeOnNewBar: true, 
+                fixLeftEdge: false, 
+                fixRightEdge: false,
+            },
+            rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
+            leftPriceScale: { visible: false, autoScale: false }, 
+            handleScroll: true, 
+            handleScale: true,
+        });
+
+        // 1. 添加 Ghost Series (隐形系列)
+        ghostSeries = chart.addLineSeries({
+            color: 'rgba(0,0,0,0)', 
+            lineWidth: 1,
+            priceScaleId: 'left',   
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+        });
+        ghostSeries.setData(generateGhostData(timeframe));
+
+        // 2. 添加真实 K 线系列
+        candlestickSeries = chart.addSeries(CandlestickSeries, {
+            priceFormat: { 
+                type: 'price', 
+                precision: 10,
+                minMove: 0.00000001, 
+                formatter: customPriceFormatter 
+            },
+            upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
+            borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+            priceScaleId: 'right' 
+        });
+
+    } catch (e) {
+        console.error(`${logId} ❌ Failed to create chart:`, e);
+        setStatus(`Chart Error: ${e}`);
+        return;
+    }
+
+    // [SENDER] 发送同步信号
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        if (isProgrammaticUpdate) return;
+
+        const myId = getMyId().toLowerCase();
+        const activeId = props.activeChartId?.toLowerCase();
+
+        if (myId === activeId) {
+            if (!isSyncPending) {
+                isSyncPending = true;
+                requestAnimationFrame(() => {
+                    const timeRange = chart?.timeScale().getVisibleRange();
+                    if (timeRange && props.onViewportChange) {
+                        const from = Number(timeRange.from);
+                        const to = Number(timeRange.to);
+                        props.onViewportChange({ from, to });
                     }
-                } else if (v.type === 'LIMIT') {
-                    _dic[String(v.orderId)] = {
-                        type: 'LIMIT',
-                        is平仓: v.reduceOnly,
-                        price: Number(v.price),
-                        已成交: Number(v.executedQty),
-                        size: Number(v.origQty),
-                        status: v.status as BinanceOrderStatus,
-                    }
-                }
+                    isSyncPending = false;
+                });
             }
-        })
-
-        return orderDic
-    },
-}),
-余额和仓位: __({
-    isPublic: false,
-    method: 'GET',
-    path: 'account',
-    mapReqFunc: (v: {}) => v,
-    mapResFunc: v => {
-        const obj = v ? toType({
-            "feeTier": 0,
-            "canTrade": true,
-            "canDeposit": true,
-            "canWithdraw": true,
-            "updateTime": 0,
-            "totalInitialMargin": "0.00000000",
-            "totalMaintMargin": "0.00000000",
-            "totalWalletBalance": "23.72469206",
-            "totalUnrealizedProfit": "0.00000000",
-            "totalMarginBalance": "23.72469206",
-            "totalPositionInitialMargin": "0.00000000",
-            "totalOpenOrderInitialMargin": "0.00000000",
-            "totalCrossWalletBalance": "23.72469206",
-            "totalCrossUnPnl": "0.00000000",
-            "availableBalance": "23.72469206",
-            "maxWithdrawAmount": "23.72469206",
-            "assets": [
-                {
-                    "asset": "USDT",
-                    "walletBalance": "23.72469206",
-                    "unrealizedProfit": "0.00000000",
-                    "marginBalance": "23.72469206",
-                    "maintMargin": "0.00000000",
-                    "initialMargin": "0.00000000",
-                    "positionInitialMargin": "0.00000000",
-                    "openOrderInitialMargin": "0.00000000",
-                    "crossWalletBalance": "23.72469206",
-                    "crossUnPnl": "0.00000000",
-                    "availableBalance": "23.72469206",
-                    "maxWithdrawAmount": "23.72469206"
-                }
-            ],
-            "positions": [
-                {
-                    "symbol": "BTCUSDT",
-                    "initialMargin": "0",
-                    "maintMargin": "0",
-                    "unrealizedProfit": "0.00000000",
-                    "positionInitialMargin": "0",
-                    "openOrderInitialMargin": "0",
-                    "leverage": "100",
-                    "isolated": true,
-                    "entryPrice": "0.00000",
-                    "maxNotional": "250000",
-                    "positionSide": "BOTH",
-                    "positionAmt": "0"
-                }
-            ]
-        })(v) : null;
-
-        if (!obj) {
-            return { USDT: 0, positionDic: {} };
         }
+    });
 
-        let positionDic = Object.create(null) as {
-            [symbol: string]: {
-                多仓: { price: number; size: number; };
-                空仓: { price: number; size: number; };
-            }
-        };
+    const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
-        obj.positions.forEach(v => {
-            if (positionDic[v.symbol] === undefined) {
-                positionDic[v.symbol] = {
-                    多仓: { price: 0, size: 0 },
-                    空仓: { price: 0, size: 0 },
+    const processData = (data: any[], isInitial: boolean) => {
+        try {
+            const sortedData = data
+                .map(d => ({ ...d, time: Number(d.time) }))
+                .sort((a, b) => a.time - b.time);
+
+            if (isInitial) {
+                candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
+                
+                if (props.viewportState) {
+                     chart?.timeScale().setVisibleRange({
+                        from: props.viewportState.from as Time,
+                        to: props.viewportState.to as Time
+                    });
+                } else {
+                    chart?.timeScale().scrollToRealTime();
                 }
+            } else {
+                const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
+                const newDataMap = new Map(currentData.map(d => [d.time, d]));
+                sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
+                const merged = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+                candlestickSeries?.setData(merged);
             }
-
-            if (v.positionSide === 'LONG') {
-                positionDic[v.symbol].多仓 = {
-                    price: Number(v.entryPrice),
-                    size: Math.abs(Number(v.positionAmt)),
-                }
-            }
-            else if (v.positionSide === 'SHORT') {
-                positionDic[v.symbol].空仓 = {
-                    price: Number(v.entryPrice),
-                    size: Math.abs(Number(v.positionAmt)),
-                }
-            }
-        })
-
-        return {
-            USDT: Number(obj.totalCrossWalletBalance),
-            positionDic,
+            setStatus(`Live: ${info.symbol} ${timeframe}`);
+        } catch (e) {
+            console.error(`${logId} ❌ Failed to process data:`, e);
         }
-    },
-}),
+    };
 
-}
+    const handleInitialData = (response: any) => {
+        if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
+        if (response.data && response.data.length > 0) {
+            processData(response.data, true);
+        } else {
+            setStatus(`Waiting for data...`);
+        }
+    };
+    
+    const handleCompletedData = (response: any) => {
+        if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
+        if (response.data && response.data.length > 0) {
+            processData(response.data, false);
+        }
+    };
+    
+    const handleFetchError = (err: KlineFetchErrorPayload) => {
+         const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
+         if(err.key === key) {
+            setStatus(`Error: ${err.error}`);
+         }
+    };
+
+    socket.on('historical_kline_initial', handleInitialData);
+    socket.on('historical_kline_completed', handleCompletedData);
+    socket.on('kline_fetch_error', handleFetchError);
+    socket.on('kline_update', handleKlineUpdate);
+
+    socket.emit('request_historical_kline', payload);
+    socket.emit('subscribe_kline', payload); 
+
+    onCleanup(() => {
+        unsubscribeRealtime(payload);
+        socket.off('historical_kline_initial', handleInitialData);
+        socket.off('historical_kline_completed', handleCompletedData);
+        socket.off('kline_fetch_error', handleFetchError);
+        cleanupChart();
+    });
+});
+
+// [RECEIVER] 接收同步信号
+createEffect(() => {
+    const vs = props.viewportState;
+    if (!chart || !vs || !props.tokenInfo) return;
+
+    const myId = getMyId().toLowerCase();
+    const activeId = props.activeChartId?.toLowerCase();
+
+    if (myId === activeId) return;
+
+    isProgrammaticUpdate = true;
+    try {
+        chart.timeScale().setVisibleRange({
+            from: vs.from as Time,
+            to: vs.to as Time
+        });
+    } catch (e) {}
+    
+    setTimeout(() => { isProgrammaticUpdate = false; }, 0);
+});
+
+onMount(() => {
+    resizeObserver = new ResizeObserver(entries => {
+        if (chart && chartContainer) {
+            const { width, height } = entries[0].contentRect;
+            chart.applyOptions({ width, height });
+        }
+    });
+    if (chartContainer) {
+        resizeObserver.observe(chartContainer);
+    }
+});
+
+onCleanup(() => resizeObserver?.disconnect());
+
+return (
+    <div 
+        class="single-chart-wrapper"
+        onMouseEnter={() => {
+            if (props.tokenInfo) {
+                props.onSetActiveChart?.(props.tokenInfo.contractAddress);
+            }
+        }}
+    >
+        <div class="chart-header">
+            <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
+                <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
+                <span class="symbol-title">{props.tokenInfo!.symbol}</span>
+                <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
+                <button class="block-button" title={`屏蔽 ${props.tokenInfo!.symbol}`} onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}>
+                    🚫
+                </button>
+            </Show>
+        </div>
+        <div ref={chartContainer!} class="chart-container" />
+    </div>
+);
+
+};
+
+export default SingleKlineChart;

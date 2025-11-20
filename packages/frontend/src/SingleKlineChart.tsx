@@ -3,13 +3,17 @@
 /** @jsxImportSource solid-js */
 
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time, LineSeries } from 'lightweight-charts';
 import { socket } from './socket';
 import type { LightweightChartKline, KlineUpdatePayload, KlineFetchErrorPayload } from './types';
 import type { MarketItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
 
 const BACKEND_URL = 'http://localhost:3001';
+
+// --- 配置区 ---
+// 强制补齐的K线数量，用于统一所有图表的X轴时间跨度，解决新老币种同步拖动不同步的问题
+const FORCE_GHOST_CANDLE_COUNT = 1000;
 
 interface SingleKlineChartProps {
 tokenInfo: MarketItem | undefined;
@@ -31,16 +35,25 @@ if (price < 1) return price.toFixed(6);
 return price.toFixed(2);
 };
 
+// 辅助：获取时间周期的秒数
+const getIntervalSeconds = (timeframe: string): number => {
+const val = parseInt(timeframe);
+if (timeframe.endsWith('m')) return val * 60;
+if (timeframe.endsWith('h')) return val * 3600;
+if (timeframe.endsWith('d')) return val * 86400;
+return 60; // default 1m
+};
+
 const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 let chartContainer: HTMLDivElement;
 let chart: IChartApi | null = null;
 let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+let ghostSeries: ISeriesApi<'Line'> | null = null; // 👻 隐形系列引用
 let resizeObserver: ResizeObserver | null = null;
 const [status, setStatus] = createSignal('Initializing...');
 
-// 🔒 核心状态锁
+// 🔒 状态锁
 let isProgrammaticUpdate = false;
-// 🔒 防抖锁
 let isSyncPending = false;
 
 const getMyId = () => props.tokenInfo?.contractAddress || '';
@@ -50,6 +63,7 @@ const cleanupChart = () => {
         chart.remove();
         chart = null;
         candlestickSeries = null;
+        ghostSeries = null;
     }
 };
 
@@ -60,14 +74,46 @@ const unsubscribeRealtime = (payload: { address: string; chain: string; interval
 
 const handleKlineUpdate = (update: KlineUpdatePayload) => {
     const info = props.tokenInfo;
-    if (!info) return;
+    if (!info || !candlestickSeries) return;
+    
     const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
     const poolId = chainToPoolId[info.chain.toLowerCase()];
     const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
 
     if (update.room === expectedRoom) {
-        candlestickSeries?.update(update.data as CandlestickData<number>);
+        const newCandle = update.data as CandlestickData<number>;
+        
+        // ✨✨✨ 核心修复：防止 "Cannot update oldest data" 错误 ✨✨✨
+        // 获取当前系列中的所有数据
+        const currentData = candlestickSeries.data();
+        
+        if (currentData.length > 0) {
+            const lastCandle = currentData[currentData.length - 1] as CandlestickData<number>;
+            // 只有当新数据的时间 >= 最后一根K线的时间时，才允许更新
+            // 如果新数据时间比最后一条还早（乱序到达），则直接丢弃
+            if (newCandle.time < lastCandle.time) {
+                // console.warn(`[Chart] Dropped late packet. Last: ${lastCandle.time}, New: ${newCandle.time}`);
+                return;
+            }
+        }
+        
+        candlestickSeries.update(newCandle);
     }
+};
+
+// 👻 生成隐形数据：从当前时间点倒推 N 根，确保时间轴被撑开
+const generateGhostData = (timeframe: string) => {
+    const intervalSec = getIntervalSeconds(timeframe);
+    // 向下取整对齐时间，确保所有图表的刻度线垂直对齐
+    const now = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
+    const data = [];
+    for (let i = FORCE_GHOST_CANDLE_COUNT; i >= 0; i--) {
+        data.push({
+            time: (now - (i * intervalSec)) as Time,
+            value: 0 // 价格为0，反正不显示
+        });
+    }
+    return data;
 };
 
 createEffect(() => {
@@ -98,26 +144,31 @@ createEffect(() => {
                 borderColor: '#cccccc', 
                 timeVisible: true, 
                 secondsVisible: false,
-                
-                // ✨✨✨ 核心修复 ✨✨✨
-                // 1. rightOffset: 12 -> 强制右侧保留 12 根柱子的空隙
                 rightOffset: 12, 
-                
-                // 2. shiftVisibleRangeOnNewBar: true -> 必须为 true
-                //    这保证了当新数据到来时，图表会自动滚动，始终保持 12 根柱子的空隙。
-                //    如果为 false，新数据会把图表顶到更右边，导致空隙消失。
-                shiftVisibleRangeOnNewBar: false, 
-
-                // 3. 移除了 fixRightEdge
-                //    该属性在某些版本中会导致 rightOffset 被强制归零（即贴死右边）。
-                //    移除后，图表将恢复自然的“弹性”边缘。
+                shiftVisibleRangeOnNewBar: true, // 必须开启，否则新数据会导致视图被挤压
+                fixLeftEdge: false, // 允许拖动到数据左侧空白处
+                fixRightEdge: false,
             },
+            // 主价格轴 (右侧) - 用于真实K线
             rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
-            leftPriceScale: { visible: false },
+            // 👻 隐形价格轴 (左侧) - 用于Ghost Series，设为不可见
+            leftPriceScale: { visible: false, autoScale: false }, 
             handleScroll: true, 
             handleScale: true,
         });
 
+          ghostSeries = chart.addSeries(LineSeries, {
+            color: 'rgba(0,0,0,0)', // 完全透明
+            lineWidth: 1,
+            priceScaleId: 'left',   // ✨ 绑定到左侧隐藏轴，防止干扰右侧主轴的自动缩放
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+        });
+        // 设置 Ghost 数据
+        ghostSeries.setData(generateGhostData(timeframe));
+
+        // 2. 添加真实 K 线系列
         candlestickSeries = chart.addSeries(CandlestickSeries, {
             priceFormat: { 
                 type: 'price', 
@@ -127,6 +178,7 @@ createEffect(() => {
             },
             upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
             borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+            priceScaleId: 'right' // 明确绑定到右侧
         });
 
     } catch (e) {
@@ -135,13 +187,14 @@ createEffect(() => {
         return;
     }
 
-    // [SENDER]
+    // [SENDER] 发送同步信号
     chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
         if (isProgrammaticUpdate) return;
 
         const myId = getMyId().toLowerCase();
         const activeId = props.activeChartId?.toLowerCase();
 
+        // 只有当前激活的图表（鼠标所在的图表）才有资格发送同步信号
         if (myId === activeId) {
             if (!isSyncPending) {
                 isSyncPending = true;
@@ -168,15 +221,16 @@ createEffect(() => {
 
             if (isInitial) {
                 candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
+                
+                // 初始加载时的视口处理
                 if (props.viewportState) {
+                    // 如果父级有同步状态，优先听父级的
                      chart?.timeScale().setVisibleRange({
                         from: props.viewportState.from as Time,
                         to: props.viewportState.to as Time
                     });
                 } else {
-                    // ✨ 核心修复: 使用 scrollToRealTime()
-                    // fitContent() 会强制缩放所有内容以填满屏幕，导致 offset 看起来失效
-                    // scrollToRealTime() 会定位到最新数据，并应用 rightOffset
+                    // 否则滚动到最新
                     chart?.timeScale().scrollToRealTime();
                 }
             } else {
@@ -232,7 +286,7 @@ createEffect(() => {
     });
 });
 
-// [RECEIVER]
+// [RECEIVER] 接收同步信号
 createEffect(() => {
     const vs = props.viewportState;
     if (!chart || !vs || !props.tokenInfo) return;
@@ -240,6 +294,7 @@ createEffect(() => {
     const myId = getMyId().toLowerCase();
     const activeId = props.activeChartId?.toLowerCase();
 
+    // 如果自己是触发源，则忽略更新，避免循环死锁
     if (myId === activeId) return;
 
     isProgrammaticUpdate = true;
@@ -248,8 +303,11 @@ createEffect(() => {
             from: vs.from as Time,
             to: vs.to as Time
         });
-    } catch (e) {}
+    } catch (e) {
+        // 偶尔极端情况可能报错，吞掉日志防止刷屏
+    }
     
+    // 立即释放锁
     setTimeout(() => { isProgrammaticUpdate = false; }, 0);
 });
 
