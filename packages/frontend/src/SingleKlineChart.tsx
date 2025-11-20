@@ -29,7 +29,7 @@ interface SingleKlineChartProps {
 const customPriceFormatter = (price: number): string => {
     if (price === 0) return '0';
     if (price < 0.000001) {
-        return price.toFixed(12).replace(/.?0+$/, "");
+        return price.toFixed(12).replace(/\.?0+$/, "");
     }
     if (price < 1) return price.toFixed(6);
     return price.toFixed(2);
@@ -48,7 +48,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let chartContainer: HTMLDivElement;
     let chart: IChartApi | null = null;
     let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
-    let ghostSeries: ISeriesApi<'Line'> | null = null; 
+    let ghostSeries: ISeriesApi<'Line'> | null = null;
     let resizeObserver: ResizeObserver | null = null;
     const [status, setStatus] = createSignal('Initializing...');
 
@@ -111,6 +111,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     const generateGhostData = (timeframe: string) => {
         const intervalSec = getIntervalSeconds(timeframe);
         // 核心：向下取整对齐，确保 9 个图表的 Ghost K 线时间戳完全一致
+        // 这样所有图表的 Logical Index 0 都对应着同一个“当前时间”
         const nowAligned = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
         
         const data = [];
@@ -155,7 +156,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     rightOffset: 12, 
                     shiftVisibleRangeOnNewBar: true, 
                     fixLeftEdge: false, // 允许向左无限拖动
-                    fixRightEdge: false,
+                    fixRightEdge: false, // 允许拖动离开右边缘（查看未来）
                 },
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
                 // 👻 左侧隐藏轴给 Ghost Series 使用
@@ -194,8 +195,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             return;
         }
 
-        // [SENDER] 发送同步信号
-        // 当用户主动拖动此图表时，计算时间范围并通知父组件
+        // [SENDER] ✨✨✨ 核心修改：发送 Logical Range（逻辑索引）而非 TimeRange ✨✨✨
+        // 监听逻辑索引变化，这代表了用户拖动或缩放了网格，而不只是时间
         chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
             // 如果这是由于代码设置范围引起的变化，则忽略，防止死循环
             if (isProgrammaticUpdate) return;
@@ -208,12 +209,13 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 if (!isSyncPending) {
                     isSyncPending = true;
                     requestAnimationFrame(() => {
-                        const timeRange = chart?.timeScale().getVisibleRange();
-                        if (timeRange && props.onViewportChange) {
-                            const from = Number(timeRange.from);
-                            const to = Number(timeRange.to);
-                            // log(`📤 Broadcasting viewport: ${from} - ${to}`);
-                            props.onViewportChange({ from, to });
+                        // 获取逻辑索引范围 (e.g. from: -5.5, to: 50.2)
+                        const logicalRange = chart?.timeScale().getVisibleLogicalRange();
+                        if (logicalRange && props.onViewportChange) {
+                            props.onViewportChange({ 
+                                from: logicalRange.from, 
+                                to: logicalRange.to 
+                            });
                         }
                         isSyncPending = false;
                     });
@@ -236,10 +238,10 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     
                     // 初始加载时的视口处理
                     if (props.viewportState) {
-                        // 如果父级有同步状态，优先听父级的
-                         chart?.timeScale().setVisibleRange({
-                            from: props.viewportState.from as Time,
-                            to: props.viewportState.to as Time
+                        // [Sync] 如果父级有同步状态，使用 setVisibleLogicalRange 强制对齐逻辑索引
+                         chart?.timeScale().setVisibleLogicalRange({
+                            from: props.viewportState.from,
+                            to: props.viewportState.to
                         });
                     } else {
                         // 否则滚动到最新
@@ -301,7 +303,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
     });
 
-    // [RECEIVER] 接收同步信号
+    // [RECEIVER] ✨✨✨ 核心修改：接收逻辑索引同步 ✨✨✨
     createEffect(() => {
         const vs = props.viewportState;
         if (!chart || !vs || !props.tokenInfo) return;
@@ -315,9 +317,11 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         isProgrammaticUpdate = true;
         try {
             // log(`📥 Syncing viewport to: ${vs.from} - ${vs.to}`);
-            chart.timeScale().setVisibleRange({
-                from: vs.from as Time,
-                to: vs.to as Time
+            // 使用 setVisibleLogicalRange 强制所有图表对齐到相同的“格子数”
+            // 配合 Ghost Series，无论数据多少，网格的几何形状（Bar Spacing）都将严格一致
+            chart.timeScale().setVisibleLogicalRange({
+                from: vs.from,
+                to: vs.to
             });
         } catch (e) {
             // LWC 在数据未加载完全时设置 Range 可能会抛错，即使有 Ghost Series

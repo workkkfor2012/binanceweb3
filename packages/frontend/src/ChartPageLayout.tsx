@@ -8,62 +8,64 @@ import MultiChartGrid from './MultiChartGrid';
 import SingleTokenView from './SingleTokenView';
 import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
 
-// ✨ [Refactor] 核心修改: 将 ViewportState 从索引逻辑(Width/Offset)改为时间戳逻辑(From/To)
+// ✨ [Refactor] 核心修改: 将同步状态改为 Logical Range (逻辑索引)
+// Logical Range 是 LWC 的内部坐标：0 代表最新一根 K 线，负数代表未来的空白，正数代表历史
+// 配合 Ghost Series，这能完美解决“拖动导致的挤压/缩放”问题，实现刚性平移。
 export interface ViewportState {
-from: number; // Unix Timestamp (seconds)
-to: number; // Unix Timestamp (seconds)
+  from: number; // Logical Index (float)
+  to: number; // Logical Index (float)
 }
 
 const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
 
 const TIMEFRAME_MAP: Record<string, string> = {
-'1': '1m', '2': '5m', '3': '1h', '4': '4h', '5': '1d',
+  '1': '1m', '2': '5m', '3': '1h', '4': '4h', '5': '1d',
 };
 export const ALL_TIMEFRAMES = Object.values(TIMEFRAME_MAP);
 
 const loadBlockListFromStorage = (): Set<string> => {
-try {
-const storedList = localStorage.getItem(BLOCKLIST_STORAGE_KEY);
-if (storedList) {
-const parsedArray = JSON.parse(storedList);
-if (Array.isArray(parsedArray)) return new Set(parsedArray);
-}
-} catch (error) { console.error('[Blocklist] Failed to load blocklist:', error); }
-return new Set();
+  try {
+    const storedList = localStorage.getItem(BLOCKLIST_STORAGE_KEY);
+    if (storedList) {
+      const parsedArray = JSON.parse(storedList);
+      if (Array.isArray(parsedArray)) return new Set(parsedArray);
+    }
+  } catch (error) { console.error('[Blocklist] Failed to load blocklist:', error); }
+  return new Set();
 };
 
 const saveBlockListToStorage = (blockList: Set<string>): void => {
-try {
-localStorage.setItem(BLOCKLIST_STORAGE_KEY, JSON.stringify(Array.from(blockList)));
-} catch (error) { console.error('[Blocklist] Failed to save blocklist:', error); }
+  try {
+    localStorage.setItem(BLOCKLIST_STORAGE_KEY, JSON.stringify(Array.from(blockList)));
+  } catch (error) { console.error('[Blocklist] Failed to save blocklist:', error); }
 };
 
 const ChartPageLayout: Component = () => {
-const [marketData, setMarketData] = createStore<MarketItem[]>([]);
-const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
-const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('volume1m');
-const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
-const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);    
-// 同步状态信号
-const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
-// 当前正在操作的图表ID，避免回环触发
-const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
+  const [marketData, setMarketData] = createStore<MarketItem[]>([]);
+  const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
+  const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('volume1m');
+  const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
+  const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
+  // 同步状态信号
+  const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
+  // 当前正在操作的图表ID，避免回环触发
+  const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
 
-const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
-const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
+  const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
+  const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
 
-const handleViewportChange = (newState: ViewportState | null) => {
+  const handleViewportChange = (newState: ViewportState | null) => {
     setViewportState(newState);
-};
+  };
 
-const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
     if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
         const newTimeframe = TIMEFRAME_MAP[e.key];
         console.log(`[Layout] Hotkey '${e.key}' pressed. Changing timeframe to ${newTimeframe}`);
         setActiveTimeframe(newTimeframe);
-        // 切换周期时重置同步状态，防止旧的时间范围不适用新周期
+        // 切换周期时重置同步状态，因为不同周期的逻辑索引意义不同（虽然 Ghost Series 试图对齐，但重置更安全）
         if (viewMode() === 'grid') {
             setViewportState(null);
         }
@@ -87,17 +89,17 @@ const handleKeyDown = (e: KeyboardEvent) => {
             setFocusedToken(null);
         }
     }
-};
+  };
 
-const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
+  const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
     console.log(`[ChartPage Alert] [${alertType.toUpperCase()}] ${logMessage}`);
-};
+  };
 
-onMount(() => {
+  onMount(() => {
     if (!socket.connected) {
-        socket.connect();
+      socket.connect();
     }
-    
+
     socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
     socket.on('disconnect', () => setLastUpdate('Disconnected'));
     socket.on('data-broadcast', (payload: DataPayload) => {
@@ -134,88 +136,85 @@ onMount(() => {
         socket.off('data-broadcast');
         window.removeEventListener('keydown', handleKeyDown);
     });
-});
+  });
 
-const handleBlockToken = (contractAddress: string) => {
+  const handleBlockToken = (contractAddress: string) => {
     const newBlockList = new Set(blockList());
     newBlockList.add(contractAddress);
     setBlockList(newBlockList);
     saveBlockListToStorage(newBlockList);
     console.log(`[Blocklist] Token ${contractAddress} added.`);
-};
+  };
 
-const rankedTokensForGrid = createMemo(() => {
+  const rankedTokensForGrid = createMemo(() => {
     const rankBy = activeRankBy();
-    const blocked = blockList(); 
+    const blocked = blockList();
     if (!rankBy) return [];
     return [...marketData]
-        .filter(item => !blocked.has(item.contractAddress))
-        .filter(item => item.icon && item[rankBy] != null)
-        .sort((a, b) => {
-            const valA = a[rankBy]!;
-            const valB = b[rankBy]!;
-            return (typeof valB === 'string' ? parseFloat(valB) : valB) - 
-                   (typeof valA === 'string' ? parseFloat(valA) : valA);
-        })
-        .slice(0, 9);
-});
+      .filter(item => !blocked.has(item.contractAddress))
+      .filter(item => item.icon && item[rankBy] != null)
+      .sort((a, b) => {
+        const valA = a[rankBy]!;
+        const valB = b[rankBy]!;
+        return (typeof valB === 'string' ? parseFloat(valB) : valB) -
+               (typeof valA === 'string' ? parseFloat(valA) : valA);
+      })
+      .slice(0, 9);
+  });
 
-const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
+  const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
     console.log(`[Layout] User selected new ranking: ${rankBy}.`);
     setActiveRankBy(rankBy);
-};
+  };
 
-const handleRankingItemClick = (item: MarketItem) => {
+  const handleRankingItemClick = (item: MarketItem) => {
     const url = `/token.html?address=${item.contractAddress}&chain=${item.chain}`;
     window.open(url, '_blank');
-};
+  };
 
-return (
+  return (
     <div class="chart-page-container">
-        <div class="left-sidebar">
-            <CompactRankingListsContainer 
-                marketData={marketData}
-                lastUpdate={lastUpdate()} 
-                onHeaderClick={handleRankingHeaderClick}
-                blockList={blockList()}
-                onItemClick={handleRankingItemClick}
-            />
-        </div>
-        <div class="right-chart-grid">
-            <Show
-                when={viewMode() === 'single' && focusedToken()}
-                fallback={
-                    <>
-                        <div class="grid-header">
-                            <div class="active-timeframe-indicator">
-                                <span>Timeframe: </span>
-                                <strong>{activeTimeframe().toUpperCase()}</strong>
-                                <span class="hotkey-hint">(Keys: 1-5)</span>
-                            </div>
-                        </div>
-                        <MultiChartGrid 
-                            tokens={rankedTokensForGrid()} 
-                            onBlockToken={handleBlockToken} 
-                            timeframe={activeTimeframe()}
-                            viewportState={viewportState()}
-                            onViewportChange={handleViewportChange}
-                            activeChartId={activeChartId()}
-                            onSetActiveChart={setActiveChartId}
-                        />
-                    </>
-                }
-            >
-                <SingleTokenView 
-                    token={focusedToken()!} 
-                    activeTimeframe={activeTimeframe()} 
-                />
-            </Show>
-        </div>
+      <div class="left-sidebar">
+        <CompactRankingListsContainer
+          marketData={marketData}
+          lastUpdate={lastUpdate()}
+          onHeaderClick={handleRankingHeaderClick}
+          blockList={blockList()}
+          onItemClick={handleRankingItemClick}
+        />
+      </div>
+      <div class="right-chart-grid">
+        <Show
+          when={viewMode() === 'single' && focusedToken()}
+          fallback={
+            <>
+              <div class="grid-header">
+                <div class="active-timeframe-indicator">
+                  <span>Timeframe: </span>
+                  <strong>{activeTimeframe().toUpperCase()}</strong>
+                  <span class="hotkey-hint">(Keys: 1-5)</span>
+                </div>
+              </div>
+              <MultiChartGrid
+                tokens={rankedTokensForGrid()}
+                onBlockToken={handleBlockToken}
+                timeframe={activeTimeframe()}
+                viewportState={viewportState()}
+                onViewportChange={handleViewportChange}
+                activeChartId={activeChartId()}
+                onSetActiveChart={setActiveChartId}
+              />
+            </>
+          }
+        >
+          <SingleTokenView
+            token={focusedToken()!}
+            activeTimeframe={activeTimeframe()}
+          />
+        </Show>
+      </div>
     </div>
-);
-
-  
-
+  );
 };
 
 export default ChartPageLayout;
