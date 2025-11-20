@@ -1,10 +1,10 @@
 // packages/frontend/src/CompactRankingListsContainer.tsx
 import { Component, createMemo, For, JSX } from 'solid-js';
 import type { MarketItem } from 'shared-types';
+import type { ChartTheme } from './themes'; // ✨ Import theme type
 
 const BACKEND_URL = 'http://localhost:3001';
 
-// --- 辅助函数 (无变化) ---
 const formatPercentage = (change: string | number | null | undefined): JSX.Element => {
     if (change === null || change === undefined) return <span class="na">N/A</span>;
     const value = typeof change === 'string' ? parseFloat(change) : change;
@@ -19,7 +19,6 @@ const formatVolume = (num: number | null | undefined): string => {
   return num.toFixed(0);
 };
 
-// ✨ 修改: 增加 onItemClick prop
 interface CompactListProps {
   title: string;
   data: MarketItem[];
@@ -27,7 +26,8 @@ interface CompactListProps {
   formatter: (value: any) => string | JSX.Element;
   onHeaderClick: (rankBy: keyof MarketItem) => void;
   blockList: Set<string>;
-  onItemClick?: (item: MarketItem) => void; // ✨ 新增: 可选的列表项点击回调
+  onItemClick?: (item: MarketItem) => void;
+  theme: ChartTheme; // ✨ Receive Theme
 }
 
 const CompactRankingList: Component<CompactListProps> = (props) => {
@@ -35,7 +35,6 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
         const blocked = props.blockList;
         const validData = props.data.filter(item => {
             if (blocked.has(item.contractAddress)) return false; 
-
             const value = item[props.rankBy];
             return item.icon && value !== null && value !== undefined && String(value).trim() !== '';
         });
@@ -53,17 +52,27 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
 
     return (
         <div class="compact-ranking-list">
-            <h3 onClick={() => props.onHeaderClick(props.rankBy)} class="clickable-header">
+            <h3 
+                onClick={() => props.onHeaderClick(props.rankBy)} 
+                class="clickable-header"
+                style={{ 
+                    "color": props.theme.layout.textColor,
+                    "border-bottom-color": props.theme.grid.horzLines 
+                }}
+            >
                 {props.title}
             </h3>
             <ul>
-                <For each={rankedData()} fallback={<li>-</li>}>
+                <For each={rankedData()} fallback={<li style={{ color: props.theme.layout.textColor }}>-</li>}>
                     {(item) => (
-                        // ✨ 核心修改: 增加 onClick 和 class
                         <li 
                             title={`${item.chain}: ${item.contractAddress}`}
                             onClick={() => props.onItemClick?.(item)}
                             class={props.onItemClick ? 'item-clickable' : ''}
+                            style={{ 
+                                "border-bottom-color": props.theme.grid.horzLines, // ✨ 使用网格线颜色作为分割
+                                "color": props.theme.layout.textColor
+                            }}
                         >
                             <div class="symbol-and-icon">
                                 <img 
@@ -76,20 +85,19 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
                             <span class="value-compact">{props.formatter(item[props.rankBy])}</span>
                         </li>
                     )}
-                </For
-                >
+                </For>
             </ul>
         </div>
     );
 };
 
-// ✨ 修改: 增加 onItemClick prop
 interface ContainerProps {
     marketData: MarketItem[];
     lastUpdate: string;
     onHeaderClick: (rankBy: keyof MarketItem) => void;
     blockList: Set<string>;
-    onItemClick?: (item: MarketItem) => void; // ✨ 新增
+    onItemClick?: (item: MarketItem) => void;
+    theme: ChartTheme; // ✨ Receive Theme
 }
 
 const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
@@ -110,14 +118,22 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
 
     return (
         <div class="compact-ranking-list-container">
-            <div class="update-timestamp">
-                <span>Last Update:</span>
+            <div 
+                class="update-timestamp"
+                style={{ "border-bottom-color": props.theme.grid.horzLines }}
+            >
+                <span style={{ "color": props.theme.layout.textColor, opacity: 0.7 }}>Last Update:</span>
                 <strong>{props.lastUpdate}</strong>
             </div>
             
             <div class="ranking-columns">
                 <div class="ranking-section">
-                    <h2>价格涨幅排名</h2>
+                    <h2 style={{ 
+                        "color": props.theme.layout.textColor,
+                        "border-bottom-color": props.theme.grid.horzLines 
+                    }}>
+                        价格涨幅排名
+                    </h2>
                     <For each={PRICE_CHANGE_RANKINGS}>
                         {(ranking) => (
                             <CompactRankingList
@@ -127,14 +143,20 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 formatter={formatPercentage}
                                 onHeaderClick={props.onHeaderClick}
                                 blockList={props.blockList}
-                                onItemClick={props.onItemClick} // ✨ 传递
+                                onItemClick={props.onItemClick}
+                                theme={props.theme} // ✨ Pass
                             />
                         )}
                     </For>
                 </div>
                 
                 <div class="ranking-section">
-                    <h2>成交额排名</h2>
+                    <h2 style={{ 
+                        "color": props.theme.layout.textColor,
+                        "border-bottom-color": props.theme.grid.horzLines 
+                    }}>
+                        成交额排名
+                    </h2>
                     <For each={VOLUME_RANKINGS}>
                         {(ranking) => (
                             <CompactRankingList
@@ -144,7 +166,8 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                                 formatter={formatVolume}
                                 onHeaderClick={props.onHeaderClick}
                                 blockList={props.blockList}
-                                onItemClick={props.onItemClick} // ✨ 传递
+                                onItemClick={props.onItemClick}
+                                theme={props.theme} // ✨ Pass
                             />
                         )}
                     </For>

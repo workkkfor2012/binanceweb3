@@ -8,6 +8,7 @@ import { socket } from './socket';
 import type { KlineUpdatePayload, KlineFetchErrorPayload } from './types';
 import type { MarketItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
+import type { ChartTheme } from './themes';
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -24,6 +25,7 @@ interface SingleKlineChartProps {
     activeChartId: string | null;
     onSetActiveChart?: (id: string | null) => void;
     showAxes?: boolean;
+    theme: ChartTheme; // ✨ New Prop
 }
 
 const customPriceFormatter = (price: number): string => {
@@ -125,10 +127,41 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         return data;
     };
 
+    // ✨ Theme Application Effect
+    createEffect(() => {
+        if (chart && props.theme) {
+            const t = props.theme;
+            // Update Chart Layout & Grid
+            chart.applyOptions({
+                layout: {
+                    background: { type: ColorType.Solid, color: t.layout.background },
+                    textColor: t.layout.textColor,
+                },
+                grid: {
+                    vertLines: { color: t.grid.vertLines },
+                    horzLines: { color: t.grid.horzLines },
+                },
+            });
+
+            // Update Candlestick Colors
+            if (candlestickSeries) {
+                candlestickSeries.applyOptions({
+                    upColor: t.candle.upColor,
+                    downColor: t.candle.downColor,
+                    borderUpColor: t.candle.borderUpColor,
+                    borderDownColor: t.candle.borderDownColor,
+                    wickUpColor: t.candle.wickUpColor,
+                    wickDownColor: t.candle.wickDownColor,
+                });
+            }
+        }
+    });
+
     // 主副作用：图表创建与数据订阅
     createEffect(() => {
         const info = props.tokenInfo;
         const timeframe = props.timeframe;
+        const t = props.theme; // ✨ Get initial theme
 
         if (!info || !timeframe) {
             cleanupChart();
@@ -146,8 +179,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             chart = createChart(chartContainer, {
                 width: chartContainer.clientWidth, 
                 height: chartContainer.clientHeight,
-                layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
-                grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+                layout: { 
+                    background: { type: ColorType.Solid, color: t.layout.background }, // ✨ Use theme
+                    textColor: t.layout.textColor 
+                },
+                grid: { 
+                    vertLines: { color: t.grid.vertLines }, // ✨ Use theme
+                    horzLines: { color: t.grid.horzLines } 
+                },
                 timeScale: { 
                     visible: !!props.showAxes, 
                     borderColor: '#cccccc', 
@@ -155,11 +194,10 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     secondsVisible: false,
                     rightOffset: 12, 
                     shiftVisibleRangeOnNewBar: true, 
-                    fixLeftEdge: false, // 允许向左无限拖动
-                    fixRightEdge: false, // 允许拖动离开右边缘（查看未来）
+                    fixLeftEdge: false, 
+                    fixRightEdge: false, 
                 },
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
-                // 👻 左侧隐藏轴给 Ghost Series 使用
                 leftPriceScale: { visible: false, autoScale: false }, 
                 handleScroll: true, 
                 handleScale: true,
@@ -184,8 +222,13 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     minMove: 0.00000001, 
                     formatter: customPriceFormatter 
                 },
-                upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
-                borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+                // ✨ Use theme colors initially
+                upColor: t.candle.upColor, 
+                downColor: t.candle.downColor, 
+                borderDownColor: t.candle.borderDownColor,
+                borderUpColor: t.candle.borderUpColor, 
+                wickDownColor: t.candle.wickDownColor, 
+                wickUpColor: t.candle.wickUpColor,
                 priceScaleId: 'right'
             });
 
@@ -195,21 +238,17 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             return;
         }
 
-        // [SENDER] ✨✨✨ 核心修改：发送 Logical Range（逻辑索引）而非 TimeRange ✨✨✨
-        // 监听逻辑索引变化，这代表了用户拖动或缩放了网格，而不只是时间
+        // [SENDER] 发送 Logical Range（逻辑索引）而非 TimeRange
         chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
-            // 如果这是由于代码设置范围引起的变化，则忽略，防止死循环
             if (isProgrammaticUpdate) return;
 
             const myId = getMyId().toLowerCase();
             const activeId = props.activeChartId?.toLowerCase();
 
-            // 只有“当前激活”的图表才有资格指挥其他图表
             if (myId === activeId) {
                 if (!isSyncPending) {
                     isSyncPending = true;
                     requestAnimationFrame(() => {
-                        // 获取逻辑索引范围 (e.g. from: -5.5, to: 50.2)
                         const logicalRange = chart?.timeScale().getVisibleLogicalRange();
                         if (logicalRange && props.onViewportChange) {
                             props.onViewportChange({ 
@@ -238,17 +277,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     
                     // 初始加载时的视口处理
                     if (props.viewportState) {
-                        // [Sync] 如果父级有同步状态，使用 setVisibleLogicalRange 强制对齐逻辑索引
                          chart?.timeScale().setVisibleLogicalRange({
                             from: props.viewportState.from,
                             to: props.viewportState.to
                         });
                     } else {
-                        // 否则滚动到最新
                         chart?.timeScale().scrollToRealTime();
                     }
                 } else {
-                    // 处理分页加载或补充数据
                     const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
                     const newDataMap = new Map(currentData.map(d => [d.time, d]));
                     sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
@@ -303,7 +339,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
     });
 
-    // [RECEIVER] ✨✨✨ 核心修改：接收逻辑索引同步 ✨✨✨
+    // [RECEIVER] 接收逻辑索引同步
     createEffect(() => {
         const vs = props.viewportState;
         if (!chart || !vs || !props.tokenInfo) return;
@@ -311,25 +347,18 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const myId = getMyId().toLowerCase();
         const activeId = props.activeChartId?.toLowerCase();
 
-        // 🚫 如果我是触发源，绝对不要响应，避免回环
         if (myId === activeId) return;
 
         isProgrammaticUpdate = true;
         try {
-            // log(`📥 Syncing viewport to: ${vs.from} - ${vs.to}`);
-            // 使用 setVisibleLogicalRange 强制所有图表对齐到相同的“格子数”
-            // 配合 Ghost Series，无论数据多少，网格的几何形状（Bar Spacing）都将严格一致
             chart.timeScale().setVisibleLogicalRange({
                 from: vs.from,
                 to: vs.to
             });
         } catch (e) {
-            // LWC 在数据未加载完全时设置 Range 可能会抛错，即使有 Ghost Series
-            // 这里的 try-catch 是最后的防线，防止 JS 错误导致组件崩溃
             // console.warn(`[Chart:${props.tokenInfo.symbol}] Sync failed (likely transient):`, e);
         }
         
-        // 立即释放锁
         setTimeout(() => { isProgrammaticUpdate = false; }, 0);
     });
 
@@ -350,7 +379,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     return (
         <div 
             class="single-chart-wrapper"
-            // 鼠标进入时，标记此图表为“主动方”，它将拥有广播权限
+            style={{ background: props.theme.layout.background }} // ✨ Dynamic Background Wrapper
             onMouseEnter={() => {
                 if (props.tokenInfo) {
                     props.onSetActiveChart?.(props.tokenInfo.contractAddress);
@@ -360,9 +389,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             <div class="chart-header">
                 <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
                     <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
-                    <span class="symbol-title">{props.tokenInfo!.symbol}</span>
+                    <span class="symbol-title" style={{ color: props.theme.layout.textColor }}>{props.tokenInfo!.symbol}</span>
                     <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
-                    <button class="block-button" title={`屏蔽 ${props.tokenInfo!.symbol}`} onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}>
+                    <button 
+                        class="block-button" 
+                        title={`屏蔽 ${props.tokenInfo!.symbol}`} 
+                        onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}
+                        style={{ color: props.theme.layout.textColor }}
+                    >
                         🚫
                     </button>
                 </Show>

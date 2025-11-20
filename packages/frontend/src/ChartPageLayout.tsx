@@ -7,10 +7,9 @@ import CompactRankingListsContainer from './CompactRankingListsContainer';
 import MultiChartGrid from './MultiChartGrid';
 import SingleTokenView from './SingleTokenView';
 import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
+import { PRESET_THEMES } from './themes';
 
 // ✨ [Refactor] 核心修改: 将同步状态改为 Logical Range (逻辑索引)
-// Logical Range 是 LWC 的内部坐标：0 代表最新一根 K 线，负数代表未来的空白，正数代表历史
-// 配合 Ghost Series，这能完美解决“拖动导致的挤压/缩放”问题，实现刚性平移。
 export interface ViewportState {
   from: number; // Logical Index (float)
   to: number; // Logical Index (float)
@@ -46,13 +45,17 @@ const ChartPageLayout: Component = () => {
   const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('volume1m');
   const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
   const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
+  
   // 同步状态信号
   const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
-  // 当前正在操作的图表ID，避免回环触发
   const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
 
   const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
   const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
+  
+  // ✨ Theme State
+  const [themeIndex, setThemeIndex] = createSignal(0);
+  const currentTheme = createMemo(() => PRESET_THEMES[themeIndex()]);
 
   const handleViewportChange = (newState: ViewportState | null) => {
     setViewportState(newState);
@@ -61,11 +64,16 @@ const ChartPageLayout: Component = () => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
+    // ✨ Theme Switching Hotkey
+    if (e.key.toLowerCase() === 't') {
+        setThemeIndex((prev) => (prev + 1) % PRESET_THEMES.length);
+        console.log(`[Layout] Theme changed to: ${PRESET_THEMES[themeIndex()].name}`);
+        return;
+    }
+
     if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
         const newTimeframe = TIMEFRAME_MAP[e.key];
-        console.log(`[Layout] Hotkey '${e.key}' pressed. Changing timeframe to ${newTimeframe}`);
         setActiveTimeframe(newTimeframe);
-        // 切换周期时重置同步状态，因为不同周期的逻辑索引意义不同（虽然 Ghost Series 试图对齐，但重置更安全）
         if (viewMode() === 'grid') {
             setViewportState(null);
         }
@@ -78,13 +86,11 @@ const ChartPageLayout: Component = () => {
             if (hoveredTokenId) {
                 const token = rankedTokensForGrid().find(t => t.contractAddress === hoveredTokenId);
                 if (token) {
-                    console.log(`[Layout] Entering single view for ${token.symbol}`);
                     setFocusedToken(token);
                     setViewMode('single');
                 }
             }
         } else {
-            console.log('[Layout] Exiting single view.');
             setViewMode('grid');
             setFocusedToken(null);
         }
@@ -96,9 +102,7 @@ const ChartPageLayout: Component = () => {
   };
 
   onMount(() => {
-    if (!socket.connected) {
-      socket.connect();
-    }
+    if (!socket.connected) socket.connect();
 
     socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
     socket.on('disconnect', () => setLastUpdate('Disconnected'));
@@ -143,7 +147,6 @@ const ChartPageLayout: Component = () => {
     newBlockList.add(contractAddress);
     setBlockList(newBlockList);
     saveBlockListToStorage(newBlockList);
-    console.log(`[Blocklist] Token ${contractAddress} added.`);
   };
 
   const rankedTokensForGrid = createMemo(() => {
@@ -163,7 +166,6 @@ const ChartPageLayout: Component = () => {
   });
 
   const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
-    console.log(`[Layout] User selected new ranking: ${rankBy}.`);
     setActiveRankBy(rankBy);
   };
 
@@ -173,26 +175,45 @@ const ChartPageLayout: Component = () => {
   };
 
   return (
-    <div class="chart-page-container">
-      <div class="left-sidebar">
+    <div 
+        class="chart-page-container" 
+        style={{ 
+            "background-color": currentTheme().layout.background, // ✨ 全局背景
+            "color": currentTheme().layout.textColor // ✨ 全局字体颜色
+        }}
+    >
+      <div 
+        class="left-sidebar"
+        style={{
+            "background-color": currentTheme().layout.background, // ✨ 侧边栏背景
+            "border-color": currentTheme().grid.vertLines, // ✨ 侧边栏边框，使用网格线颜色作为分割线
+            "color": currentTheme().layout.textColor
+        }}
+      >
         <CompactRankingListsContainer
           marketData={marketData}
           lastUpdate={lastUpdate()}
           onHeaderClick={handleRankingHeaderClick}
           blockList={blockList()}
           onItemClick={handleRankingItemClick}
+          theme={currentTheme()} // ✨ 传递主题
         />
       </div>
+      
       <div class="right-chart-grid">
         <Show
           when={viewMode() === 'single' && focusedToken()}
           fallback={
             <>
-              <div class="grid-header">
+              <div class="grid-header" style={{ "color": currentTheme().layout.textColor }}>
                 <div class="active-timeframe-indicator">
                   <span>Timeframe: </span>
                   <strong>{activeTimeframe().toUpperCase()}</strong>
-                  <span class="hotkey-hint">(Keys: 1-5)</span>
+                  <span class="hotkey-hint" style={{ opacity: 0.6 }}>(Keys: 1-5)</span>
+                  
+                  <span style={{ "margin-left": "15px" }}>Theme: </span>
+                  <strong>{currentTheme().name}</strong>
+                  <span class="hotkey-hint" style={{ opacity: 0.6 }}>(Key: T)</span>
                 </div>
               </div>
               <MultiChartGrid
@@ -203,6 +224,7 @@ const ChartPageLayout: Component = () => {
                 onViewportChange={handleViewportChange}
                 activeChartId={activeChartId()}
                 onSetActiveChart={setActiveChartId}
+                theme={currentTheme()} // ✨ 传递主题
               />
             </>
           }
@@ -210,6 +232,7 @@ const ChartPageLayout: Component = () => {
           <SingleTokenView
             token={focusedToken()!}
             activeTimeframe={activeTimeframe()}
+            theme={currentTheme()} // ✨ 传递主题
           />
         </Show>
       </div>
