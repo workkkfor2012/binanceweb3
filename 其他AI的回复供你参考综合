@@ -1,64 +1,701 @@
-这是非常深刻且切中要害的技术讨论。在处理多图表（Grid Layout）且数据源（Token）历史长度不一致的场景下，**对齐（Alignment）和同步（Synchronization）**是最大的难点。
+你的观察非常准确，目前的 “拖动产生缩放/挤压” 现象，正是因为使用了 时间（Time Range）同步 而非 逻辑位置（Logical Index）同步 导致的。
 
-第一部分：独立思考与分析
-1. 前端 9 图渲染流程梳理
+核心问题分析
 
-目前的渲染流程大致如下：
+时间同步的缺陷：
 
-数据源头：WebSocket 推送实时数据，HTTP 拉取历史数据。
+当你向左拖动图表A（查看右侧未来空白区域）时，你实际上是在要求图表显示一段“未来的时间范围”。
 
-数据分发：MultiChartGrid 接收数据，分发给 9 个 SingleKlineChart 组件。
+当你把这个时间范围传给图表B时，如果图表B的数据没有那么新，或者它的内部机制判断“右侧没有数据”，它会尝试把这个时间范围压缩在它认为合理的显示区域内，或者强制贴靠在它拥有的最后一根K线上。
 
-独立渲染：每个 SingleKlineChart 维护自己的 Lightweight-charts 实例。
+结果：图表B为了显示你要求的时间段，被迫改变了每根K线的宽度（Bar Spacing），导致视觉上看起来像是被“放大”或“挤压”了，而不是单纯的平移。
 
-同步机制：
+为什么需要 Logical Index（逻辑索引）：
 
-Trigger (主动方)：当鼠标在某个图表上操作（拖动/缩放）时，触发 VisibleLogicalRangeChange。
+lightweight-charts 内部维护了一个逻辑索引：0 代表最新的一根K线，正数代表历史，负数代表右侧的未来空白区域。
 
-State Lift (状态提升)：计算出当前的 时间范围 (Time Range)，更新父组件状态 viewportState。
+比如：from: -10, to: 50 意味着屏幕右边缘还有10根K线的空白空间，左侧显示到第50根K线。
 
-Broadcast (广播)：父组件将新的 from/to 时间戳下发给其余 8 个图表。
+同步逻辑索引：如果我们强制所有图表都显示 [-10, 50] 这个索引范围，无论它们的时间戳是什么，它们都会严格保持相同的缩放比例和相同的右侧留白距离。
 
-React (响应)：其余图表调用 setVisibleRange({ from, to }) 进行跳转。
+Ghost Series 的作用：
 
-2. 评价目前的同步缩放算法
+你已经实现了 Ghost Series，这非常好。它的作用是统一坐标系。它保证了所有图表对于“Index 0”对应的时间戳是一致的（都对齐到了当前的整点时间）。
 
-目前的问题（痛点）：
-Lightweight-charts (LWC) 的底层是基于 Index (索引) 的，而不是纯时间的。
+结论：Ghost Series (统一骨架) + Logical Range Sync (统一视角) = 完美的同步拖动与缩放。
 
-场景：图表 A 是比特币（10年数据），图表 B 是刚发行的土狗（10分钟数据）。
+以下是修复方案，我将修改三个文件，将同步机制从 TimeRange 彻底切换为 LogicalRange。
 
-操作：如果你在 A 图上由“今天”拖动到“昨天”。
+1. 修改状态定义 (ChartPageLayout.tsx)
 
-后果：系统命令 B 图也显示“昨天”。但 B 图“昨天”根本不存在数据。LWC 的 setVisibleRange 在没有数据的时间段通常会失效，或者显示一片空白且无法正确计算 Grid 线，导致视觉上的不同步（X轴刻度线对不齐）。
+将 viewportState 的类型定义从时间戳改为逻辑索引。
 
-结论：目前的算法在“K线长度差异巨大”的场景下不合理，会导致用户体验割裂。
+packages/frontend/src/ChartPageLayout.tsx
+code
+Code
+download
+content_copy
+expand_less
+// packages/frontend/src/ChartPageLayout.tsx
+import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
+import { createStore, produce } from 'solid-js/store';
+import { socket } from './socket';
+import type { MarketItem, DataPayload } from 'shared-types';
+import CompactRankingListsContainer from './CompactRankingListsContainer';
+import MultiChartGrid from './MultiChartGrid';
+import SingleTokenView from './SingleTokenView';
+import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
 
-3. 关于“补齐到 500 根 K 线”的方案评价
+// ✨ [Refactor] 核心修改: 将同步状态改为 Logical Range (逻辑索引)
+// Logical Range 是 LWC 的内部坐标：0 代表最新一根 K 线，负数代表未来的空白，正数代表历史
+// 配合 Ghost Series，这能完美解决“拖动导致的挤压/缩放”问题，实现刚性平移。
+export interface ViewportState {
+from: number; // Logical Index (float)
+to: number; // Logical Index (float)
+}
 
-这是一个非常精妙的工程化解法（Best Practice）。
+const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
 
-为什么后端不做？ 后端补齐需要传输大量的 0 或 null 数据，浪费带宽（JSON 序列化体积大），且后端不知道前端的屏幕宽度和缩放比例，补多少根很难界定。
+const TIMEFRAME_MAP: Record<string, string> = {
+'1': '1m', '2': '5m', '3': '1h', '4': '4h', '5': '1d',
+};
+export const ALL_TIMEFRAMES = Object.values(TIMEFRAME_MAP);
 
-为什么前端做？
+const loadBlockListFromStorage = (): Set<string> => {
+try {
+const storedList = localStorage.getItem(BLOCKLIST_STORAGE_KEY);
+if (storedList) {
+const parsedArray = JSON.parse(storedList);
+if (Array.isArray(parsedArray)) return new Set(parsedArray);
+}
+} catch (error) { console.error('[Blocklist] Failed to load blocklist:', error); }
+return new Set();
+};
 
-极低成本：在内存中生成 500 个 { time: x, value: 0 } 对象耗时几乎为 0。
+const saveBlockListToStorage = (blockList: Set<string>): void => {
+try {
+localStorage.setItem(BLOCKLIST_STORAGE_KEY, JSON.stringify(Array.from(blockList)));
+} catch (error) { console.error('[Blocklist] Failed to save blocklist:', error); }
+};
 
-统一坐标系：通过引入“隐形系列 (Ghost Series)”，你实际上是强行构建了一个统一的虚拟 X 轴。无论这个币是 1 分钟前生的还是 1 年前生的，它们在图表内部都拥有了相同的“时间骨架”。
+const ChartPageLayout: Component = () => {
+const [marketData, setMarketData] = createStore<MarketItem[]>([]);
+const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
+const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('volume1m');
+const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
+const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
+// 同步状态信号
+const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
+// 当前正在操作的图表ID，避免回环触发
+const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
 
-完美对齐：因为所有图表都有了相同的时间轴范围（真实数据+隐形数据），LWC 的 Logical Range（逻辑索引）和 Time Range（时间范围）在所有图表中就达成了一一对应关系。
+const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
+const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
 
-总结：前端补齐（Ghost Series 方案）是解决长短不一 K 线同步问题的最佳办法。
+const handleViewportChange = (newState: ViewportState | null) => {
+setViewportState(newState);
+};
 
-第二部分：代码实现
+const handleKeyDown = (e: KeyboardEvent) => {
+if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
-下面是集成“隐形系列 (Ghost Series)”的 SingleKlineChart.tsx。我优化了以下几点：
+code
+Code
+download
+content_copy
+expand_less
+if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
+    const newTimeframe = TIMEFRAME_MAP[e.key];
+    console.log(`[Layout] Hotkey '${e.key}' pressed. Changing timeframe to ${newTimeframe}`);
+    setActiveTimeframe(newTimeframe);
+    // 切换周期时重置同步状态，因为不同周期的逻辑索引意义不同（虽然 Ghost Series 试图对齐，但重置更安全）
+    if (viewMode() === 'grid') {
+        setViewportState(null);
+    }
+    return;
+}
 
-对齐到整点：Ghost 数据的生成会对齐到当前的 Timeframe（比如 1m 对齐到 00秒，1h 对齐到 00分），确保 9 个图的 X 轴刻度完全垂直对齐。
+if (e.key.toLowerCase() === 'f') {
+    if (viewMode() === 'grid') {
+        const hoveredTokenId = activeChartId();
+        if (hoveredTokenId) {
+            const token = rankedTokensForGrid().find(t => t.contractAddress === hoveredTokenId);
+            if (token) {
+                console.log(`[Layout] Entering single view for ${token.symbol}`);
+                setFocusedToken(token);
+                setViewMode('single');
+            }
+        }
+    } else {
+        console.log('[Layout] Exiting single view.');
+        setViewMode('grid');
+        setFocusedToken(null);
+    }
+}
 
-隔离 Y 轴：Ghost Series 绑定到左侧隐藏 Y 轴，绝不干扰右侧真实价格的 AutoScale。
+};
 
-无限回溯：默认补齐 1000 根（比 500 更稳），保证你在 9 图模式下随意拖拽也不会轻易“露底”。
+const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
+console.log([ChartPage Alert] [${alertType.toUpperCase()}] ${logMessage});
+};
+
+onMount(() => {
+if (!socket.connected) {
+socket.connect();
+}
+
+code
+Code
+download
+content_copy
+expand_less
+socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
+socket.on('disconnect', () => setLastUpdate('Disconnected'));
+socket.on('data-broadcast', (payload: DataPayload) => {
+    if (!payload.data || payload.data.length === 0) return;
+    const blocked = blockList();
+    
+    for (const newItem of payload.data) {
+        if (!blocked.has(newItem.contractAddress)) {
+            const oldItem = marketData.find(d => 
+                d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
+            );
+            if (oldItem) {
+                checkAndTriggerAlerts(newItem, oldItem, handleNewAlert);
+            }
+        }
+    }
+
+    setMarketData(produce(currentData => {
+        for (const item of payload.data) {
+            const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
+            if (index > -1) Object.assign(currentData[index], item);
+            else currentData.push(item);
+        }
+    }));
+    setLastUpdate(new Date().toLocaleTimeString());
+});
+
+initializeVoices();
+window.addEventListener('keydown', handleKeyDown);
+
+onCleanup(() => {
+    socket.off('connect');
+    socket.off('disconnect');
+    socket.off('data-broadcast');
+    window.removeEventListener('keydown', handleKeyDown);
+});
+
+});
+
+const handleBlockToken = (contractAddress: string) => {
+const newBlockList = new Set(blockList());
+newBlockList.add(contractAddress);
+setBlockList(newBlockList);
+saveBlockListToStorage(newBlockList);
+console.log([Blocklist] Token ${contractAddress} added.);
+};
+
+const rankedTokensForGrid = createMemo(() => {
+const rankBy = activeRankBy();
+const blocked = blockList();
+if (!rankBy) return [];
+return [...marketData]
+.filter(item => !blocked.has(item.contractAddress))
+.filter(item => item.icon && item[rankBy] != null)
+.sort((a, b) => {
+const valA = a[rankBy]!;
+const valB = b[rankBy]!;
+return (typeof valB === 'string' ? parseFloat(valB) : valB) -
+(typeof valA === 'string' ? parseFloat(valA) : valA);
+})
+.slice(0, 9);
+});
+
+const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
+console.log([Layout] User selected new ranking: ${rankBy}.);
+setActiveRankBy(rankBy);
+};
+
+const handleRankingItemClick = (item: MarketItem) => {
+const url = /token.html?address=${item.contractAddress}&chain=${item.chain};
+window.open(url, '_blank');
+};
+
+return (
+<div class="chart-page-container">
+<div class="left-sidebar">
+<CompactRankingListsContainer
+marketData={marketData}
+lastUpdate={lastUpdate()}
+onHeaderClick={handleRankingHeaderClick}
+blockList={blockList()}
+onItemClick={handleRankingItemClick}
+/>
+</div>
+<div class="right-chart-grid">
+<Show
+when={viewMode() === 'single' && focusedToken()}
+fallback={
+<>
+<div class="grid-header">
+<div class="active-timeframe-indicator">
+<span>Timeframe: </span>
+<strong>{activeTimeframe().toUpperCase()}</strong>
+<span class="hotkey-hint">(Keys: 1-5)</span>
+</div>
+</div>
+<MultiChartGrid
+tokens={rankedTokensForGrid()}
+onBlockToken={handleBlockToken}
+timeframe={activeTimeframe()}
+viewportState={viewportState()}
+onViewportChange={handleViewportChange}
+activeChartId={activeChartId()}
+onSetActiveChart={setActiveChartId}
+/>
+</>
+}
+>
+<SingleTokenView
+token={focusedToken()!}
+activeTimeframe={activeTimeframe()}
+/>
+</Show>
+</div>
+</div>
+);
+
+};
+
+export default ChartPageLayout;
+
+2. 更新 Grid 组件 (MultiChartGrid.tsx)
+
+透传新的类型定义。
+
+packages/frontend/src/MultiChartGrid.tsx
+code
+Code
+download
+content_copy
+expand_less
+// packages/frontend/src/MultiChartGrid.tsx
+import { Component, For, createMemo } from 'solid-js';
+import SingleKlineChart from './SingleKlineChart';
+import type { MarketItem } from 'shared-types';
+import type { ViewportState } from './ChartPageLayout';
+
+interface MultiChartGridProps {
+tokens: MarketItem[];
+onBlockToken: (contractAddress: string) => void;
+timeframe: string;
+viewportState: ViewportState | null;
+onViewportChange: (state: ViewportState | null) => void;
+activeChartId: string | null;
+onSetActiveChart: (id: string | null) => void;
+}
+
+const MultiChartGrid: Component<MultiChartGridProps> = (props) => {
+const chartData = createMemo(() => {
+const currentTokens = props.tokens || [];
+// 始终保持9个格子
+return Array.from({ length: 9 }).map((_, i) => currentTokens[i]);
+});
+
+code
+Code
+download
+content_copy
+expand_less
+return (
+    <div id="chart-grid-container">
+        <For each={chartData()}>
+            {(token) => (
+                <SingleKlineChart
+                    tokenInfo={token}
+                    onBlock={props.onBlockToken}
+                    timeframe={props.timeframe}
+                    viewportState={props.viewportState}
+                    onViewportChange={props.onViewportChange}
+                    activeChartId={props.activeChartId}
+                    onSetActiveChart={props.onSetActiveChart}
+                    showAxes={true}
+                />
+            )}
+        </For>
+    </div>
+);
+
+};
+
+export default MultiChartGrid;
+
+3. 核心实现 (SingleKlineChart.tsx)
+
+这是修改最关键的地方：
+
+Ghost Series: 保持不变，用于“撑开”坐标轴，确保所有图表都有相同的“未来”和“历史”空间。
+
+Sender: 使用 subscribeVisibleLogicalRangeChange 获取逻辑索引并广播。
+
+Receiver: 使用 setVisibleLogicalRange 接收并应用逻辑索引。
 
 packages/frontend/src/SingleKlineChart.tsx
+code
+Code
+download
+content_copy
+expand_less
+// packages/frontend/src/SingleKlineChart.tsx
 
+/** @jsxImportSource solid-js */
+
+import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time, LineSeries, LogicalRange } from 'lightweight-charts';
+import { socket } from './socket';
+import type { KlineUpdatePayload, KlineFetchErrorPayload } from './types';
+import type { MarketItem } from 'shared-types';
+import type { ViewportState } from './ChartPageLayout';
+
+const BACKEND_URL = 'http://localhost:3001';
+
+// --- 配置区 ---
+// 强制补齐的K线数量
+const FORCE_GHOST_CANDLE_COUNT = 1000;
+
+interface SingleKlineChartProps {
+tokenInfo: MarketItem | undefined;
+onBlock?: (contractAddress: string) => void;
+timeframe: string;
+viewportState: ViewportState | null;
+onViewportChange?: (state: ViewportState | null) => void;
+activeChartId: string | null;
+onSetActiveChart?: (id: string | null) => void;
+showAxes?: boolean;
+}
+
+const customPriceFormatter = (price: number): string => {
+if (price === 0) return '0';
+if (price < 0.000001) {
+return price.toFixed(12).replace(/.?0+$/, "");
+}
+if (price < 1) return price.toFixed(6);
+return price.toFixed(2);
+};
+
+const getIntervalSeconds = (timeframe: string): number => {
+const val = parseInt(timeframe);
+if (timeframe.endsWith('m')) return val * 60;
+if (timeframe.endsWith('h')) return val * 3600;
+if (timeframe.endsWith('d')) return val * 86400;
+return 60; // default 1m
+};
+
+const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
+let chartContainer: HTMLDivElement;
+let chart: IChartApi | null = null;
+let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+let ghostSeries: ISeriesApi<'Line'> | null = null;
+let resizeObserver: ResizeObserver | null = null;
+const [status, setStatus] = createSignal('Initializing...');
+
+code
+Code
+download
+content_copy
+expand_less
+// 🔒 状态锁
+let isProgrammaticUpdate = false;
+let isSyncPending = false;
+
+const getMyId = () => props.tokenInfo?.contractAddress || '';
+
+const log = (msg: string, ...args: any[]) => {
+    // console.log(`[Chart ${props.tokenInfo?.symbol || 'Wait'}] ${msg}`, ...args);
+};
+
+const cleanupChart = () => {
+    if (chart) {
+        chart.remove();
+        chart = null;
+        candlestickSeries = null;
+        ghostSeries = null;
+    }
+};
+
+const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
+    socket.off('kline_update', handleKlineUpdate);
+    socket.emit('unsubscribe_kline', payload);
+};
+
+const handleKlineUpdate = (update: KlineUpdatePayload) => {
+    const info = props.tokenInfo;
+    if (!info || !candlestickSeries) return;
+    
+    const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
+    const poolId = chainToPoolId[info.chain.toLowerCase()];
+    if (!poolId) return;
+
+    const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
+
+    if (update.room === expectedRoom) {
+        const newCandle = update.data as CandlestickData<number>;
+        const currentData = candlestickSeries.data();
+        if (currentData.length > 0) {
+            const lastCandle = currentData[currentData.length - 1] as CandlestickData<number>;
+            if (newCandle.time < lastCandle.time) return;
+        }
+        candlestickSeries.update(newCandle);
+    }
+};
+
+// 👻 生成隐形数据
+// 这一步至关重要：它确保了所有图表的 Logical Index 0 对应着相同的物理时间
+const generateGhostData = (timeframe: string) => {
+    const intervalSec = getIntervalSeconds(timeframe);
+    const nowAligned = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
+    
+    const data = [];
+    for (let i = FORCE_GHOST_CANDLE_COUNT; i >= 0; i--) {
+        data.push({
+            time: (nowAligned - (i * intervalSec)) as Time,
+            value: 0 
+        });
+    }
+    return data;
+};
+
+createEffect(() => {
+    const info = props.tokenInfo;
+    const timeframe = props.timeframe;
+
+    if (!info || !timeframe) {
+        cleanupChart();
+        setStatus('No token selected.');
+        return;
+    }
+
+    cleanupChart();
+    setStatus(`Loading ${info.symbol}...`);
+    
+    if (!chartContainer) return;
+
+    try {
+        chart = createChart(chartContainer, {
+            width: chartContainer.clientWidth, 
+            height: chartContainer.clientHeight,
+            layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#333' },
+            grid: { vertLines: { color: '#f0f3fa' }, horzLines: { color: '#f0f3fa' } },
+            timeScale: { 
+                visible: !!props.showAxes, 
+                borderColor: '#cccccc', 
+                timeVisible: true, 
+                secondsVisible: false,
+                rightOffset: 12, 
+                shiftVisibleRangeOnNewBar: true, 
+                fixLeftEdge: false, 
+                fixRightEdge: false, // 允许拖动离开右边缘
+            },
+            rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
+            leftPriceScale: { visible: false, autoScale: false }, 
+            handleScroll: true, 
+            handleScale: true,
+        });
+
+        // 1. Ghost Series
+        ghostSeries = chart.addSeries(LineSeries, {
+            color: 'rgba(0,0,0,0)', 
+            lineWidth: 1,
+            priceScaleId: 'left',   
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+        });
+        ghostSeries.setData(generateGhostData(timeframe));
+
+        // 2. Real Series
+        candlestickSeries = chart.addSeries(CandlestickSeries, {
+            priceFormat: { 
+                type: 'price', 
+                precision: 10,
+                minMove: 0.00000001, 
+                formatter: customPriceFormatter 
+            },
+            upColor: '#28a745', downColor: '#dc3545', borderDownColor: '#dc3545',
+            borderUpColor: '#28a745', wickDownColor: '#dc3545', wickUpColor: '#28a745',
+            priceScaleId: 'right'
+        });
+
+    } catch (e) {
+        console.error(`[Chart:${info.symbol}] ❌ Fatal Error creating chart:`, e);
+        return;
+    }
+
+    // [SENDER] ✨✨✨ 核心修改：发送 Logical Range（逻辑索引）而非 TimeRange ✨✨✨
+    // 监听逻辑索引变化，这代表了用户拖动或缩放了网格，而不只是时间
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        if (isProgrammaticUpdate) return;
+
+        const myId = getMyId().toLowerCase();
+        const activeId = props.activeChartId?.toLowerCase();
+
+        // 只有当前鼠标所在的激活图表，才有资格发送同步信号
+        if (myId === activeId) {
+            if (!isSyncPending) {
+                isSyncPending = true;
+                requestAnimationFrame(() => {
+                    // 获取逻辑索引范围 (e.g. from: -5.5, to: 50.2)
+                    const logicalRange = chart?.timeScale().getVisibleLogicalRange();
+                    if (logicalRange && props.onViewportChange) {
+                        props.onViewportChange({ 
+                            from: logicalRange.from, 
+                            to: logicalRange.to 
+                        });
+                    }
+                    isSyncPending = false;
+                });
+            }
+        }
+    });
+
+    const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
+
+    const processData = (data: any[], isInitial: boolean) => {
+        try {
+            const sortedData = data
+                .map(d => ({ ...d, time: Number(d.time) }))
+                .sort((a, b) => a.time - b.time);
+
+            if (isInitial) {
+                candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
+                
+                // 初始位置逻辑
+                if (props.viewportState) {
+                    // 如果父级有同步状态，使用 setVisibleLogicalRange 强制对齐
+                     chart?.timeScale().setVisibleLogicalRange({
+                        from: props.viewportState.from,
+                        to: props.viewportState.to
+                    });
+                } else {
+                    chart?.timeScale().scrollToRealTime();
+                }
+            } else {
+                const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
+                const newDataMap = new Map(currentData.map(d => [d.time, d]));
+                sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
+                const merged = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
+                candlestickSeries?.setData(merged);
+            }
+            setStatus(`Live`);
+        } catch (e) {
+            console.error(`[Chart:${info.symbol}] ❌ Failed to process data:`, e);
+        }
+    };
+
+    const handleInitialData = (response: any) => {
+        if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
+        if (response.data && response.data.length > 0) {
+            processData(response.data, true);
+        } else {
+            setStatus(`No Data`);
+        }
+    };
+    
+    const handleCompletedData = (response: any) => {
+        if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
+        if (response.data && response.data.length > 0) {
+            processData(response.data, false);
+        }
+    };
+    
+    const handleFetchError = (err: KlineFetchErrorPayload) => {
+         const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
+         if(err.key === key) {
+            setStatus(`Error`);
+         }
+    };
+
+    socket.on('historical_kline_initial', handleInitialData);
+    socket.on('historical_kline_completed', handleCompletedData);
+    socket.on('kline_fetch_error', handleFetchError);
+    socket.on('kline_update', handleKlineUpdate);
+
+    socket.emit('request_historical_kline', payload);
+    socket.emit('subscribe_kline', payload); 
+
+    onCleanup(() => {
+        unsubscribeRealtime(payload);
+        socket.off('historical_kline_initial', handleInitialData);
+        socket.off('historical_kline_completed', handleCompletedData);
+        socket.off('kline_fetch_error', handleFetchError);
+        cleanupChart();
+    });
+});
+
+// [RECEIVER] ✨✨✨ 核心修改：接收逻辑索引同步 ✨✨✨
+createEffect(() => {
+    const vs = props.viewportState;
+    if (!chart || !vs || !props.tokenInfo) return;
+
+    const myId = getMyId().toLowerCase();
+    const activeId = props.activeChartId?.toLowerCase();
+
+    // 不接收自己的信号，避免死循环
+    if (myId === activeId) return;
+
+    isProgrammaticUpdate = true;
+    try {
+        // 使用 setVisibleLogicalRange 强制所有图表对齐到相同的“格子数”
+        // 配合 Ghost Series，无论数据多少，网格的几何形状（Bar Spacing）都将严格一致
+        chart.timeScale().setVisibleLogicalRange({
+            from: vs.from,
+            to: vs.to
+        });
+    } catch (e) {
+       // ignore potential errors during heavy data loading
+    }
+    // 立即解锁
+    setTimeout(() => { isProgrammaticUpdate = false; }, 0);
+});
+
+onMount(() => {
+    resizeObserver = new ResizeObserver(entries => {
+        if (chart && chartContainer) {
+            const { width, height } = entries[0].contentRect;
+            chart.applyOptions({ width, height });
+        }
+    });
+    if (chartContainer) {
+        resizeObserver.observe(chartContainer);
+    }
+});
+
+onCleanup(() => resizeObserver?.disconnect());
+
+return (
+    <div 
+        class="single-chart-wrapper"
+        onMouseEnter={() => {
+            if (props.tokenInfo) {
+                props.onSetActiveChart?.(props.tokenInfo.contractAddress);
+            }
+        }}
+    >
+        <div class="chart-header">
+            <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
+                <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
+                <span class="symbol-title">{props.tokenInfo!.symbol}</span>
+                <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
+                <button class="block-button" title={`屏蔽 ${props.tokenInfo!.symbol}`} onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}>
+                    🚫
+                </button>
+            </Show>
+        </div>
+        <div ref={chartContainer!} class="chart-container" />
+    </div>
+);
+
+};
+
+export default SingleKlineChart;
