@@ -1,9 +1,8 @@
 // packages/frontend/src/SingleKlineChart.tsx
-
 /** @jsxImportSource solid-js */
 
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time, LineSeries } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time, LineSeries, PriceFormat } from 'lightweight-charts';
 import { socket } from './socket';
 import type { KlineUpdatePayload, KlineFetchErrorPayload } from './types';
 import type { MarketItem } from 'shared-types';
@@ -13,7 +12,6 @@ import type { ChartTheme } from './themes';
 const BACKEND_URL = 'http://localhost:3001';
 
 // --- 配置区 ---
-// 强制补齐的K线数量，确保新币种也能拥有足够长的“时间骨架”以支持同步拖动
 const FORCE_GHOST_CANDLE_COUNT = 1000;
 
 interface SingleKlineChartProps {
@@ -28,13 +26,54 @@ interface SingleKlineChartProps {
     theme: ChartTheme;
 }
 
-const customPriceFormatter = (price: number): string => {
-    if (price === 0) return '0';
-    if (price < 0.000001) {
-        return price.toFixed(12).replace(/\.?0+$/, "");
+// ✨ 核心修改 1: 使用对数函数重写自适应精度计算
+const getAdaptivePriceFormat = (price: number): PriceFormat => {
+    // 处理价格为0或无效的边缘情况，返回一个合理的默认值
+    if (!price || price <= 0) {
+        return { type: 'price', precision: 4, minMove: 0.0001 };
     }
-    if (price < 1) return price.toFixed(6);
-    return price.toFixed(2);
+
+    let precision: number;
+
+    if (price >= 1) {
+        // 对于大于等于1的价格，逻辑保持不变，通常2位小数足够
+        precision = 2;
+    } else {
+        // 对于小于1的价格，使用对数计算
+        // 1. 计算第一个有效数字的位置
+        const firstSignificantDigitPosition = Math.ceil(-Math.log10(price));
+        
+        // 2. 在此基础上增加3位小数以显示细节 (总共约4位有效数字)
+        precision = firstSignificantDigitPosition + 3;
+    }
+
+    // 设定一个最大精度上限(10)，和最小精度下限(2)，防止极端情况
+    const finalPrecision = Math.min(Math.max(precision, 2), 10);
+    
+    // minMove 应该是 1 / 10^precision
+    const minMove = 1 / Math.pow(10, finalPrecision);
+
+    return {
+        type: 'price',
+        precision: finalPrecision,
+        minMove: minMove,
+    };
+};
+
+
+// 价格格式化函数，主要用于移除toFixed后可能的多余的0
+const customPriceFormatter = (price: number): string => {
+    // 使用 Intl.NumberFormat 避免科学计数法，并能处理大量小数
+    const s = new Intl.NumberFormat('en-US', {
+        maximumFractionDigits: 10,
+        useGrouping: false
+    }).format(price);
+    
+    // 移除末尾不必要的零和小数点
+    if (s.includes('.')) {
+        return s.replace(/\.?0+$/, '');
+    }
+    return s;
 };
 
 // 辅助：获取时间周期的秒数
@@ -86,15 +125,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         
         const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
         const poolId = chainToPoolId[info.chain.toLowerCase()];
-        // 容错：如果找不到 chain ID，默认不处理
         if (!poolId) return;
 
         const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
 
         if (update.room === expectedRoom) {
             const newCandle = update.data as CandlestickData<number>;
-            
-            // 防止 "Cannot update oldest data" 错误
             const currentData = candlestickSeries.data();
             if (currentData.length > 0) {
                 const lastCandle = currentData[currentData.length - 1] as CandlestickData<number>;
@@ -104,21 +140,16 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 }
             }
             candlestickSeries.update(newCandle);
-            log(`⚡ Realtime update received: ${newCandle.close}`);
         }
     };
 
-    // 👻 生成隐形数据：关键在于“撑开”时间轴，并与 Timeframe 对齐
+    // 👻 生成隐形数据
     const generateGhostData = (timeframe: string) => {
         const intervalSec = getIntervalSeconds(timeframe);
         const nowAligned = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
-        
         const data = [];
         for (let i = FORCE_GHOST_CANDLE_COUNT; i >= 0; i--) {
-            data.push({
-                time: (nowAligned - (i * intervalSec)) as Time,
-                value: 0 
-            });
+            data.push({ time: (nowAligned - (i * intervalSec)) as Time, value: 0 });
         }
         return data;
     };
@@ -127,27 +158,15 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     createEffect(() => {
         if (chart && props.theme) {
             const t = props.theme;
-            // Update Chart Layout & Grid
             chart.applyOptions({
-                layout: {
-                    background: { type: ColorType.Solid, color: t.layout.background },
-                    textColor: t.layout.textColor,
-                },
-                grid: {
-                    vertLines: { color: t.grid.vertLines },
-                    horzLines: { color: t.grid.horzLines },
-                },
+                layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
+                grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
             });
-
-            // Update Candlestick Colors
             if (candlestickSeries) {
                 candlestickSeries.applyOptions({
-                    upColor: t.candle.upColor,
-                    downColor: t.candle.downColor,
-                    borderUpColor: t.candle.borderUpColor,
-                    borderDownColor: t.candle.borderDownColor,
-                    wickUpColor: t.candle.wickUpColor,
-                    wickDownColor: t.candle.wickDownColor,
+                    upColor: t.candle.upColor, downColor: t.candle.downColor,
+                    borderUpColor: t.candle.borderUpColor, borderDownColor: t.candle.borderDownColor,
+                    wickUpColor: t.candle.wickUpColor, wickDownColor: t.candle.wickDownColor,
                 });
             }
         }
@@ -160,96 +179,63 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const t = props.theme; 
 
         if (!info || !timeframe) {
-            cleanupChart();
-            setStatus('No token selected.');
-            return;
+            cleanupChart(); setStatus('No token selected.'); return;
         }
 
-        cleanupChart();
-        setStatus(`Loading ${info.symbol}...`);
+        cleanupChart(); setStatus(`Loading ${info.symbol}...`);
         
         if (!chartContainer) return;
 
         try {
-            log('Creating new LWC instance...');
             chart = createChart(chartContainer, {
-                width: chartContainer.clientWidth, 
-                height: chartContainer.clientHeight,
-                layout: { 
-                    background: { type: ColorType.Solid, color: t.layout.background }, 
-                    textColor: t.layout.textColor 
-                },
-                grid: { 
-                    vertLines: { color: t.grid.vertLines }, 
-                    horzLines: { color: t.grid.horzLines } 
-                },
+                width: chartContainer.clientWidth, height: chartContainer.clientHeight,
+                layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
+                grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
                 timeScale: { 
-                    visible: !!props.showAxes, 
-                    borderColor: '#cccccc', 
-                    timeVisible: true, 
-                    secondsVisible: false,
-                    rightOffset: 12, 
-                    shiftVisibleRangeOnNewBar: true, 
-                    fixLeftEdge: false, 
-                    fixRightEdge: false, 
+                    visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false,
+                    rightOffset: 12, shiftVisibleRangeOnNewBar: true, fixLeftEdge: false, fixRightEdge: false, 
                 },
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
                 leftPriceScale: { visible: false, autoScale: false }, 
-                handleScroll: true, 
-                handleScale: true,
+                handleScroll: true, handleScale: true,
             });
 
-            // 1. 添加 Ghost Series (隐形骨架)
             ghostSeries = chart.addSeries(LineSeries, {
-                color: 'rgba(0,0,0,0)', 
-                lineWidth: 1,
-                priceScaleId: 'left',   
-                crosshairMarkerVisible: false,
-                lastValueVisible: false,
-                priceLineVisible: false,
+                color: 'rgba(0,0,0,0)', lineWidth: 1, priceScaleId: 'left',   
+                crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
             });
             ghostSeries.setData(generateGhostData(timeframe));
 
-            // 2. 添加真实 K 线系列
+            // ✨ 核心修改 2: 在创建 K 线系列时，动态生成 priceFormat
+            const priceFormatWithFormatter = {
+                ...getAdaptivePriceFormat(info.price || 0),
+                formatter: customPriceFormatter,
+            };
+
             candlestickSeries = chart.addSeries(CandlestickSeries, {
-                priceFormat: { 
-                    type: 'price', 
-                    precision: 10,
-                    minMove: 0.00000001, 
-                    formatter: customPriceFormatter 
-                },
-                upColor: t.candle.upColor, 
-                downColor: t.candle.downColor, 
-                borderDownColor: t.candle.borderDownColor,
-                borderUpColor: t.candle.borderUpColor, 
-                wickDownColor: t.candle.wickDownColor, 
-                wickUpColor: t.candle.wickUpColor,
+                priceFormat: priceFormatWithFormatter,
+                upColor: t.candle.upColor, downColor: t.candle.downColor, 
+                borderDownColor: t.candle.borderDownColor, borderUpColor: t.candle.borderUpColor, 
+                wickDownColor: t.candle.wickDownColor, wickUpColor: t.candle.wickUpColor,
                 priceScaleId: 'right'
             });
 
         } catch (e) {
             console.error(`[Chart:${info.symbol}] ❌ Fatal Error creating chart:`, e);
-            setStatus(`Chart Error`);
-            return;
+            setStatus(`Chart Error`); return;
         }
 
-        // [SENDER] 发送 Logical Range
         chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
             if (isProgrammaticUpdate) return;
-
             const myId = getMyId().toLowerCase();
             const activeId = props.activeChartId?.toLowerCase();
-
             if (myId === activeId) {
                 if (!isSyncPending) {
                     isSyncPending = true;
                     requestAnimationFrame(() => {
                         const logicalRange = chart?.timeScale().getVisibleLogicalRange();
                         if (logicalRange && props.onViewportChange) {
-                            props.onViewportChange({ 
-                                from: logicalRange.from, 
-                                to: logicalRange.to 
-                            });
+                            props.onViewportChange({ from: logicalRange.from, to: logicalRange.to });
                         }
                         isSyncPending = false;
                     });
@@ -259,24 +245,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
-        // 数据处理通用逻辑
         const processData = (data: any[], isInitial: boolean) => {
             try {
-                const sortedData = data
-                    .map(d => ({ ...d, time: Number(d.time) }))
-                    .sort((a, b) => a.time - b.time);
-
+                const sortedData = data.map(d => ({ ...d, time: Number(d.time) })).sort((a, b) => a.time - b.time);
                 if (isInitial) {
                     candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
-                    
                     if (props.viewportState) {
-                         chart?.timeScale().setVisibleLogicalRange({
-                            from: props.viewportState.from,
-                            to: props.viewportState.to
-                        });
-                    } else {
-                        chart?.timeScale().scrollToRealTime();
-                    }
+                         chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
+                    } else { chart?.timeScale().scrollToRealTime(); }
                 } else {
                     const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
                     const newDataMap = new Map(currentData.map(d => [d.time, d]));
@@ -285,33 +261,21 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     candlestickSeries?.setData(merged);
                 }
                 setStatus(`Live`);
-            } catch (e) {
-                console.error(`[Chart:${info.symbol}] ❌ Failed to process data:`, e);
-            }
+            } catch (e) { console.error(`[Chart:${info.symbol}] ❌ Failed to process data:`, e); }
         };
 
         const handleInitialData = (response: any) => {
             if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
-            if (response.data && response.data.length > 0) {
-                processData(response.data, true);
-            } else {
-                setStatus(`No Data`);
-            }
+            if (response.data && response.data.length > 0) processData(response.data, true);
+            else setStatus(`No Data`);
         };
-        
         const handleCompletedData = (response: any) => {
             if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
-            if (response.data && response.data.length > 0) {
-                processData(response.data, false);
-            }
+            if (response.data && response.data.length > 0) processData(response.data, false);
         };
-        
         const handleFetchError = (err: KlineFetchErrorPayload) => {
              const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
-             if(err.key === key) {
-                log(`❌ Fetch error: ${err.error}`);
-                setStatus(`Error`);
-             }
+             if(err.key === key) { log(`❌ Fetch error: ${err.error}`); setStatus(`Error`); }
         };
 
         socket.on('historical_kline_initial', handleInitialData);
@@ -335,20 +299,13 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     createEffect(() => {
         const vs = props.viewportState;
         if (!chart || !vs || !props.tokenInfo) return;
-
         const myId = getMyId().toLowerCase();
         const activeId = props.activeChartId?.toLowerCase();
-
         if (myId === activeId) return;
-
         isProgrammaticUpdate = true;
         try {
-            chart.timeScale().setVisibleLogicalRange({
-                from: vs.from,
-                to: vs.to
-            });
+            chart.timeScale().setVisibleLogicalRange({ from: vs.from, to: vs.to });
         } catch (e) { }
-        
         setTimeout(() => { isProgrammaticUpdate = false; }, 0);
     });
 
@@ -359,9 +316,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 chart.applyOptions({ width, height });
             }
         });
-        if (chartContainer) {
-            resizeObserver.observe(chartContainer);
-        }
+        if (chartContainer) resizeObserver.observe(chartContainer);
     });
 
     onCleanup(() => resizeObserver?.disconnect());
@@ -370,19 +325,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         <div 
             class="single-chart-wrapper"
             style={{ background: props.theme.layout.background }} 
-            onMouseEnter={() => {
-                if (props.tokenInfo) {
-                    props.onSetActiveChart?.(props.tokenInfo.contractAddress);
-                }
-            }}
+            onMouseEnter={() => props.onSetActiveChart?.(props.tokenInfo?.contractAddress || '')}
         >
-            {/* ✨ 修复: 显式设置 Header 的背景色和文字颜色，覆盖 CSS 中的默认值 */}
             <div 
                 class="chart-header"
                 style={{
-                    "background-color": props.theme.layout.background, // 与图表背景一致
-                    "color": props.theme.layout.textColor,             // 适配深色模式文字
-                    "border-bottom": `1px solid ${props.theme.grid.horzLines}` // 增加分割线
+                    "background-color": props.theme.layout.background,
+                    "color": props.theme.layout.textColor,
+                    "border-bottom": `1px solid ${props.theme.grid.horzLines}`
                 }}
             >
                 <Show when={props.tokenInfo} fallback={<span class="placeholder" style={{color: props.theme.layout.textColor}}>{status()}</span>}>
