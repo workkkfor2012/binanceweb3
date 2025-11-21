@@ -2,9 +2,20 @@
 /** @jsxImportSource solid-js */
 
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
-import { createChart, ColorType, IChartApi, ISeriesApi, CandlestickData, CandlestickSeries, Time, LineSeries, PriceFormat } from 'lightweight-charts';
+import { 
+    createChart, 
+    ColorType, 
+    IChartApi, 
+    ISeriesApi, 
+    CandlestickData, 
+    CandlestickSeries, 
+    Time, 
+    LineSeries, 
+    PriceFormat,
+    HistogramSeries 
+} from 'lightweight-charts';
 import { socket } from './socket';
-import type { KlineUpdatePayload, KlineFetchErrorPayload } from './types';
+import type { KlineUpdatePayload, KlineFetchErrorPayload, LightweightChartKline } from './types';
 import type { MarketItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
 import type { ChartTheme } from './themes';
@@ -26,9 +37,8 @@ interface SingleKlineChartProps {
     theme: ChartTheme;
 }
 
-// ✨ 核心修改 1: 使用对数函数重写自适应精度计算
+// 自适应精度计算
 const getAdaptivePriceFormat = (price: number): PriceFormat => {
-    // 处理价格为0或无效的边缘情况，返回一个合理的默认值
     if (!price || price <= 0) {
         return { type: 'price', precision: 4, minMove: 0.0001 };
     }
@@ -36,21 +46,13 @@ const getAdaptivePriceFormat = (price: number): PriceFormat => {
     let precision: number;
 
     if (price >= 1) {
-        // 对于大于等于1的价格，逻辑保持不变，通常2位小数足够
         precision = 2;
     } else {
-        // 对于小于1的价格，使用对数计算
-        // 1. 计算第一个有效数字的位置
         const firstSignificantDigitPosition = Math.ceil(-Math.log10(price));
-        
-        // 2. 在此基础上增加3位小数以显示细节 (总共约4位有效数字)
         precision = firstSignificantDigitPosition + 3;
     }
 
-    // 设定一个最大精度上限(10)，和最小精度下限(2)，防止极端情况
     const finalPrecision = Math.min(Math.max(precision, 2), 10);
-    
-    // minMove 应该是 1 / 10^precision
     const minMove = 1 / Math.pow(10, finalPrecision);
 
     return {
@@ -61,22 +63,18 @@ const getAdaptivePriceFormat = (price: number): PriceFormat => {
 };
 
 
-// 价格格式化函数，主要用于移除toFixed后可能的多余的0
 const customPriceFormatter = (price: number): string => {
-    // 使用 Intl.NumberFormat 避免科学计数法，并能处理大量小数
     const s = new Intl.NumberFormat('en-US', {
         maximumFractionDigits: 10,
         useGrouping: false
     }).format(price);
     
-    // 移除末尾不必要的零和小数点
     if (s.includes('.')) {
         return s.replace(/\.?0+$/, '');
     }
     return s;
 };
 
-// 辅助：获取时间周期的秒数
 const getIntervalSeconds = (timeframe: string): number => {
     const val = parseInt(timeframe);
     if (timeframe.endsWith('m')) return val * 60;
@@ -89,11 +87,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let chartContainer: HTMLDivElement;
     let chart: IChartApi | null = null;
     let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
+    let volumeSeries: ISeriesApi<'Histogram'> | null = null; 
     let ghostSeries: ISeriesApi<'Line'> | null = null;
     let resizeObserver: ResizeObserver | null = null;
     const [status, setStatus] = createSignal('Initializing...');
 
-    // 🔒 状态锁：防止视口同步产生的死循环
+    // 🔒 状态锁
     let isProgrammaticUpdate = false;
     let isSyncPending = false;
 
@@ -109,6 +108,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             chart.remove();
             chart = null;
             candlestickSeries = null;
+            volumeSeries = null;
             ghostSeries = null;
         }
     };
@@ -130,7 +130,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
 
         if (update.room === expectedRoom) {
-            const newCandle = update.data as CandlestickData<number>;
+            const newCandle = update.data as LightweightChartKline;
             const currentData = candlestickSeries.data();
             if (currentData.length > 0) {
                 const lastCandle = currentData[currentData.length - 1] as CandlestickData<number>;
@@ -139,11 +139,20 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     return;
                 }
             }
-            candlestickSeries.update(newCandle);
+            candlestickSeries.update(newCandle as CandlestickData<number>);
+
+            // ✨ Update Volume
+            if (volumeSeries && newCandle.volume !== undefined) {
+                const isUp = newCandle.close >= newCandle.open;
+                volumeSeries.update({
+                    time: newCandle.time as Time,
+                    value: newCandle.volume,
+                    color: isUp ? props.theme.candle.upColor : props.theme.candle.downColor
+                });
+            }
         }
     };
 
-    // 👻 生成隐形数据
     const generateGhostData = (timeframe: string) => {
         const intervalSec = getIntervalSeconds(timeframe);
         const nowAligned = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
@@ -162,12 +171,32 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
                 grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
             });
+            
             if (candlestickSeries) {
                 candlestickSeries.applyOptions({
                     upColor: t.candle.upColor, downColor: t.candle.downColor,
                     borderUpColor: t.candle.borderUpColor, borderDownColor: t.candle.borderDownColor,
                     wickUpColor: t.candle.wickUpColor, wickDownColor: t.candle.wickDownColor,
                 });
+
+                // ✨ Sync Volume Colors with Theme
+                if (volumeSeries) {
+                    const candles = candlestickSeries.data() as CandlestickData<number>[];
+                    const volumes = volumeSeries.data() as any[]; 
+                    
+                    if (candles.length === volumes.length && candles.length > 0) {
+                        const newVolData = volumes.map((v, i) => {
+                            const c = candles[i];
+                            const isUp = c.close >= c.open;
+                            return {
+                                time: v.time,
+                                value: v.value,
+                                color: isUp ? t.candle.upColor : t.candle.downColor
+                            };
+                        });
+                        volumeSeries.setData(newVolData);
+                    }
+                }
             }
         }
     });
@@ -206,7 +235,21 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             });
             ghostSeries.setData(generateGhostData(timeframe));
 
-            // ✨ 核心修改 2: 在创建 K 线系列时，动态生成 priceFormat
+            // ✨ 核心修复：先创建 Series，注册 ID 'volume'
+            volumeSeries = chart.addSeries(HistogramSeries, {
+                priceFormat: { type: 'volume' },
+                priceScaleId: 'volume', // 这里注册了 volume ID
+            });
+
+            // ✨ 核心修复：现在可以安全地配置 'volume' Scale 了
+            chart.priceScale('volume').applyOptions({
+                scaleMargins: {
+                    top: 0.8, // 成交量显示在底部 20%
+                    bottom: 0,
+                },
+                visible: false, // 隐藏左侧/右侧的成交量数值轴，保持整洁
+            });
+
             const priceFormatWithFormatter = {
                 ...getAdaptivePriceFormat(info.price || 0),
                 formatter: customPriceFormatter,
@@ -248,17 +291,35 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const processData = (data: any[], isInitial: boolean) => {
             try {
                 const sortedData = data.map(d => ({ ...d, time: Number(d.time) })).sort((a, b) => a.time - b.time);
+                
+                // ✨ Prepare Volume Data
+                const volData = sortedData.map(d => ({
+                    time: d.time,
+                    value: d.volume,
+                    color: (d.close >= d.open) ? t.candle.upColor : t.candle.downColor
+                }));
+
                 if (isInitial) {
                     candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
+                    volumeSeries?.setData(volData);
+                    
                     if (props.viewportState) {
                          chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
                     } else { chart?.timeScale().scrollToRealTime(); }
                 } else {
+                    // Merge Candles
                     const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
                     const newDataMap = new Map(currentData.map(d => [d.time, d]));
                     sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
                     const merged = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
                     candlestickSeries?.setData(merged);
+
+                    // ✨ Merge Volume
+                    const currentVolData = (volumeSeries?.data() as any[] || []);
+                    const newVolMap = new Map(currentVolData.map(d => [d.time, d]));
+                    volData.forEach(d => newVolMap.set(d.time as number, d));
+                    const mergedVol = Array.from(newVolMap.values()).sort((a: any, b: any) => a.time - b.time);
+                    volumeSeries?.setData(mergedVol);
                 }
                 setStatus(`Live`);
             } catch (e) { console.error(`[Chart:${info.symbol}] ❌ Failed to process data:`, e); }
