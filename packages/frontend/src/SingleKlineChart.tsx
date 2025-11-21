@@ -141,12 +141,16 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             }
             candlestickSeries.update(newCandle as CandlestickData<number>);
 
-            // ✨ Update Volume
+            // ✨ Update Volume (Approximate Turnover)
             if (volumeSeries && newCandle.volume !== undefined) {
                 const isUp = newCandle.close >= newCandle.open;
+                // ✨ 核心修改：使用 (O+H+L+C)/4 计算平均价格，从而得到更准确的成交额
+                const avgPrice = (newCandle.open + newCandle.high + newCandle.low + newCandle.close) / 4;
+                const amount = newCandle.volume * avgPrice;
+                
                 volumeSeries.update({
                     time: newCandle.time as Time,
-                    value: newCandle.volume,
+                    value: amount,
                     color: isUp ? props.theme.candle.upColor : props.theme.candle.downColor
                 });
             }
@@ -235,19 +239,22 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             });
             ghostSeries.setData(generateGhostData(timeframe));
 
-            // ✨ 核心修复：先创建 Series，注册 ID 'volume'
+            // ✨ 先创建 Series，注册 ID 'volume'
             volumeSeries = chart.addSeries(HistogramSeries, {
-                priceFormat: { type: 'volume' },
-                priceScaleId: 'volume', // 这里注册了 volume ID
+                priceFormat: { 
+                    type: 'volume', 
+                    precision: 2, // 金额通常保留2位或0位小数
+                },
+                priceScaleId: 'volume', 
             });
 
-            // ✨ 核心修复：现在可以安全地配置 'volume' Scale 了
+            // ✨ 配置 'volume' Scale
             chart.priceScale('volume').applyOptions({
                 scaleMargins: {
-                    top: 0.8, // 成交量显示在底部 20%
+                    top: 0.8, 
                     bottom: 0,
                 },
-                visible: false, // 隐藏左侧/右侧的成交量数值轴，保持整洁
+                visible: false, 
             });
 
             const priceFormatWithFormatter = {
@@ -292,12 +299,16 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             try {
                 const sortedData = data.map(d => ({ ...d, time: Number(d.time) })).sort((a, b) => a.time - b.time);
                 
-                // ✨ Prepare Volume Data
-                const volData = sortedData.map(d => ({
-                    time: d.time,
-                    value: d.volume,
-                    color: (d.close >= d.open) ? t.candle.upColor : t.candle.downColor
-                }));
+                // ✨ Prepare Volume Data (Calculated as Amount using OHLC Avg)
+                const volData = sortedData.map(d => {
+                    // ✨ 核心修改：使用 (O+H+L+C)/4
+                    const avgPrice = (d.open + d.high + d.low + d.close) / 4;
+                    return {
+                        time: d.time,
+                        value: d.volume * avgPrice,
+                        color: (d.close >= d.open) ? t.candle.upColor : t.candle.downColor
+                    };
+                });
 
                 if (isInitial) {
                     candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
