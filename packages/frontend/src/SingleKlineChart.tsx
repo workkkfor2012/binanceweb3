@@ -25,7 +25,7 @@ interface SingleKlineChartProps {
     activeChartId: string | null;
     onSetActiveChart?: (id: string | null) => void;
     showAxes?: boolean;
-    theme: ChartTheme; // ✨ New Prop
+    theme: ChartTheme;
 }
 
 const customPriceFormatter = (price: number): string => {
@@ -61,7 +61,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     const getMyId = () => props.tokenInfo?.contractAddress || '';
 
     const log = (msg: string, ...args: any[]) => {
-        // 仅在开发模式或需要调试特定图表时开启
         // console.log(`[Chart ${props.tokenInfo?.symbol || 'Wait'}] ${msg}`, ...args);
     };
 
@@ -112,8 +111,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     // 👻 生成隐形数据：关键在于“撑开”时间轴，并与 Timeframe 对齐
     const generateGhostData = (timeframe: string) => {
         const intervalSec = getIntervalSeconds(timeframe);
-        // 核心：向下取整对齐，确保 9 个图表的 Ghost K 线时间戳完全一致
-        // 这样所有图表的 Logical Index 0 都对应着同一个“当前时间”
         const nowAligned = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
         
         const data = [];
@@ -123,7 +120,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 value: 0 
             });
         }
-        log(`👻 Generated ${data.length} ghost candles ending at ${nowAligned}`);
         return data;
     };
 
@@ -161,7 +157,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     createEffect(() => {
         const info = props.tokenInfo;
         const timeframe = props.timeframe;
-        const t = props.theme; // ✨ Get initial theme
+        const t = props.theme; 
 
         if (!info || !timeframe) {
             cleanupChart();
@@ -180,11 +176,11 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 width: chartContainer.clientWidth, 
                 height: chartContainer.clientHeight,
                 layout: { 
-                    background: { type: ColorType.Solid, color: t.layout.background }, // ✨ Use theme
+                    background: { type: ColorType.Solid, color: t.layout.background }, 
                     textColor: t.layout.textColor 
                 },
                 grid: { 
-                    vertLines: { color: t.grid.vertLines }, // ✨ Use theme
+                    vertLines: { color: t.grid.vertLines }, 
                     horzLines: { color: t.grid.horzLines } 
                 },
                 timeScale: { 
@@ -222,7 +218,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     minMove: 0.00000001, 
                     formatter: customPriceFormatter 
                 },
-                // ✨ Use theme colors initially
                 upColor: t.candle.upColor, 
                 downColor: t.candle.downColor, 
                 borderDownColor: t.candle.borderDownColor,
@@ -238,7 +233,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             return;
         }
 
-        // [SENDER] 发送 Logical Range（逻辑索引）而非 TimeRange
+        // [SENDER] 发送 Logical Range
         chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
             if (isProgrammaticUpdate) return;
 
@@ -272,10 +267,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     .sort((a, b) => a.time - b.time);
 
                 if (isInitial) {
-                    log(`📥 Initial historical data loaded: ${sortedData.length} candles`);
                     candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
                     
-                    // 初始加载时的视口处理
                     if (props.viewportState) {
                          chart?.timeScale().setVisibleLogicalRange({
                             from: props.viewportState.from,
@@ -326,7 +319,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         socket.on('kline_fetch_error', handleFetchError);
         socket.on('kline_update', handleKlineUpdate);
 
-        log(`🚀 Requesting historical data...`);
         socket.emit('request_historical_kline', payload);
         socket.emit('subscribe_kline', payload); 
 
@@ -355,9 +347,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 from: vs.from,
                 to: vs.to
             });
-        } catch (e) {
-            // console.warn(`[Chart:${props.tokenInfo.symbol}] Sync failed (likely transient):`, e);
-        }
+        } catch (e) { }
         
         setTimeout(() => { isProgrammaticUpdate = false; }, 0);
     });
@@ -379,15 +369,23 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     return (
         <div 
             class="single-chart-wrapper"
-            style={{ background: props.theme.layout.background }} // ✨ Dynamic Background Wrapper
+            style={{ background: props.theme.layout.background }} 
             onMouseEnter={() => {
                 if (props.tokenInfo) {
                     props.onSetActiveChart?.(props.tokenInfo.contractAddress);
                 }
             }}
         >
-            <div class="chart-header">
-                <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
+            {/* ✨ 修复: 显式设置 Header 的背景色和文字颜色，覆盖 CSS 中的默认值 */}
+            <div 
+                class="chart-header"
+                style={{
+                    "background-color": props.theme.layout.background, // 与图表背景一致
+                    "color": props.theme.layout.textColor,             // 适配深色模式文字
+                    "border-bottom": `1px solid ${props.theme.grid.horzLines}` // 增加分割线
+                }}
+            >
+                <Show when={props.tokenInfo} fallback={<span class="placeholder" style={{color: props.theme.layout.textColor}}>{status()}</span>}>
                     <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
                     <span class="symbol-title" style={{ color: props.theme.layout.textColor }}>{props.tokenInfo!.symbol}</span>
                     <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>

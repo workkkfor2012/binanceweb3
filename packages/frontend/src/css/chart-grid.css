@@ -62,32 +62,32 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  position: relative; /* ✨ 核心修改 1: 建立定位上下文 */
+  position: relative; 
 }
 
-/* ✨ 核心修改 2: 让头部悬浮起来 */
+/* ✨ 核心修改: 头部样式调整 */
 .single-chart-wrapper .chart-header {
-    position: absolute; /* 让元素脱离文档流，悬浮起来 */
-    top: 8px;           /* 与父元素的 padding 匹配 */
-    left: 8px;          /* 与父元素的 padding 匹配 */
-    width: calc(100% - 16px); /* 宽度撑满，并减去左右 padding */
-    z-index: 10;        /* 确保在图表 canvas 之上 */
+    position: absolute; 
+    top: 8px;           
+    left: 8px;          
+    width: calc(100% - 16px); 
+    z-index: 10;        
 
-    /* 为了美观和可读性，增加一些样式 */
-    background-color: rgba(255, 255, 255, 0.75); /* 半透明背景，避免与K线混淆 */
-    backdrop-filter: blur(2px); /* 增加一点毛玻璃效果，更现代 */
+    /* ✨ 移除写死的背景色，改由 JS 动态控制 */
+    /* background-color: rgba(255, 255, 255, 0.75); */ 
+    
+    backdrop-filter: blur(2px); 
     border-radius: 6px;
-    padding: 4px 6px;   /* 调整内边距，使其更紧凑 */
-    box-sizing: border-box; /* 确保 padding 不会撑大宽度 */
+    padding: 4px 6px;   
+    box-sizing: border-box; 
 
-    /* 原有样式保留 */
     display: flex;
     align-items: center;
     gap: 6px;
-    height: auto; /* 高度自适应 */
+    height: auto; 
     font-size: 13px;
     flex-shrink: 0;
-    border-bottom: none; /* 悬浮后不再需要下边框 */
+    border-bottom: none; 
     margin-bottom: 0;
 }
 
@@ -100,7 +100,7 @@
 
 .single-chart-wrapper .symbol-title {
     font-weight: bold;
-    color: #333;
+    /* color: #333;  <-- JS 会覆盖这个 */
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
