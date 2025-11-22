@@ -1,51 +1,71 @@
 // packages/backend/src/client_pool.rs
 
+
 use reqwest::{Client, Proxy};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
 use tokio::sync::RwLock;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-// 用于健康检查的轻量级 URL，Binance 的 Server Time 接口非常快且轻量
-// 也可以换成 https://www.google.com 如果你只在乎代理通不通
-const HEALTH_CHECK_URL: &str = "https://api.binance.com/api/v3/time";
+// 修改为我们的目标域名，或者一个通用的高可用域名
+const HEALTH_CHECK_URL: &str = "https://dquery.sintral.io";
 
 #[derive(Clone)]
 pub struct ClientPool {
     clients: Arc<RwLock<Vec<Client>>>,
-    proxy_url: String,
+    proxy_url: Option<String>, // ✨ 改为 Option，None 表示直连
     max_size: usize,
     counter: Arc<AtomicUsize>,
 }
 
 impl ClientPool {
-    pub async fn new(size: usize, proxy_url: String) -> Self {
+    // ✨ proxy_url 改为 Option<String>
+    pub async fn new(size: usize, proxy_url: Option<String>) -> Self {
         let mut clients = Vec::with_capacity(size);
-        
-        info!("🏊 [POOL INIT] Warming up {} connections via {}...", size, proxy_url);
-        
-        // 初始化时，并发创建并验证所有客户端
-        // 这样启动时会慢一点点，但启动后所有连接都是热的
-        let mut tasks = Vec::new();
-        for i in 0..size {
-            let url = proxy_url.clone();
-            tasks.push(tokio::spawn(async move {
-                build_and_warm_client(&url, i).await
-            }));
-        }
 
-        for task in tasks {
-            if let Ok(client) = task.await {
-                clients.push(client);
-            } else {
-                // 极端情况 fallback，一般不会发生
-                clients.push(Client::new());
+        if let Some(ref p_url) = proxy_url {
+            // --- 代理模式 (原有逻辑) ---
+            info!(
+                "🏊 [POOL INIT] Proxy Mode: Warming up {} connections via {}...",
+                size, p_url
+            );
+            let mut tasks = Vec::new();
+            for i in 0..size {
+                let url = p_url.clone();
+                tasks.push(tokio::spawn(async move {
+                    build_and_warm_client(Some(&url), i).await
+                }));
+            }
+
+            for task in tasks {
+                if let Ok(client) = task.await {
+                    clients.push(client);
+                } else {
+                    clients.push(Client::new());
+                }
+            }
+        } else {
+            // --- ✨ 直连模式 (新逻辑) ---
+            // 只需要暖场一次
+            info!("🚀 [POOL INIT] Direct Mode: Warming up network stack (single check)...");
+            
+            // 创建一个高性能直连客户端
+            let master_client = build_and_warm_client(None, 0).await;
+            
+            // 在直连模式下，reqwest::Client 内部有连接池，是线程安全的。
+            // 为了保持 Pool 接口一致性，我们填入同一个 client 的克隆（开销极小）
+            for _ in 0..size {
+                clients.push(master_client.clone());
             }
         }
 
-        info!("✅ [POOL INIT] All {} connections established and warmed up.", size);
+        info!(
+            "✅ [POOL INIT] Ready. Size: {}, Mode: {}",
+            size,
+            if proxy_url.is_some() { "Proxy" } else { "Direct" }
+        );
 
         Self {
             clients: Arc::new(RwLock::new(clients)),
@@ -55,7 +75,6 @@ impl ClientPool {
         }
     }
 
-    /// 获取一个客户端进行请求
     pub async fn get_client(&self) -> (usize, Client) {
         let current = self.counter.fetch_add(1, Ordering::Relaxed);
         let index = current % self.max_size;
@@ -64,69 +83,77 @@ impl ClientPool {
         (index, read_lock[index].clone())
     }
 
-    /// 核心：销毁旧客户端，并循环尝试直到建立一个新的、健康的连接
     pub async fn recycle_client(&self, index: usize) -> Client {
-        warn!("♻️ [POOL] Client #{} marked as bad. Starting replacement...", index);
-        
-        // 在循环中构建，直到成功。这保证了池子里永远不会有坏连接。
-        let new_client = build_and_warm_client(&self.proxy_url, index).await;
-        
+        // 如果是直连模式，通常不需要 recycle，除非网络彻底断了。
+        // 但为了健壮性，我们还是重新构建一次
+        if self.proxy_url.is_none() {
+            warn!("♻️ [POOL] Refreshing Direct Client #{}...", index);
+        } else {
+            warn!("♻️ [POOL] Proxy Client #{} marked as bad. Swapping...", index);
+        }
+
+        let new_client = build_and_warm_client(self.proxy_url.as_deref(), index).await;
+
         let mut write_lock = self.clients.write().await;
         write_lock[index] = new_client.clone();
+
+        // 如果是直连模式，一个 client 刷新了，其实可以考虑刷新所有，
+        // 但为了简单，只刷新当前 slot 也没问题。
         
-        info!("✨ [POOL] Client #{} recycled and READY (Handshake complete).", index);
         new_client
     }
+
 }
 
-/// 构建客户端并执行一次“预热/健康检查”
-/// 只有通过检查的客户端才会被返回
-async fn build_and_warm_client(proxy_url: &str, index: usize) -> Client {
+async fn build_and_warm_client(proxy_url: Option<&str>, index: usize) -> Client {
     let mut attempt = 1;
     loop {
-        // 1. 构建配置
-        let builder = Client::builder()
-            .timeout(std::time::Duration::from_secs(10)) // 业务请求超时
-            .connect_timeout(std::time::Duration::from_secs(5)) // 连接超时（快速失败）
-            .pool_idle_timeout(std::time::Duration::from_secs(90)) // Keep-Alive 保持久一点
+        let mut builder = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
             .user_agent(format!(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Client-Pool-ID/{}", 
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Client-Pool-ID/{}",
                 index
             ));
 
-        let client = match Proxy::all(proxy_url) {
-            Ok(proxy) => builder.proxy(proxy).build().unwrap_or_else(|_| Client::new()),
-            Err(_) => Client::new(),
-        };
-
-        // 2. 预热/健康检查 (Warm-up)
-        // 使用 HEAD 请求，极小流量，但能完成 TCP+TLS 握手
-        // 注意：reqwest 内部维护连接池，同一个 client 实例再次发起请求会复用 Socket
-        // debug!("💓 [POOL] Pre-flight check for Client #{} (Attempt {})...", index, attempt);
-        
-        match client.head(HEALTH_CHECK_URL).send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    // 握手成功，连接已建立且放入了 reqwest 内部池
-                    return client;
-                } else {
-                    warn!("⚠️ [POOL] Client #{} Warm-up rejected (Status: {}). Retrying...", index, resp.status());
-                }
-            },
-            Err(e) => {
-                // 网络错误，说明当前分配的 VPN 节点可能不通
-                warn!("⚠️ [POOL] Client #{} Warm-up failed ({}). Retrying with new connection...", index, e);
+        if let Some(url) = proxy_url {
+            if let Ok(proxy) = Proxy::all(url) {
+                builder = builder.proxy(proxy);
             }
         }
 
-        // 失败后稍作等待再重试，避免 CPU 空转
+        let client = builder.build().unwrap_or_else(|_| Client::new());
+
+        // 暖场检查
+        // 如果是直连，且是第0个以后的（仅用于填充Pool），其实可以跳过检查
+        // 但为了保险，还是保留简单的 HEAD 请求
+        // 针对 dquery.sintral.io，如果不支持 HEAD，可以用 GET
+        // 既然用户确认该域名可访问，我们尽量轻量化
+        match client.head(HEALTH_CHECK_URL).send().await {
+            Ok(_) => {
+                // 只要有回应（哪怕是 404/405），说明网络通了
+                return client;
+            }
+            Err(e) => {
+                // 如果是直连模式，失败可能意味着本机没网
+                warn!(
+                    "⚠️ [POOL] Client #{} Warm-up failed ({}). Retrying...",
+                    index, e
+                );
+            }
+        }
+
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         attempt += 1;
-        
-        // 防止无限死循环卡死整个程序（虽然理论上应该一直试直到网络恢复）
-        if attempt > 20 {
-            error!("🔥 [POOL] Client #{} failed 20 attempts. Returning potentially broken client to unblock.", index);
+
+        if attempt > 5 { // 直连模式下，不需要试那么多次
+            error!(
+                "🔥 [POOL] Client #{} failed warm-up. Returning anyway.",
+                index
+            );
             return client;
         }
     }
+
 }
