@@ -1,5 +1,4 @@
 // packages/backend/src/binance_task.rs
-
 use super::{
     config::Config,
     types::{
@@ -31,6 +30,7 @@ type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
 type WsRead = futures_util::stream::SplitStream<WsStream>;
 
+// 价格偏差过滤阈值（防止价格闪崩/插针干扰图表）
 const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0;
 const LOW_VOLUME_THRESHOLD: f64 = 10.0;
 
@@ -76,6 +76,7 @@ pub async fn binance_websocket_task(
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
+
 }
 
 async fn connect_and_run(
@@ -84,7 +85,7 @@ async fn connect_and_run(
     log_display_name: &str,
     address: Arc<String>,
     config: &Config,
-    current_kline: Arc<Mutex<Option<KlineTick>>>, 
+    current_kline: Arc<Mutex<Option<KlineTick>>>,
 ) -> Result<()> {
     let stream = establish_http_tunnel(log_display_name, config).await?;
     let host = Url::parse(&config.binance_wss_url)?
@@ -126,6 +127,7 @@ async fn connect_and_run(
         address,
     )
     .await
+
 }
 
 async fn subscribe_all(
@@ -178,6 +180,7 @@ async fn subscribe_all(
         .await?;
 
     Ok(())
+
 }
 
 async fn message_loop(
@@ -194,7 +197,6 @@ async fn message_loop(
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                // info!("[HEARTBEAT {}] Sending Ping...", log_display_name);
                 write.send(Message::Ping(vec![].into())).await.context("Failed to send heartbeat Ping")?;
             }
             msg_result = read.next() => {
@@ -227,48 +229,45 @@ async fn handle_message(
     match msg {
         Message::Text(text) if !text.is_empty() => {
             if text.contains("\"stream\":\"kl@") {
+                // --- 处理 K 线数据 (权威数据，包含准确的 Volume) ---
                 match serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {
                     Ok(wrapper) => {
                         let values = &wrapper.data.kline_data.values;
                         let timestamp_seconds = values.5.parse::<i64>().unwrap_or_default() / 1000;
+
                         let new_kline = KlineTick {
                             time: DateTime::from_timestamp(timestamp_seconds, 0).unwrap_or_default().with_timezone(&Utc),
                             open: values.0.parse().unwrap_or_default(),
                             high: values.1.parse().unwrap_or_default(),
                             low: values.2.parse().unwrap_or_default(),
                             close: values.3.parse().unwrap_or_default(),
+                            // ✨ 这里的 Volume 是权威的，直接使用
                             volume: values.4.parse().unwrap_or_default(),
                         };
                         
-                        // ✨ Step 6: 这里就是 WebSocket K 线数据到达的地方
-                        // 它会更新/替换掉我们通过 HTTP 注入的那一根
-                        //info!("🌊 [WS KLINE {}] Incoming Update. Time: {}, Close: {}", log_display_name, new_kline.time, new_kline.close);
-                        
-                        broadcast_update(io, room_name, new_kline.clone()).await;
-                        *current_kline.lock().await = Some(new_kline);
+                        // 直接覆盖当前内存中的 K 线
+                        *current_kline.lock().await = Some(new_kline.clone());
+                        broadcast_update(io, room_name, new_kline).await;
                     },
                     Err(e) => {
                         error!("❌ [KLINE PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
                     }
                 }
             } else if text.contains("\"stream\":\"tx@") {
+                // --- 处理 实时交易 (Tick) ---
                 match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
                     Ok(wrapper) => {
                         let tick = &wrapper.data.tick_data;
 
-                        // ✨ 逻辑修复：根据当前监听的地址是 t0 还是 t1，选择正确的数量和价格
-                        // tick.v 是 USD 价值，不应该直接累加到 kline.volume
-                        let (price, token_amount) = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
-                            (tick.t0pu, tick.a0)
+                        // 获取价格 (忽略 token_amount，因为重复累加会导致数据污染)
+                        let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
+                            tick.t0pu
                         } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
-                            (tick.t1pu, tick.a1)
+                            tick.t1pu
                         } else {
-                            // 理论上不会发生，除非订阅错位
-                            warn!("⚠️ [TX MISMATCH {}] Tracked: {}, T0: {}, T1: {}", log_display_name, tracked_address, tick.t0a, tick.t1a);
                             return Ok(true);
                         };
                         
-                        // 保留 USD Volume 用于垃圾数据过滤
                         let usd_volume = tick.v;
                         
                         let mut kline_guard = current_kline.lock().await;
@@ -277,42 +276,31 @@ async fn handle_message(
 
                             if last_price > 0.0 {
                                 let price_ratio = if price > last_price { price / last_price } else { last_price / price };
-                                // 过滤逻辑仍然使用 USD Volume (tick.v)，这很合理
+                                // 过滤异常价格跳动
                                 if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && usd_volume < LOW_VOLUME_THRESHOLD {
-                                    warn!(
-                                        "🚫 [REJECT SPIKE {}] Price jump {:.2}x with low vol ${:.4}. Last: {}, New: {}",
-                                        log_display_name, price_ratio, usd_volume, last_price, price
-                                    );
                                     return Ok(true);
                                 }
                             }
 
+                            // ✨ 核心修正：只更新价格，不累加成交量
+                            // 因为 tx 流包含大量重复或聚合数据，会导致 volume 虚高 10-20 倍
+                            // 成交量由 kl 流全权负责
                             kline.high = kline.high.max(price);
                             kline.low = kline.low.min(price);
                             kline.close = price;
                             
-                            // ✨ 核心修复：累加的是 Token 数量
-                            kline.volume += token_amount;
-                            
-                            // ✨ 开启调试日志，确认数值是否正确
-                            // 例如：P: 6.26, Amt: 0.16, USD: 1.04
-                            info!("⚡ [TX {}] P: {:.4}, Amt+: {:.6} (Total: {:.2}), USD: {:.2}", 
-                                log_display_name, price, token_amount, kline.volume, usd_volume);
+                            // kline.volume += token_amount; // 🔴 禁用：防止数据污染
                             
                             broadcast_update(io, room_name, kline.clone()).await;
                         }
                     },
-                    Err(_e) => { 
-                        // error!("❌ [TICK PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
-                    }
+                    Err(_e) => {}
                 }
             } else if text.contains("result") {
                 info!(
                     "✅ [CONFIRM {}] Subscription active. Server said: {}",
                     log_display_name, text
                 );
-            } else {
-                // warn!("❓ [UNHANDLED MSG {}] {}", log_display_name, text);
             }
         }
         Message::Ping(ping_data) => {
@@ -331,6 +319,7 @@ async fn handle_message(
         _ => {}
     }
     Ok(true)
+
 }
 
 async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
@@ -356,7 +345,6 @@ async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Resul
     let port = url_obj.port_or_known_default().unwrap_or(443);
     let target_addr = format!("{}:{}", host, port);
 
-    // info!("connecting to proxy...");
     let mut stream = TcpStream::connect(&config.proxy_addr)
         .await
         .context("HTTP proxy connection failed")?;
@@ -385,6 +373,7 @@ async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Resul
         ));
     }
     Ok(stream)
+
 }
 
 async fn wrap_stream_with_tls(
