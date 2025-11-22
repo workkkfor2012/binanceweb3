@@ -292,7 +292,7 @@ async fn handle_message(
                             broadcast_update(io, room_name, kline.clone()).await;
                         }
                     },
-                    Err(e) => {
+                    Err(_e) => { // ✨ 修复：未使用变量 e -> _e
                         // error!("❌ [TICK PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
                     }
                 }

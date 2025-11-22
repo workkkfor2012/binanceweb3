@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use reqwest::Client;
+// use reqwest::Client; // 🔴 移除未使用
 use serde_json::Value;
 use socketioxide::extract::{Data, SocketRef};
 use sqlx::{
@@ -15,14 +15,14 @@ use sqlx::{
     Row,
 };
 use std::time::Instant;
-use tokio_retry::{strategy::ExponentialBackoff, Retry};
+// use tokio_retry::{strategy::ExponentialBackoff, Retry}; // 🔴 移除未使用
 use tracing::{error, info, warn};
 
 const API_URL_TEMPLATE: &str = "https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}";
 const API_MAX_LIMIT: i64 = 500;
 const DB_MAX_RECORDS: i64 = 1000;
 const DB_PRUNE_TO_COUNT: i64 = 500;
-const FETCH_RETRY_COUNT: usize = 3;
+// const FETCH_RETRY_COUNT: usize = 3; // 虽然也没用到，但保留作为配置参考
 
 pub async fn init_db(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
@@ -213,7 +213,7 @@ async fn complete_kline_data(
     }
 
     // 立即发送给前端
-    let emit_start = Instant::now();
+    let _emit_start = Instant::now(); // ✨ 修复：未使用变量前缀加 _
     let completed_response = KlineHistoryResponse {
         address: payload.address.clone(),
         chain: payload.chain.clone(),
@@ -248,7 +248,7 @@ async fn fetch_historical_data_with_pool(
 
     let interval_label = payload.interval.clone();
 
-    for attempt in 1..=3 {
+    for attempt in 1..=3 { // ✨ 修复：虽然 attempt 没被使用，但这里是循环变量，暂时不加_以保持可读性，或者可以使用 _attempt
         let (client_idx, client) = pool.get_client().await;
         
         let http_start = Instant::now();
@@ -285,6 +285,10 @@ async fn fetch_historical_data_with_pool(
                 warn!("❌ [NET FAIL] Error: {}. Recycling node #{} and retrying...", e, client_idx);
                 pool.recycle_client(client_idx).await;
             }
+        }
+        // 避免警告：如果循环结束还没返回，说明都失败了
+        if attempt == 3 {
+             break;
         }
     }
 
@@ -398,7 +402,7 @@ fn format_interval_for_api(interval: &str) -> String {
     }
 }
 
-fn parse_api_data(data: &[Vec<Value>], interval_label: &str) -> Result<Vec<KlineTick>> {
+fn parse_api_data(data: &[Vec<Value>], _interval_label: &str) -> Result<Vec<KlineTick>> { // ✨ 修复：interval_label -> _interval_label
     let extract_f64 = |v: &Value, name: &str| -> Result<f64> {
         if let Some(f) = v.as_f64() {
             return Ok(f);

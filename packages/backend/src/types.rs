@@ -3,13 +3,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
-use sqlx::FromRow;
+// use sqlx::FromRow; // 🔴 移除未使用的引用
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-#[derive(Debug, Deserialize, Clone)]
+// ✨ 添加 Serialize
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarketItem {
     pub contract_address: Option<String>,
@@ -38,8 +39,8 @@ pub struct KlineSubscribePayload {
     pub interval: String,
 }
 
-// ✨ 1. 定义业务分类 (Category)
-#[derive(Debug, Deserialize, PartialEq, Eq, Hash, Clone)]
+// ✨ 1. 定义业务分类 (Category) - 添加 Serialize
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Hash, Clone)]
 pub enum DataCategory {
     #[serde(rename = "hotlist")]
     Hotlist,
@@ -49,8 +50,8 @@ pub enum DataCategory {
     Unknown,
 }
 
-// ✨ 2. 定义动作类型 (Action/Type)
-#[derive(Debug, Deserialize, PartialEq, Eq, Clone)]
+// ✨ 2. 定义动作类型 (Action/Type) - 添加 Serialize
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
 pub enum DataAction {
     #[serde(rename = "snapshot")]
     Snapshot,
@@ -60,8 +61,8 @@ pub enum DataAction {
     Unknown,
 }
 
-// ✨ 3. 更新后的 Payload 结构
-#[derive(Debug, Deserialize)]
+// ✨ 3. 更新后的 Payload 结构 - 添加 Serialize
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DataPayload {
     pub category: DataCategory,
     pub r#type: DataAction,
