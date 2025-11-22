@@ -101,7 +101,10 @@ pub struct BinanceTickDetail {
     pub t1a: String,
     pub t0pu: f64,
     pub t1pu: f64,
-    pub v: f64,
+    pub v: f64, // 这是 USD 价值，用于过滤垃圾交易
+    // ✨ 新增关键字段：Token 实际数量
+    pub a0: f64, 
+    pub a1: f64,
     pub tp: String,
 }
 

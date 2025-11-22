@@ -256,15 +256,20 @@ async fn handle_message(
                     Ok(wrapper) => {
                         let tick = &wrapper.data.tick_data;
 
-                        let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
-                            tick.t0pu
+                        // ✨ 逻辑修复：根据当前监听的地址是 t0 还是 t1，选择正确的数量和价格
+                        // tick.v 是 USD 价值，不应该直接累加到 kline.volume
+                        let (price, token_amount) = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
+                            (tick.t0pu, tick.a0)
                         } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
-                            tick.t1pu
+                            (tick.t1pu, tick.a1)
                         } else {
+                            // 理论上不会发生，除非订阅错位
+                            warn!("⚠️ [TX MISMATCH {}] Tracked: {}, T0: {}, T1: {}", log_display_name, tracked_address, tick.t0a, tick.t1a);
                             return Ok(true);
                         };
                         
-                        let volume = tick.v;
+                        // 保留 USD Volume 用于垃圾数据过滤
+                        let usd_volume = tick.v;
                         
                         let mut kline_guard = current_kline.lock().await;
                         if let Some(kline) = kline_guard.as_mut() {
@@ -272,10 +277,11 @@ async fn handle_message(
 
                             if last_price > 0.0 {
                                 let price_ratio = if price > last_price { price / last_price } else { last_price / price };
-                                if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && volume < LOW_VOLUME_THRESHOLD {
+                                // 过滤逻辑仍然使用 USD Volume (tick.v)，这很合理
+                                if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && usd_volume < LOW_VOLUME_THRESHOLD {
                                     warn!(
                                         "🚫 [REJECT SPIKE {}] Price jump {:.2}x with low vol ${:.4}. Last: {}, New: {}",
-                                        log_display_name, price_ratio, volume, last_price, price
+                                        log_display_name, price_ratio, usd_volume, last_price, price
                                     );
                                     return Ok(true);
                                 }
@@ -284,15 +290,19 @@ async fn handle_message(
                             kline.high = kline.high.max(price);
                             kline.low = kline.low.min(price);
                             kline.close = price;
-                            kline.volume += volume;
                             
-                            // ✨ 开启这行日志，证明注入生效（Tick 正在工作）
-                            //info!("⚡ [WS TICK {}] Calculated P: {}", log_display_name, price);
+                            // ✨ 核心修复：累加的是 Token 数量
+                            kline.volume += token_amount;
+                            
+                            // ✨ 开启调试日志，确认数值是否正确
+                            // 例如：P: 6.26, Amt: 0.16, USD: 1.04
+                            info!("⚡ [TX {}] P: {:.4}, Amt+: {:.6} (Total: {:.2}), USD: {:.2}", 
+                                log_display_name, price, token_amount, kline.volume, usd_volume);
                             
                             broadcast_update(io, room_name, kline.clone()).await;
                         }
                     },
-                    Err(_e) => { // ✨ 修复：未使用变量 e -> _e
+                    Err(_e) => { 
                         // error!("❌ [TICK PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
                     }
                 }
