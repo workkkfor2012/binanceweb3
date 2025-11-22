@@ -12,7 +12,8 @@ import {
     Time, 
     LineSeries, 
     PriceFormat,
-    HistogramSeries 
+    HistogramSeries,
+    MouseEventParams 
 } from 'lightweight-charts';
 import { socket } from './socket';
 import type { KlineUpdatePayload, KlineFetchErrorPayload, LightweightChartKline } from './types';
@@ -35,6 +36,17 @@ interface SingleKlineChartProps {
     onSetActiveChart?: (id: string | null) => void;
     showAxes?: boolean;
     theme: ChartTheme;
+}
+
+// --- ✨ 新增: 图例数据接口 ---
+interface LegendData {
+    open: string;
+    high: string;
+    low: string;
+    close: string;
+    amount: string;
+    changePercent: string;
+    color: string; // 用于涨跌幅颜色
 }
 
 // 自适应精度计算
@@ -62,7 +74,6 @@ const getAdaptivePriceFormat = (price: number): PriceFormat => {
     };
 };
 
-
 const customPriceFormatter = (price: number): string => {
     const s = new Intl.NumberFormat('en-US', {
         maximumFractionDigits: 10,
@@ -73,6 +84,13 @@ const customPriceFormatter = (price: number): string => {
         return s.replace(/\.?0+$/, '');
     }
     return s;
+};
+
+// ✨ 辅助: 格式化大额数字 (1.2M, 500K)
+const formatBigNumber = (num: number): string => {
+    if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + 'M';
+    if (num >= 1_000) return (num / 1_000).toFixed(2) + 'K';
+    return num.toFixed(2);
 };
 
 const getIntervalSeconds = (timeframe: string): number => {
@@ -91,6 +109,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let ghostSeries: ISeriesApi<'Line'> | null = null;
     let resizeObserver: ResizeObserver | null = null;
     const [status, setStatus] = createSignal('Initializing...');
+    
+    // ✨ 新增: 图例数据 Signal
+    const [legendData, setLegendData] = createSignal<LegendData | null>(null);
 
     // 🔒 状态锁
     let isProgrammaticUpdate = false;
@@ -118,6 +139,34 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         socket.emit('unsubscribe_kline', payload);
     };
 
+    // ✨ 辅助: 更新图例逻辑 (复用代码)
+    const updateLegend = (candle: CandlestickData<number> | undefined, vol: any | undefined) => {
+        if (!candle) {
+            // 如果没有数据，可以清空或保持最后状态，这里选择不处理
+            return;
+        }
+        const open = candle.open;
+        const close = candle.close;
+        const high = candle.high;
+        const low = candle.low;
+        // 上一轮我们将 value 存为了 amount
+        const amount = vol?.value || 0; 
+        
+        const change = ((close - open) / open) * 100;
+        const isUp = close >= open;
+        const color = isUp ? props.theme.candle.upColor : props.theme.candle.downColor;
+
+        setLegendData({
+            open: customPriceFormatter(open),
+            high: customPriceFormatter(high),
+            low: customPriceFormatter(low),
+            close: customPriceFormatter(close),
+            amount: formatBigNumber(amount),
+            changePercent: `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`,
+            color: color
+        });
+    };
+
     // 实时数据更新处理函数
     const handleKlineUpdate = (update: KlineUpdatePayload) => {
         const info = props.tokenInfo;
@@ -135,16 +184,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (currentData.length > 0) {
                 const lastCandle = currentData[currentData.length - 1] as CandlestickData<number>;
                 if (newCandle.time < lastCandle.time) {
-                    log(`⚠️ Dropped late packet. Last: ${lastCandle.time}, New: ${newCandle.time}`);
                     return;
                 }
             }
             candlestickSeries.update(newCandle as CandlestickData<number>);
 
-            // ✨ Update Volume (Approximate Turnover)
+            // Update Volume (Approximate Turnover)
             if (volumeSeries && newCandle.volume !== undefined) {
                 const isUp = newCandle.close >= newCandle.open;
-                // ✨ 核心修改：使用 (O+H+L+C)/4 计算平均价格，从而得到更准确的成交额
                 const avgPrice = (newCandle.open + newCandle.high + newCandle.low + newCandle.close) / 4;
                 const amount = newCandle.volume * avgPrice;
                 
@@ -153,6 +200,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     value: amount,
                     color: isUp ? props.theme.candle.upColor : props.theme.candle.downColor
                 });
+
+                // ✨ 如果鼠标不在图表上（或图表没有焦点），实时更新最新一根 K 线的图例
+                // 这里做一个简单的判断，直接更新（如果在查看历史，鼠标移动事件会覆盖这个）
+                // 为了更平滑的体验，通常只在鼠标移出后才由实时数据主导，
+                // 但因为 lightweight-charts 没有直接的 "isHovering" 状态，
+                // 我们依靠 subscribeCrosshairMove 来处理。
             }
         }
     };
@@ -167,7 +220,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         return data;
     };
 
-    // ✨ Theme Application Effect
+    // Theme Application Effect
     createEffect(() => {
         if (chart && props.theme) {
             const t = props.theme;
@@ -183,7 +236,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     wickUpColor: t.candle.wickUpColor, wickDownColor: t.candle.wickDownColor,
                 });
 
-                // ✨ Sync Volume Colors with Theme
+                // Sync Volume Colors with Theme
                 if (volumeSeries) {
                     const candles = candlestickSeries.data() as CandlestickData<number>[];
                     const volumes = volumeSeries.data() as any[]; 
@@ -231,6 +284,10 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
                 leftPriceScale: { visible: false, autoScale: false }, 
                 handleScroll: true, handleScale: true,
+                // ✨ 优化: 允许十字光标在任意点显示
+                crosshair: {
+                    mode: 1, // Magnet mode
+                }
             });
 
             ghostSeries = chart.addSeries(LineSeries, {
@@ -239,21 +296,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             });
             ghostSeries.setData(generateGhostData(timeframe));
 
-            // ✨ 先创建 Series，注册 ID 'volume'
+            // Volume Series
             volumeSeries = chart.addSeries(HistogramSeries, {
-                priceFormat: { 
-                    type: 'volume', 
-                    precision: 2, // 金额通常保留2位或0位小数
-                },
+                priceFormat: { type: 'volume', precision: 2 },
                 priceScaleId: 'volume', 
             });
 
-            // ✨ 配置 'volume' Scale
             chart.priceScale('volume').applyOptions({
-                scaleMargins: {
-                    top: 0.8, 
-                    bottom: 0,
-                },
+                scaleMargins: { top: 0.8, bottom: 0 },
                 visible: false, 
             });
 
@@ -268,6 +318,29 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 borderDownColor: t.candle.borderDownColor, borderUpColor: t.candle.borderUpColor, 
                 wickDownColor: t.candle.wickDownColor, wickUpColor: t.candle.wickUpColor,
                 priceScaleId: 'right'
+            });
+
+            // ✨ 核心功能: 监听十字光标移动，更新图例
+            chart.subscribeCrosshairMove((param: MouseEventParams) => {
+                if (!candlestickSeries || !volumeSeries) return;
+
+                // 如果鼠标在有效区域
+                if (param.time) {
+                    const candleData = param.seriesData.get(candlestickSeries) as CandlestickData<number>;
+                    const volumeData = param.seriesData.get(volumeSeries) as any;
+                    if (candleData) {
+                        updateLegend(candleData, volumeData);
+                    }
+                } else {
+                    // 鼠标移出，显示最后一根 K 线的数据
+                    const candleData = candlestickSeries.data();
+                    const volData = volumeSeries.data();
+                    if (candleData.length > 0) {
+                        const lastCandle = candleData[candleData.length - 1] as CandlestickData<number>;
+                        const lastVol = volData[volData.length - 1];
+                        updateLegend(lastCandle, lastVol);
+                    }
+                }
             });
 
         } catch (e) {
@@ -299,9 +372,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             try {
                 const sortedData = data.map(d => ({ ...d, time: Number(d.time) })).sort((a, b) => a.time - b.time);
                 
-                // ✨ Prepare Volume Data (Calculated as Amount using OHLC Avg)
                 const volData = sortedData.map(d => {
-                    // ✨ 核心修改：使用 (O+H+L+C)/4
                     const avgPrice = (d.open + d.high + d.low + d.close) / 4;
                     return {
                         time: d.time,
@@ -314,18 +385,23 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
                     volumeSeries?.setData(volData);
                     
+                    // ✨ 初始化图例显示最后一根 K 线
+                    if (sortedData.length > 0) {
+                        const lastCandle = sortedData[sortedData.length - 1] as CandlestickData<number>;
+                        const lastVol = volData[volData.length - 1];
+                        updateLegend(lastCandle, lastVol);
+                    }
+
                     if (props.viewportState) {
                          chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
                     } else { chart?.timeScale().scrollToRealTime(); }
                 } else {
-                    // Merge Candles
                     const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
                     const newDataMap = new Map(currentData.map(d => [d.time, d]));
                     sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
                     const merged = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
                     candlestickSeries?.setData(merged);
 
-                    // ✨ Merge Volume
                     const currentVolData = (volumeSeries?.data() as any[] || []);
                     const newVolMap = new Map(currentVolData.map(d => [d.time, d]));
                     volData.forEach(d => newVolMap.set(d.time as number, d));
@@ -396,7 +472,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     return (
         <div 
             class="single-chart-wrapper"
-            style={{ background: props.theme.layout.background }} 
+            style={{ background: props.theme.layout.background, position: 'relative' }} 
             onMouseEnter={() => props.onSetActiveChart?.(props.tokenInfo?.contractAddress || '')}
         >
             <div 
@@ -421,6 +497,34 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     </button>
                 </Show>
             </div>
+
+            {/* ✨ 新增: 悬浮图例 UI */}
+            <div 
+                class="chart-legend" 
+                style={{
+                    position: 'absolute',
+                    top: '38px', // 躲开 chart-header
+                    left: '12px',
+                    "z-index": 10,
+                    "font-family": "'Courier New', monospace", // 等宽字体对齐数字
+                    "font-size": "11px",
+                    "pointer-events": "none", // 确保鼠标事件穿透到图表
+                    "background-color": "rgba(255, 255, 255, 0.0)", // 透明背景
+                    color: props.theme.layout.textColor
+                }}
+            >
+                <Show when={legendData()}>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                        <span>O:<span style={{color: legendData()!.color}}>{legendData()!.open}</span></span>
+                        <span>H:<span style={{color: legendData()!.color}}>{legendData()!.high}</span></span>
+                        <span>L:<span style={{color: legendData()!.color}}>{legendData()!.low}</span></span>
+                        <span>C:<span style={{color: legendData()!.color}}>{legendData()!.close}</span></span>
+                        <span>Amt:<span style={{color: props.theme.layout.textColor}}>{legendData()!.amount}</span></span>
+                        <span style={{color: legendData()!.color}}>({legendData()!.changePercent})</span>
+                    </div>
+                </Show>
+            </div>
+
             <div ref={chartContainer!} class="chart-container" />
         </div>
     );
