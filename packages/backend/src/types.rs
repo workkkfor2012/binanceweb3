@@ -6,7 +6,7 @@ use socketioxide::socket::Sid;
 use sqlx::FromRow;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::Mutex; // ✨ 引入 Mutex
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -38,9 +38,33 @@ pub struct KlineSubscribePayload {
     pub interval: String,
 }
 
+// ✨ 1. 定义业务分类 (Category)
+#[derive(Debug, Deserialize, PartialEq, Eq, Hash, Clone)]
+pub enum DataCategory {
+    #[serde(rename = "hotlist")]
+    Hotlist,
+    #[serde(rename = "new")]
+    New,
+    #[serde(other)]
+    Unknown,
+}
+
+// ✨ 2. 定义动作类型 (Action/Type)
+#[derive(Debug, Deserialize, PartialEq, Eq, Clone)]
+pub enum DataAction {
+    #[serde(rename = "snapshot")]
+    Snapshot,
+    #[serde(rename = "update")]
+    Update,
+    #[serde(other)]
+    Unknown,
+}
+
+// ✨ 3. 更新后的 Payload 结构
 #[derive(Debug, Deserialize)]
 pub struct DataPayload {
-    pub r#type: String,
+    pub category: DataCategory,
+    pub r#type: DataAction,
     pub data: Vec<MarketItem>,
 }
 
@@ -111,7 +135,6 @@ pub struct Room {
     pub clients: HashSet<Sid>,
     pub task_handle: JoinHandle<()>,
     pub symbol: String,
-    // ✨ 新增：共享的 K 线状态，允许 HTTP Handler 注入初始数据
     pub current_kline: Arc<Mutex<Option<KlineTick>>>,
 }
 

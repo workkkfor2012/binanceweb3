@@ -21,10 +21,13 @@ const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.e
 const EXTRACTION_INTERVAL_MS = 1000;
 const SERVER_URL = 'http://localhost:3001';
 
+// ✨ 修改：配置中增加 category 字段
+// 目前全是 'hotlist'，为你预留了 'new'
 const TARGETS = [
-    { name: 'BSC', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc' },
-    { name: 'Base', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=base' },
-    { name: 'Solana', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=sol' },
+    { name: 'BSC', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc' },
+    { name: 'Base', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=base' },
+    { name: 'Solana', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=sol' },
+    // { name: 'BSC_NEW', category: 'new', url: '...' }, // 示例：未来添加的新币榜
 ];
 
 const SELECTORS = {
@@ -60,13 +63,13 @@ async function gotoWithRetry(page: Page, url: string, criticalSelector: string, 
 async function setupPageForChain(
     browser: Browser,
     browserScript: string,
-    target: { name: string; url: string },
+    target: { name: string; url: string; category: string }, // ✨ 接收 category
     socket: Socket
 ): Promise<void> {
-    const { name: chainName, url } = target;
+    const { name: chainName, url, category } = target;
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
-    logger.log(`[Setup][${chainName}] 初始化页面...`, logger.LOG_LEVELS.INFO);
+    logger.log(`[Setup][${chainName}] 初始化页面 (Category: ${category})...`, logger.LOG_LEVELS.INFO);
 
     const options = {
         selectors: SELECTORS,
@@ -99,16 +102,22 @@ async function setupPageForChain(
         process.stdout.write(`\r[${new Date().toLocaleTimeString()}] ${perfString}   `);
 
         if (type !== 'no-change' && data && data.length > 0) {
-            // 核心：为数据打上来源标签
             const enrichedData = data.map(item => ({ ...item, chain: chainName }));
-            const updateType = type === 'snapshot' ? '首次快照' : '增量更新';
             
-            // 立即发送，保持最低延迟
-            socket.emit('data-update', { type, data: enrichedData });
+            const updateTypeLog = type === 'snapshot' ? '首次快照' : '增量更新';
+            
+            // ✨ 协议重构：发送双字段
+            // category: 来自配置 (hotlist, new)
+            // type: 来自 browser-script (snapshot, update)
+            socket.emit('data-update', { 
+                category: category, 
+                type: type, 
+                data: enrichedData 
+            });
             
             // 换行打印，避免和 process.stdout.write 冲突
             process.stdout.write('\n');
-            logger.log(`📦 [Emit][${chainName}] 已发送 "${updateType}" (${changedCount} 条)`, logger.LOG_LEVELS.INFO);
+            logger.log(`📦 [Emit][${chainName}][${category}] Action: ${type} (${updateTypeLog}, ${changedCount} 条)`, logger.LOG_LEVELS.INFO);
         }
     };
 
@@ -125,7 +134,7 @@ async function main(): Promise<void> {
     socket.on('connect', () => logger.log(`✅ [Socket.IO] 成功连接到 Fastify 服务器: ${SERVER_URL}`, logger.LOG_LEVELS.INFO));
     socket.on('connect_error', (err: Error) => logger.log(`❌ [Socket.IO] 连接失败: ${err.message}.`, logger.LOG_LEVELS.ERROR));
 
-    logger.log('🚀 [Extractor v6.1 Stream-Mode] 脚本启动...', logger.LOG_LEVELS.INFO);
+    logger.log('🚀 [Extractor v6.3 Categories] 脚本启动...', logger.LOG_LEVELS.INFO);
 
     try {
         const browserScript = await fs.readFile(path.join(__dirname, '..', 'src', 'browser-script.js'), 'utf-8');

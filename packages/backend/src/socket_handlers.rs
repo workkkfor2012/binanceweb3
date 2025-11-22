@@ -3,7 +3,7 @@
 use super::{
     binance_task,
     kline_handler,
-    types::{DataPayload, KlineSubscribePayload, Room, KlineTick}, // ✨ 引入 KlineTick
+    types::{DataPayload, KlineSubscribePayload, Room, KlineTick, DataCategory}, 
     ServerState,
 };
 use socketioxide::{
@@ -11,8 +11,11 @@ use socketioxide::{
 };
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::Mutex; // ✨ 引入 Mutex
+use tokio::sync::Mutex; 
 use tracing::{error, info, warn};
+
+// ✨ 定义过滤阈值：1万
+const MIN_HOTLIST_VOLUME: f64 = 10000.0;
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
@@ -30,7 +33,6 @@ fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
             let state = state.clone();
             async move {
-                // info!("📜 [REQ HISTORY] Client {} requested kline history for {}@{}", s.id, payload.0.chain, payload.0.address);
                 kline_handler::handle_kline_request(s, payload, state).await;
             }
         },
@@ -43,20 +45,58 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, payload: Data<serde_json::Value>| {
             let state = state.clone();
             async move {
-                if let Err(e) = s.broadcast().emit("data-broadcast", &payload.0).await {
-                    error!("[Socket.IO] Failed to broadcast data for {}: {:?}", s.id, e);
-                }
-
+                // ✨ 修改逻辑顺序：先解析 -> 再过滤 -> 最后广播
+                
                 match serde_json::from_value::<DataPayload>(payload.0) {
-                    Ok(parsed_payload) => {
-                        for item in parsed_payload.data {
-                            if let (Some(address), Some(symbol)) = (item.contract_address, item.symbol) {
-                                state.token_symbols.insert(address.to_lowercase(), symbol);
+                    Ok(mut parsed_payload) => {
+                        let original_count = parsed_payload.data.len();
+
+                        // ✨ 核心过滤逻辑
+                        // 如果是 Hotlist，则应用成交额过滤
+                        if parsed_payload.category == DataCategory::Hotlist {
+                            parsed_payload.data.retain(|item| {
+                                // volume24h 是 Option<f64>，如果为 None (爬取失败) 则视为 0.0
+                                item.volume24h.unwrap_or(0.0) >= MIN_HOTLIST_VOLUME
+                            });
+                        }
+
+                        let filtered_count = parsed_payload.data.len();
+
+                        info!(
+                            "🕷️ [SPIDER DATA] Cat: {:?} | Act: {:?} | Filter: {} -> {} (Vol >= {})", 
+                            parsed_payload.category, 
+                            parsed_payload.r#type,
+                            original_count,
+                            filtered_count,
+                            MIN_HOTLIST_VOLUME
+                        );
+
+                        // ✨ 只有当过滤后还有数据时，才广播给前端
+                        if !parsed_payload.data.is_empty() {
+                            // 这里直接广播处理过的 struct，socketioxide 会自动序列化它
+                            if let Err(e) = s.broadcast().emit("data-broadcast", &parsed_payload).await {
+                                error!("[Socket.IO] Failed to broadcast filtered data for {}: {:?}", s.id, e);
+                            }
+                        } else {
+                           // info!("[FILTER] Dropped empty payload after filtering.");
+                        }
+
+                        // 更新 Symbol Map (使用过滤后的高质量数据)
+                        match parsed_payload.category {
+                            DataCategory::Unknown => {
+                                warn!("[SPIDER DATA] Received unknown category, ignoring symbol map update.");
+                            },
+                            _ => {
+                                for item in parsed_payload.data {
+                                    if let (Some(address), Some(symbol)) = (item.contract_address, item.symbol) {
+                                        state.token_symbols.insert(address.to_lowercase(), symbol);
+                                    }
+                                }
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("[SYMBOL MAP] Failed to parse data-update payload: {}", e);
+                        warn!("[DATA ERROR] Failed to parse data-update payload: {}", e);
                     }
                 }
             }
@@ -101,23 +141,21 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                     .or_insert_with(|| {
                         info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
                         
-                        // ✨ 1. 创建共享状态
                         let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
                         
-                        // ✨ 2. 将状态传给 Task
                         let task_handle = tokio::spawn(binance_task::binance_websocket_task(
                             state.io.clone(),
                             room_name.clone(),
                             symbol.clone(), 
                             state.config.clone(),
-                            current_kline.clone(), // 传递进去
+                            current_kline.clone(),
                         ));
                         
                         Room {
                             clients: HashSet::new(),
                             task_handle,
                             symbol,
-                            current_kline, // ✨ 3. 保存到 Room 以便 HTTP Handler 访问
+                            current_kline,
                         }
                     })
                     .value_mut()
