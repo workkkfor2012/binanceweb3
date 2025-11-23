@@ -1,1 +1,1 @@
-{"root":["./src/extractor.ts","./src/filtermanager.ts","./src/global.d.ts","./src/kline-client.ts","./src/kline-investigator.ts","./src/logger.ts","./src/pageinitializer.ts"],"version":"5.9.3"}
+{"root":["./src/extractor.ts","./src/filtermanager.ts","./src/global.d.ts","./src/kline-client.ts","./src/kline-investigator.ts","./src/logger.ts","./src/meme-extractor.ts","./src/meme-scanner.ts","./src/pageinitializer.ts"],"version":"5.9.3"}
