@@ -1,9 +1,10 @@
 // packages/backend/src/socket_handlers.rs
 
+
 use super::{
     binance_task,
     kline_handler,
-    types::{DataPayload, KlineSubscribePayload, Room, KlineTick, DataCategory}, 
+    types::{DataPayload, KlineSubscribePayload, Room, KlineTick, DataCategory},
     ServerState,
 };
 use socketioxide::{
@@ -11,11 +12,11 @@ use socketioxide::{
 };
 use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::sync::Mutex; 
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-// ✨ 定义过滤阈值：1万
-const MIN_HOTLIST_VOLUME: f64 = 10000.0;
+// ✨ 定义过滤阈值：1万 (成交额 USD)
+const MIN_HOTLIST_AMOUNT: f64 = 100000.0;
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
@@ -25,6 +26,7 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     register_kline_unsubscribe_handler(&s, state.clone());
     register_disconnect_handler(&s, state.clone());
     register_kline_history_handler(&s, state);
+
 }
 
 fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
@@ -46,29 +48,32 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
             let state = state.clone();
             async move {
                 // ✨ 修改逻辑顺序：先解析 -> 再过滤 -> 最后广播
-                
+
                 match serde_json::from_value::<DataPayload>(payload.0) {
                     Ok(mut parsed_payload) => {
                         let original_count = parsed_payload.data.len();
 
                         // ✨ 核心过滤逻辑
-                        // 如果是 Hotlist，则应用成交额过滤
+                        // 如果是 Hotlist，则应用成交额过滤 (成交量 * 价格)
                         if parsed_payload.category == DataCategory::Hotlist {
                             parsed_payload.data.retain(|item| {
-                                // volume24h 是 Option<f64>，如果为 None (爬取失败) 则视为 0.0
-                                item.volume24h.unwrap_or(0.0) >= MIN_HOTLIST_VOLUME
+                                let volume = item.volume24h.unwrap_or(0.0);
+                                let price = item.price.unwrap_or(0.0);
+                                // 简单的成交量 * 价格 = 估算成交额 (Amount)
+                                let amount = volume * price;
+                                amount >= MIN_HOTLIST_AMOUNT
                             });
                         }
 
                         let filtered_count = parsed_payload.data.len();
 
                         info!(
-                            "🕷️ [SPIDER DATA] Cat: {:?} | Act: {:?} | Filter: {} -> {} (Vol >= {})", 
+                            "🕷️ [SPIDER DATA] Cat: {:?} | Act: {:?} | Filter: {} -> {} (Amount >= {})", 
                             parsed_payload.category, 
                             parsed_payload.r#type,
                             original_count,
                             filtered_count,
-                            MIN_HOTLIST_VOLUME
+                            MIN_HOTLIST_AMOUNT
                         );
 
                         // ✨ 只有当过滤后还有数据时，才广播给前端
@@ -102,6 +107,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
             }
         },
     );
+
 }
 
 fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
@@ -111,7 +117,7 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
             let state = state.clone();
             async move {
                 let chain_lower = payload.chain.to_lowercase();
-                
+
                 let address_lowercase = payload.address.to_lowercase();
                 let symbol = state.token_symbols
                     .get(&address_lowercase)
@@ -164,6 +170,7 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
             }
         },
     );
+
 }
 
 fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
@@ -174,7 +181,7 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
             async move {
                 let chain_lower = payload.chain.to_lowercase();
 
-                 let symbol = state.token_symbols
+                let symbol = state.token_symbols
                     .get(&payload.address.to_lowercase())
                     .map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
 
@@ -203,6 +210,7 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
             }
         },
     );
+
 }
 
 fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
@@ -236,4 +244,5 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
             }
         }
     });
+
 }
