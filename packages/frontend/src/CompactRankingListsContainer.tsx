@@ -12,12 +12,15 @@ const formatPercentage = (change: string | number | null | undefined): JSX.Eleme
     return <span class={changeClass}>{value.toFixed(2)}</span>;
 };
 
+// 移除: formatVolume 函数，因为成交额排名已被删除
+/*
 const formatVolume = (num: number | null | undefined): string => {
   if (num === null || num === undefined) return 'N/A';
   if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
   if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
   return num.toFixed(0);
 };
+*/
 
 interface CompactListProps {
   title: string;
@@ -108,6 +111,9 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
       { field: 'priceChange4h', title: '4h 漲幅' },
       { field: 'priceChange24h', title: '24h 漲幅' },
     ];
+    
+    // 移除: VOLUME_RANKINGS 配置
+    /*
     const VOLUME_RANKINGS = [
       { field: 'volume1m', title: '1m 成交额' },
       { field: 'volume5m', title: '5m 成交额' },
@@ -115,6 +121,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
       { field: 'volume4h', title: '4h 成交额' },
       { field: 'volume24h', title: '24h 成交额' },
     ];
+    */
 
     return (
         <div class="compact-ranking-list-container">
@@ -150,28 +157,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                     </For>
                 </div>
                 
-                <div class="ranking-section">
-                    <h2 style={{ 
-                        "color": props.theme.layout.textColor,
-                        "border-bottom-color": props.theme.grid.horzLines 
-                    }}>
-                        成交额排名
-                    </h2>
-                    <For each={VOLUME_RANKINGS}>
-                        {(ranking) => (
-                            <CompactRankingList
-                                title={ranking.title}
-                                data={props.marketData}
-                                rankBy={ranking.field as keyof MarketItem}
-                                formatter={formatVolume}
-                                onHeaderClick={props.onHeaderClick}
-                                blockList={props.blockList}
-                                onItemClick={props.onItemClick}
-                                theme={props.theme} // ✨ Pass
-                            />
-                        )}
-                    </For>
-                </div>
+                {/* 移除: 成交额排名的整个 section */}
             </div>
         </div>
     );

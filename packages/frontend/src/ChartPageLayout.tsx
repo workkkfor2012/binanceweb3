@@ -42,7 +42,10 @@ const saveBlockListToStorage = (blockList: Set<string>): void => {
 const ChartPageLayout: Component = () => {
   const [marketData, setMarketData] = createStore<MarketItem[]>([]);
   const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
-  const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('volume1m');
+  
+  // ✨ 修改: 默认排序改为 'priceChange5m'，因为成交额排名已被移除
+  const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('priceChange5m');
+  
   const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
   const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
   
