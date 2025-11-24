@@ -1,19 +1,19 @@
-// packages/frontend/src/SingleKlineChart.tsx
 /** @jsxImportSource solid-js */
 
+
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
-import { 
-    createChart, 
-    ColorType, 
-    IChartApi, 
-    ISeriesApi, 
-    CandlestickData, 
-    CandlestickSeries, 
-    Time, 
-    LineSeries, 
+import {
+    createChart,
+    ColorType,
+    IChartApi,
+    ISeriesApi,
+    CandlestickData,
+    CandlestickSeries,
+    Time,
+    LineSeries,
     PriceFormat,
     HistogramSeries,
-    MouseEventParams 
+    MouseEventParams
 } from 'lightweight-charts';
 import { socket } from './socket';
 import type { KlineUpdatePayload, KlineFetchErrorPayload, LightweightChartKline } from './types';
@@ -40,6 +40,7 @@ interface SingleKlineChartProps {
 
 // --- ✨ 新增: 图例数据接口 ---
 interface LegendData {
+    time: string; // ✨ 新增时间字段
     open: string;
     high: string;
     low: string;
@@ -48,6 +49,25 @@ interface LegendData {
     changePercent: string;
     color: string; // 用于涨跌幅颜色
 }
+
+// ✨ 核心工具: 强制格式化为中国东八区时间
+const formatTimeInChina = (timeInSeconds: number): string => {
+    try {
+        const date = new Date(timeInSeconds * 1000);
+        return date.toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false, // 24小时制
+        });
+    } catch (e) {
+        console.error('[TimeFormat] Error formatting time:', e);
+        return new Date(timeInSeconds * 1000).toLocaleTimeString();
+    }
+};
 
 // 自适应精度计算
 const getAdaptivePriceFormat = (price: number): PriceFormat => {
@@ -72,6 +92,7 @@ const getAdaptivePriceFormat = (price: number): PriceFormat => {
         precision: finalPrecision,
         minMove: minMove,
     };
+
 };
 
 const customPriceFormatter = (price: number): string => {
@@ -79,11 +100,12 @@ const customPriceFormatter = (price: number): string => {
         maximumFractionDigits: 10,
         useGrouping: false
     }).format(price);
-    
+
     if (s.includes('.')) {
         return s.replace(/\.?0+$/, '');
     }
     return s;
+
 };
 
 // ✨ 辅助: 格式化大额数字 (1.2M, 500K)
@@ -105,11 +127,11 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let chartContainer: HTMLDivElement;
     let chart: IChartApi | null = null;
     let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
-    let volumeSeries: ISeriesApi<'Histogram'> | null = null; 
+    let volumeSeries: ISeriesApi<'Histogram'> | null = null;
     let ghostSeries: ISeriesApi<'Line'> | null = null;
     let resizeObserver: ResizeObserver | null = null;
     const [status, setStatus] = createSignal('Initializing...');
-    
+
     // ✨ 新增: 图例数据 Signal
     const [legendData, setLegendData] = createSignal<LegendData | null>(null);
 
@@ -142,7 +164,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     // ✨ 辅助: 更新图例逻辑 (复用代码)
     const updateLegend = (candle: CandlestickData<number> | undefined, vol: any | undefined) => {
         if (!candle) {
-            // 如果没有数据，可以清空或保持最后状态，这里选择不处理
             return;
         }
         const open = candle.open;
@@ -155,8 +176,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const change = ((close - open) / open) * 100;
         const isUp = close >= open;
         const color = isUp ? props.theme.candle.upColor : props.theme.candle.downColor;
+        
+        // ✨ 计算时间字符串
+        const timeStr = formatTimeInChina(Number(candle.time));
 
         setLegendData({
+            time: timeStr,
             open: customPriceFormatter(open),
             high: customPriceFormatter(high),
             low: customPriceFormatter(low),
@@ -200,12 +225,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     value: amount,
                     color: isUp ? props.theme.candle.upColor : props.theme.candle.downColor
                 });
-
-                // ✨ 如果鼠标不在图表上（或图表没有焦点），实时更新最新一根 K 线的图例
-                // 这里做一个简单的判断，直接更新（如果在查看历史，鼠标移动事件会覆盖这个）
-                // 为了更平滑的体验，通常只在鼠标移出后才由实时数据主导，
-                // 但因为 lightweight-charts 没有直接的 "isHovering" 状态，
-                // 我们依靠 subscribeCrosshairMove 来处理。
             }
         }
     };
@@ -273,18 +292,38 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         if (!chartContainer) return;
 
         try {
+            console.log(`[SingleKlineChart] 🌏 Creating Chart for ${info.symbol} with Timezone: Asia/Shanghai`);
+
             chart = createChart(chartContainer, {
                 width: chartContainer.clientWidth, height: chartContainer.clientHeight,
                 layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
                 grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
+                // ✨ 核心配置: 本地化设置
+                localization: {
+                    locale: 'zh-CN',
+                    // 强制十字光标提示显示为中国时间
+                    timeFormatter: (time: number) => {
+                        return formatTimeInChina(time);
+                    }
+                },
                 timeScale: { 
                     visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false,
                     rightOffset: 12, shiftVisibleRangeOnNewBar: true, fixLeftEdge: false, fixRightEdge: false, 
+                    // ✨ 核心配置: X轴刻度也尝试使用中国时间（虽然库会自动处理，但我们可以强制显示逻辑）
+                    tickMarkFormatter: (time: number, tickMarkType: any, locale: string) => {
+                        const date = new Date(time * 1000);
+                         // 简单的时分显示，确保是东八区
+                        return date.toLocaleTimeString('zh-CN', {
+                             timeZone: 'Asia/Shanghai',
+                             hour: '2-digit', 
+                             minute: '2-digit', 
+                             hour12: false
+                        });
+                    }
                 },
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
                 leftPriceScale: { visible: false, autoScale: false }, 
                 handleScroll: true, handleScale: true,
-                // ✨ 优化: 允许十字光标在任意点显示
                 crosshair: {
                     mode: 1, // Magnet mode
                 }
@@ -498,7 +537,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 </Show>
             </div>
 
-            {/* ✨ 新增: 悬浮图例 UI */}
+            {/* ✨ 新增: 悬浮图例 UI (增加了时间显示) */}
             <div 
                 class="chart-legend" 
                 style={{
@@ -514,7 +553,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 }}
             >
                 <Show when={legendData()}>
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px', flexRule: 'wrap' }}>
+                        {/* 时间显示 */}
+                        <span style={{ "font-weight": "bold", opacity: 0.8 }}>{legendData()!.time}</span>
                         <span>O:<span style={{color: legendData()!.color}}>{legendData()!.open}</span></span>
                         <span>H:<span style={{color: legendData()!.color}}>{legendData()!.high}</span></span>
                         <span>L:<span style={{color: legendData()!.color}}>{legendData()!.low}</span></span>
@@ -528,6 +569,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             <div ref={chartContainer!} class="chart-container" />
         </div>
     );
+
 };
 
 export default SingleKlineChart;
