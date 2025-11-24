@@ -5,7 +5,8 @@ import { chromium } from 'playwright-extra';
 import type { Browser, Page } from 'playwright';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import { handleGuidePopup, checkAndClickCookieBanner } from './pageInitializer';
-//import { applyVolumeFilter } from './filterManager';
+// 引入新增的排序函数
+import { applyPriceChangeSort } from './filterManager';
 import * as logger from './logger';
 import { io, Socket } from 'socket.io-client';
 import type { ExtractedDataPayload } from 'shared-types';
@@ -25,8 +26,8 @@ const SERVER_URL = 'http://localhost:3001';
 // 目前全是 'hotlist'，为你预留了 'new'
 const TARGETS = [
     { name: 'BSC', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc' },
-    { name: 'Base', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=base' },
-    { name: 'Solana', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=sol' },
+    // { name: 'Base', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=base' },
+    // { name: 'Solana', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=sol' },
     // { name: 'BSC_NEW', category: 'new', url: '...' }, // 示例：未来添加的新币榜
 ];
 
@@ -93,6 +94,10 @@ async function setupPageForChain(
     // 对每个页面独立、健壮地处理弹窗
     await handleGuidePopup(page);
     await checkAndClickCookieBanner(page);
+    await page.waitForTimeout(3000);
+    // ✨ 新增：应用涨跌幅排序 (1H 涨幅榜)
+    await applyPriceChangeSort(page);
+
     //await applyVolumeFilter(page, MIN_VOLUME_FILTER);
 
     const handleExtractedData = (result: ExtractedDataPayload): void => {
@@ -141,7 +146,7 @@ async function main(): Promise<void> {
 
         browser = await chromium.launch({
             executablePath: MY_CHROME_PATH,
-            headless: true,
+            headless: false,
             proxy: { server: 'socks5://127.0.0.1:1080' },
             args: ['--start-maximized']
         });

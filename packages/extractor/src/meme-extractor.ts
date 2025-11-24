@@ -12,7 +12,7 @@ import type { ExtractedDataPayload } from 'shared-types';
 chromium.use(stealth());
 
 // ==============================================================================
-// --- ⚙️ Meme Rush 透视配置 ---
+// --- ⚙️ Meme Rush 生产配置 (已更新字段) ---
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const SERVER_URL = 'http://localhost:3001';
@@ -24,19 +24,32 @@ const TARGET = {
     category: 'meme_new' 
 };
 
-// 保持配置不变
 const MEME_CONFIG = {
     heuristic: {
         maxFiberTreeDepth: 100, 
         minArrayLength: 2, 
         requiredKeys: ['symbol', 'contractAddress'], 
     },
+    // ✨ 根据刚才的 RAW_DUMP 更新了字段列表
     desiredFields: [
-        'contractAddress', 'symbol', 'name', 
-        'price', 'priceChange24h', 
-        'marketCap', 'volume24h', 
-        'progress', 'firstSeen', 'createTime',
-        'twitter', 'telegram', 'website', 'icon'
+        'contractAddress', 
+        'symbol', 
+        'name', 
+        'marketCap',      // 代替 price
+        'liquidity',      // 池子厚度
+        'volume',         // 24h交易量
+        'progress',       // 进度条
+        'holders',        // 持有人数
+        'countBuy',       // 买入次数
+        'countSell',      // 卖出次数
+        'createTime',     // 创建时间
+        'firstSeen',      // 上线时间
+        'twitter', 
+        'telegram', 
+        'website', 
+        'icon',
+        'exclusive',      // 是否独家
+        'sensitiveToken'  // 是否敏感
     ]
 };
 
@@ -59,7 +72,7 @@ async function setupMemePage(
     browserScriptOriginal: string, 
     socket: Socket
 ): Promise<void> {
-    logger.log(`[Setup] 初始化 Meme Rush (透视模式)...`, logger.LOG_LEVELS.INFO);
+    logger.log(`[Setup] 初始化 Meme Rush (Deep Check Mode)...`, logger.LOG_LEVELS.INFO);
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
 
@@ -85,18 +98,14 @@ async function setupMemePage(
 
     await page.exposeFunction('onDataExtracted', handleExtractedData);
 
-    // 2. 注入日志转发，专门监听 [RAW_DUMP]
+    // 2. 日志转发
     await page.addInitScript({
         content: `
             window.originalConsoleLog = console.log;
             console.log = (...args) => {
-                // 只要包含 RAW_DUMP 就强制打印，忽略其他
+                // 监听 RAW_DUMP
                 if (args[0] && typeof args[0] === 'string' && args[0].includes('RAW_DUMP')) {
                     window.originalConsoleLog(args[0]); 
-                }
-                // 打印关键错误
-                if (args[0] && typeof args[0] === 'string' && args[0].includes('CRITICAL')) {
-                    window.originalConsoleLog('[Browser]', ...args);
                 }
             };
         `
@@ -111,28 +120,30 @@ async function setupMemePage(
         const dynamicSelector = await detectStableContainer(page);
         logger.log(`[Target] 挂载点: ${dynamicSelector}`, logger.LOG_LEVELS.INFO);
 
-        // 3. 💉 修正后的代码注入
+        // 3. 💉 注入多条数据打印逻辑
         let debugScript = browserScriptOriginal;
         
-        // 【关键修正】使用唯一的代码行作为锚点，确保注入到 extractData 内部
         const anchorLine = 'const totalCount = dataArray.length;';
         
         debugScript = debugScript.replace(
             anchorLine,
             `
             ${anchorLine}
-            // --- 💉 注入点 START ---
-            // 只有当有数据，且缓存为空（第一次运行）时，打印第一条数据的原始内容
+            // --- 💉 注入点 START: 打印前5条数据 ---
             if (dataArray.length > 0 && Object.keys(dataStateCache).length === 0) {
-                const rawItem = dataArray[0];
-                // 打印整个对象结构
-                safeLog("🔥 [RAW_DUMP] " + JSON.stringify(rawItem));
+                // 截取前 5 个
+                const slice = dataArray.slice(0, 5);
+                safeLog("🔥 [RAW_DUMP_HEADER] Found " + dataArray.length + " items. Showing first " + slice.length + ":");
+                
+                slice.forEach((item, index) => {
+                    safeLog("🔥 [RAW_DUMP_" + index + "] " + JSON.stringify(item));
+                });
             }
             // --- 💉 注入点 END ---
             `
         );
 
-        // 安全调用封装
+        // 安全检查
         debugScript = debugScript.replace(
             /window\.onDataExtracted\(payload\);/g,
             `if (typeof window.onDataExtracted === 'function') { window.onDataExtracted(payload); }`
@@ -152,7 +163,6 @@ async function setupMemePage(
             })();
         `;
 
-        // 注入并启动
         await page.evaluate(initScriptContent);
 
         // 4. 处理弹窗
@@ -164,22 +174,21 @@ async function setupMemePage(
         throw error;
     }
 
-    logger.log(`✅ [Setup] 透视模式运行中，请等待 [RAW_DUMP] 日志...`, logger.LOG_LEVELS.INFO);
+    logger.log(`✅ [Setup] 运行中. 等待打印前 5 个币种详情...`, logger.LOG_LEVELS.INFO);
 }
 
 async function main() {
     logger.init();
-    logger.log('🚀 [MemeExtractor] 修复版启动...', logger.LOG_LEVELS.INFO);
+    logger.log('🚀 [MemeExtractor] 启动...', logger.LOG_LEVELS.INFO);
     const socket: Socket = io(SERVER_URL);
     let browser: Browser | undefined;
-    
     try {
         const browserScriptPath = path.join(__dirname, '..', 'src', 'browser-script.js');
         const browserScript = await fs.readFile(browserScriptPath, 'utf-8');
 
         browser = await chromium.launch({
             executablePath: MY_CHROME_PATH,
-            headless: false, // 保持 headless 以专注于日志
+            headless: false, // 保持 headless
             proxy: { server: 'socks5://127.0.0.1:1080' },
             args: ['--start-maximized', '--no-sandbox']
         });

@@ -29,3 +29,37 @@ export async function applyVolumeFilter(page: Page, minVolume: number | string):
     throw error; 
   }
 }
+
+/**
+ * 点击第6列（涨跌幅）的第一个按钮，以触发排序（预期结果：1H涨幅榜）
+ */
+export async function applyPriceChangeSort(page: Page): Promise<void> {
+  log(`📉 [Sort] 准备点击第6列(涨跌幅)进行排序...`, LOG_LEVELS.INFO);
+
+  try {
+    // 定位第6列头部中的第一个按钮
+    const sortButtonLocator = page.locator('th:nth-child(5) button').first();
+    
+    // 检查元素是否存在
+    if (await sortButtonLocator.count() === 0) {
+      log('  ⚠️ [Sort] 未找到第6列的排序按钮，跳过排序。', LOG_LEVELS.ERROR);
+      return;
+    }
+
+    log('  -> [Sort] 正在点击排序按钮...', LOG_LEVELS.DEBUG);
+    await sortButtonLocator.click();
+    
+    log('  -> [Sort] 按钮已点击，等待列表刷新 (2s)...', LOG_LEVELS.DEBUG);
+    
+    // 点击排序后，列表通常会重排，这里给予固定的缓冲时间让 React 完成渲染
+    // 使用 waitForTimeout 比 networkidle 更适合这种纯前端排序或轻量请求
+    await page.waitForTimeout(2000);
+    
+    log('✅ [Sort] 排序操作已完成，当前应为涨幅榜状态。', LOG_LEVELS.INFO);
+
+  } catch (error: any) {
+    log(`❌ [Sort] 排序操作发生错误: ${error.message}`, LOG_LEVELS.ERROR);
+    // 排序失败通常不应阻断主流程，抛出错误由上层决定是否捕获，或者此处吞掉错误
+    throw error; 
+  }
+}

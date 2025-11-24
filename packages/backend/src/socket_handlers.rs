@@ -15,8 +15,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-// ✨ 定义过滤阈值：1万 (成交额 USD)
-const MIN_HOTLIST_AMOUNT: f64 = 100000.0;
+// ✨ 定义过滤阈值：10万 (成交额 USD)
+const MIN_HOTLIST_AMOUNT: f64 = 0.0000001;
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
@@ -57,18 +57,27 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         // 如果是 Hotlist，则应用成交额过滤 (成交量 * 价格)
                         if parsed_payload.category == DataCategory::Hotlist {
                             parsed_payload.data.retain(|item| {
-                                let volume = item.volume24h.unwrap_or(0.0);
+                                // ✨ 修改：使用 1小时成交量 (volume1h) 进行过滤
+                                let volume = item.volume1h.unwrap_or(0.0);
                                 let price = item.price.unwrap_or(0.0);
                                 // 简单的成交量 * 价格 = 估算成交额 (Amount)
                                 let amount = volume * price;
-                                amount >= MIN_HOTLIST_AMOUNT
+                                
+                                // 日志记录极低成交量的数据（可选，用于调试）
+                                // if amount < MIN_HOTLIST_AMOUNT {
+                                //    info!("🔍 [FILTER DROP] {} (1H Vol: {}, Price: {}, Amount: {})", 
+                                //        item.symbol.as_deref().unwrap_or("?"), volume, price, amount);
+                                // }
+
+                                amount >= 0.000000001
                             });
                         }
 
                         let filtered_count = parsed_payload.data.len();
 
+                        // ✨ 更新日志：明确显示是基于 1H Amount 进行过滤
                         info!(
-                            "🕷️ [SPIDER DATA] Cat: {:?} | Act: {:?} | Filter: {} -> {} (Amount >= {})", 
+                            "🕷️ [SPIDER DATA] Cat: {:?} | Act: {:?} | Filter: {} -> {} (1H Amount >= {})", 
                             parsed_payload.category, 
                             parsed_payload.r#type,
                             original_count,
