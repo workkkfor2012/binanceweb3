@@ -12,11 +12,10 @@ import type { ExtractedDataPayload } from 'shared-types';
 chromium.use(stealth());
 
 // ==============================================================================
-// --- ⚙️ Meme Rush 生产配置 (已更新字段) ---
+// --- ⚙️ Meme Rush 生产配置 ---
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const SERVER_URL = 'http://localhost:3001';
-// ✨ 修改：频率调整为 500ms
 const EXTRACTION_INTERVAL_MS = 500;
 
 const TARGET = {
@@ -31,29 +30,13 @@ const MEME_CONFIG = {
         minArrayLength: 2, 
         requiredKeys: ['symbol', 'contractAddress'], 
     },
-    // ✨ 根据刚才的 RAW_DUMP 更新了字段列表
+    // 这里还是需要的，否则 browser-script.js 里的过滤逻辑会报错
     desiredFields: [
-        'contractAddress', 
-        'symbol', 
-        'name', 
-        'marketCap',      // 代替 price
-        'liquidity',      // 池子厚度
-        'volume',         // 24h交易量
-        'progress',       // 进度条
-        'holders',        // 持有人数
-        'countBuy',       // 买入次数
-        'countSell',      // 卖出次数
-        'createTime',     // 创建时间
-        'firstSeen',      // 上线时间
-        'twitter', 
-        'telegram', 
-        'website', 
-        'icon',
-        'exclusive',      // 是否独家
-        'sensitiveToken'  // 是否敏感
+        'contractAddress', 'symbol', 'name', 'marketCap', 'liquidity',      
+        'volume', 'progress', 'holders', 'createTime', 'twitter', 
+        'telegram', 'website', 'icon',
     ]
 };
-
 // ==============================================================================
 
 async function detectStableContainer(page: Page): Promise<string> {
@@ -73,26 +56,28 @@ async function setupMemePage(
     browserScriptOriginal: string, 
     socket: Socket
 ): Promise<void> {
-    logger.log(`[Setup] 初始化 Meme Rush (Deep Check Mode)...`, logger.LOG_LEVELS.INFO);
+    logger.log(`[Setup] 初始化 Meme Rush (RAW DUMP MODE)...`, logger.LOG_LEVELS.INFO);
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
 
-    // 1. 绑定回调
+    // ✨✨✨ 核心：接收来自 browser-script.js 的 safeLog 打印 ✨✨✨
+    page.on('console', msg => {
+        const text = msg.text();
+        // 过滤掉无关的日志，只看我们关心的
+        if (text.includes('RAW DATA') || text.includes('{') || text.includes('Smart Async')) {
+             console.log(`🔎 [BROWSER] ${text}`);
+        }
+    });
+
     const handleExtractedData = (result: ExtractedDataPayload): void => {
         const { type, data, changedCount } = result;
-        
-        // ✨ 500ms 一次，日志可能会很多，可以根据需要调整日志级别或注释掉
         if (type !== 'no-change') {
              const time = new Date().toLocaleTimeString();
              logger.log(`⚡ [${TARGET.name}] ${time} | ${type.padEnd(8)} | 数量: ${String(changedCount).padEnd(3)}`, logger.LOG_LEVELS.INFO);
         }
-
         if (data && data.length > 0 && type !== 'no-change') {
             const enrichedData = data.map(item => ({ 
-                ...item, 
-                chain: 'BSC', 
-                source: 'meme-rush', 
-                _scrapedAt: Date.now() 
+                ...item, chain: 'BSC', source: 'meme-rush', _scrapedAt: Date.now() 
             }));
             socket.emit('data-update', { category: TARGET.category, type: type, data: enrichedData });
         }
@@ -100,18 +85,8 @@ async function setupMemePage(
 
     await page.exposeFunction('onDataExtracted', handleExtractedData);
 
-    // 2. 日志转发
-    await page.addInitScript({
-        content: `
-            window.originalConsoleLog = console.log;
-            console.log = (...args) => {
-                // 监听 RAW_DUMP
-                if (args[0] && typeof args[0] === 'string' && args[0].includes('RAW_DUMP')) {
-                    window.originalConsoleLog(args[0]); 
-                }
-            };
-        `
-    });
+    // 注入 originalConsoleLog
+    await page.addInitScript({ content: `window.originalConsoleLog = console.log;` });
 
     try {
         logger.log(`[Navi] 前往: ${TARGET.url}`, logger.LOG_LEVELS.INFO);
@@ -122,29 +97,7 @@ async function setupMemePage(
         const dynamicSelector = await detectStableContainer(page);
         logger.log(`[Target] 挂载点: ${dynamicSelector}`, logger.LOG_LEVELS.INFO);
 
-        // 3. 💉 注入多条数据打印逻辑
-        let debugScript = browserScriptOriginal;
-        
-        const anchorLine = 'const totalCount = dataArray.length;';
-        
-        debugScript = debugScript.replace(
-            anchorLine,
-            `
-            ${anchorLine}
-            // --- 💉 注入点 START: 打印前5条数据 ---
-            if (dataArray.length > 0) {
-                // 这里的逻辑会被浏览器脚本的缓存逻辑覆盖，但下面的修改会去掉缓存逻辑
-            }
-            // --- 💉 注入点 END ---
-            `
-        );
-
-        // 安全检查
-        debugScript = debugScript.replace(
-            /window\.onDataExtracted\(payload\);/g,
-            `if (typeof window.onDataExtracted === 'function') { window.onDataExtracted(payload); }`
-        );
-
+        // 直接使用文件内容，不再做复杂的正则替换
         const options = {
             selectors: { stableContainer: dynamicSelector },
             interval: EXTRACTION_INTERVAL_MS,
@@ -154,14 +107,12 @@ async function setupMemePage(
 
         const initScriptContent = `
             (() => {
-                ${debugScript}
+                ${browserScriptOriginal}
                 window.initializeExtractor(${JSON.stringify(options)});
             })();
         `;
 
         await page.evaluate(initScriptContent);
-
-        // 4. 处理弹窗
         await handleGuidePopup(page);
         await checkAndClickCookieBanner(page);
 
@@ -170,7 +121,7 @@ async function setupMemePage(
         throw error;
     }
 
-    logger.log(`✅ [Setup] 运行中. 等待打印前 5 个币种详情...`, logger.LOG_LEVELS.INFO);
+    logger.log(`✅ [Setup] 运行中. 应该能在日志中看到 'RAW DATA DUMP START' 了。`, logger.LOG_LEVELS.INFO);
 }
 
 async function main() {
@@ -184,7 +135,7 @@ async function main() {
 
         browser = await chromium.launch({
             executablePath: MY_CHROME_PATH,
-            headless: false, // 保持 headless
+            headless: false,
             proxy: { server: 'socks5://127.0.0.1:1080' },
             args: ['--start-maximized', '--no-sandbox']
         });

@@ -48,8 +48,6 @@ window.initializeExtractor = function(options) {
   };
 
   let cachedPath = null;
-  // ✨ 修改：移除缓存状态对象，我们现在每次都发送全量
-  // let dataStateCache = {}; 
   let lastExecutionTime = 0;
   const YIELD_THRESHOLD = 200;
 
@@ -107,11 +105,6 @@ window.initializeExtractor = function(options) {
     return null;
   };
 
-  // ✨ 修改：移除 diff 对比函数
-  // const areObjectsDifferent = (oldObj, newObj) => { ... };
-
-  // --- 辅助函数结束 ---
-
   const extractData = async () => {
     const startTime = performance.now();
     
@@ -157,13 +150,29 @@ window.initializeExtractor = function(options) {
     const readEndTime = performance.now();
 
     if (dataArray && dataArray.length > 0) {
+      
+      // 🔥🔥🔥 修改：打印前 5 条原始数据 🔥🔥🔥
+      if (!window._hasDumpedRawData) {
+         safeLog('========== [RAW DATA DUMP START - TOP 5] ==========');
+         try {
+             // 截取前 5 条
+             const sample = dataArray.slice(0, 5);
+             safeLog(JSON.stringify(sample, null, 2)); 
+         } catch(e) {
+             safeLog('Failed to stringify raw data: ' + e.message);
+         }
+         safeLog('========== [RAW DATA DUMP END] ====================');
+         
+         // 设置标记，避免刷屏，如果需要重新打印，刷新浏览器即可
+         window._hasDumpedRawData = true; 
+      }
+      // 🔥🔥🔥 修改结束 🔥🔥🔥
+
       const totalCount = dataArray.length;
       
-      // ✨ 修改：直接全量映射，不再做 diff 检查
       const currentSnapshot = [];
 
       for (const item of dataArray) {
-        // 简单的空值检查
         if (!item) continue;
 
         const filteredItem = {};
@@ -175,7 +184,6 @@ window.initializeExtractor = function(options) {
 
       const diffEndTime = performance.now();
       
-      // ✨ 修改：changedCount 现在等于 totalCount (或者 snapshot 的长度)
       const changedCount = currentSnapshot.length;
 
       const readDuration = (readEndTime - startTime).toFixed(2);
@@ -191,16 +199,13 @@ window.initializeExtractor = function(options) {
         totalCount,
         changedCount,
         cacheHit: cacheHit,
-        // ✨ 修改：始终发送 snapshot 类型
         type: 'snapshot', 
         data: currentSnapshot
       };
 
-      // 只有当确实抓取到了数据时才发送
       if (changedCount > 0) {
         window.onDataExtracted(payload);
       } else {
-        // 如果数组是空的，发送 no-change 防止心跳丢失（可选）
         payload.type = 'no-change';
         delete payload.data;
         window.onDataExtracted(payload);
