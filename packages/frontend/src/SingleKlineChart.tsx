@@ -1,6 +1,3 @@
-/** @jsxImportSource solid-js */
-
-
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
 import {
     createChart,

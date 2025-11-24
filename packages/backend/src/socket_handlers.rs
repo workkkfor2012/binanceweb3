@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 // ✨ 定义过滤阈值：10万 (成交额 USD)
-const MIN_HOTLIST_AMOUNT: f64 = 0.0000001;
+const MIN_HOTLIST_AMOUNT: f64 = 1000.0;
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
@@ -69,7 +69,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                 //        item.symbol.as_deref().unwrap_or("?"), volume, price, amount);
                                 // }
 
-                                amount >= 0.000000001
+                                amount >= MIN_HOTLIST_AMOUNT
                             });
                         }
 
