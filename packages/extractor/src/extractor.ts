@@ -102,18 +102,17 @@ async function setupPageForChain(
     //await applyVolumeFilter(page, MIN_VOLUME_FILTER);
 
     const handleExtractedData = (result: ExtractedDataPayload): void => {
-        const { type, data, duration, totalCount, changedCount, cacheHit } = result;
+        // ✨ 修复 1：移除了未使用的 changedCount
+        const { type, data, duration, totalCount, cacheHit } = result;
 
         // ✨ 修改日志：不再强调 "变更数"，因为每次都是全量
-        // 但为了保持格式整洁，我们还是打印出来
         const perfString = `[${chainName.padEnd(6)}] 读取: ${String(totalCount).padEnd(3)} | 耗时: ${duration}ms | 缓存: ${cacheHit ? '命中' : '未命中'}`;
         process.stdout.write(`\r[${new Date().toLocaleTimeString()}] ${perfString}   `);
 
         if (type !== 'no-change' && data && data.length > 0) {
             const enrichedData = data.map(item => ({ ...item, chain: chainName }));
             
-            // ✨ 永远都是 snapshot
-            const updateTypeLog = '全量快照';
+            // ✨ 修复 2：移除了未使用的 updateTypeLog 变量
             
             // ✨ 协议重构：发送双字段
             // category: 来自配置 (hotlist, new)
@@ -126,7 +125,7 @@ async function setupPageForChain(
             
             // 换行打印，避免和 process.stdout.write 冲突
             // process.stdout.write('\n'); // 可选：如果觉得 500ms 刷屏太快，可以注释掉这行详细日志
-            // logger.log(`📦 [Emit][${chainName}][${category}] Action: ${type} (${updateTypeLog}, ${totalCount} 条)`, logger.LOG_LEVELS.INFO);
+            // logger.log(`📦 [Emit][${chainName}][${category}] Action: ${type} (${totalCount} 条)`, logger.LOG_LEVELS.INFO);
         }
     };
 

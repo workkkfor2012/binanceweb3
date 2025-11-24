@@ -1,18 +1,16 @@
 // packages/frontend/src/ChartPageLayout.tsx
 import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
-import { createStore, produce } from 'solid-js/store';
-import { socket } from './socket';
-import type { MarketItem, DataPayload } from 'shared-types';
+import type { MarketItem } from 'shared-types';
 import CompactRankingListsContainer from './CompactRankingListsContainer';
 import MultiChartGrid from './MultiChartGrid';
 import SingleTokenView from './SingleTokenView';
-import { initializeVoices, checkAndTriggerAlerts } from './AlertManager';
+import { initializeVoices } from './AlertManager';
 import { PRESET_THEMES } from './themes';
+import { useMarketData } from './hooks/useMarketData'; // ✨ 引入 Hook
 
-// ✨ [Refactor] 核心修改: 将同步状态改为 Logical Range (逻辑索引)
 export interface ViewportState {
-  from: number; // Logical Index (float)
-  to: number; // Logical Index (float)
+  from: number;
+  to: number;
 }
 
 const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
@@ -40,23 +38,21 @@ const saveBlockListToStorage = (blockList: Set<string>): void => {
 };
 
 const ChartPageLayout: Component = () => {
-  const [marketData, setMarketData] = createStore<MarketItem[]>([]);
-  const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
+  // ✨ 使用 Hook 获取数据，不再自行管理 Socket
+  const { marketData, connectionStatus, lastUpdate } = useMarketData();
   
-  // ✨ 修改: 默认排序改为 'priceChange5m'，因为成交额排名已被移除
+  // UI 状态
   const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('priceChange5m');
-  
   const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
   const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
   
-  // 同步状态信号
+  // 视图与焦点状态
   const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
   const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
-
   const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
   const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
   
-  // ✨ Theme State
+  // 主题状态
   const [themeIndex, setThemeIndex] = createSignal(0);
   const currentTheme = createMemo(() => PRESET_THEMES[themeIndex()]);
 
@@ -67,19 +63,16 @@ const ChartPageLayout: Component = () => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
-    // ✨ Theme Switching Hotkey
     if (e.key.toLowerCase() === 't') {
         setThemeIndex((prev) => (prev + 1) % PRESET_THEMES.length);
-        console.log(`[Layout] Theme changed to: ${PRESET_THEMES[themeIndex()].name}`);
+        console.log(`[Layout] 🎨 Theme changed to: ${PRESET_THEMES[(themeIndex() + 1) % PRESET_THEMES.length].name}`);
         return;
     }
 
     if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
         const newTimeframe = TIMEFRAME_MAP[e.key];
         setActiveTimeframe(newTimeframe);
-        if (viewMode() === 'grid') {
-            setViewportState(null);
-        }
+        if (viewMode() === 'grid') setViewportState(null);
         return;
     }
 
@@ -100,49 +93,11 @@ const ChartPageLayout: Component = () => {
     }
   };
 
-  const handleNewAlert = (logMessage: string, alertType: 'volume' | 'price') => {
-    console.log(`[ChartPage Alert] [${alertType.toUpperCase()}] ${logMessage}`);
-  };
-
   onMount(() => {
-    if (!socket.connected) socket.connect();
-
-    socket.on('connect', () => setLastUpdate('Connected, waiting for data...'));
-    socket.on('disconnect', () => setLastUpdate('Disconnected'));
-    socket.on('data-broadcast', (payload: DataPayload) => {
-        if (!payload.data || payload.data.length === 0) return;
-        const blocked = blockList();
-        
-        for (const newItem of payload.data) {
-            if (!blocked.has(newItem.contractAddress)) {
-                const oldItem = marketData.find(d => 
-                    d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
-                );
-                if (oldItem) {
-                    checkAndTriggerAlerts(newItem, oldItem, handleNewAlert);
-                }
-            }
-        }
-
-        setMarketData(produce(currentData => {
-            for (const item of payload.data) {
-                const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
-                if (index > -1) Object.assign(currentData[index], item);
-                else currentData.push(item);
-            }
-        }));
-        setLastUpdate(new Date().toLocaleTimeString());
-    });
-
+    console.log('[ChartPage] 🚀 Component Mounted');
     initializeVoices();
     window.addEventListener('keydown', handleKeyDown);
-
-    onCleanup(() => {
-        socket.off('connect');
-        socket.off('disconnect');
-        socket.off('data-broadcast');
-        window.removeEventListener('keydown', handleKeyDown);
-    });
+    onCleanup(() => window.removeEventListener('keydown', handleKeyDown));
   });
 
   const handleBlockToken = (contractAddress: string) => {
@@ -156,6 +111,7 @@ const ChartPageLayout: Component = () => {
     const rankBy = activeRankBy();
     const blocked = blockList();
     if (!rankBy) return [];
+    
     return [...marketData]
       .filter(item => !blocked.has(item.contractAddress))
       .filter(item => item.icon && item[rankBy] != null)
@@ -181,15 +137,15 @@ const ChartPageLayout: Component = () => {
     <div 
         class="chart-page-container" 
         style={{ 
-            "background-color": currentTheme().layout.background, // ✨ 全局背景
-            "color": currentTheme().layout.textColor // ✨ 全局字体颜色
+            "background-color": currentTheme().layout.background,
+            "color": currentTheme().layout.textColor
         }}
     >
       <div 
         class="left-sidebar"
         style={{
-            "background-color": currentTheme().layout.background, // ✨ 侧边栏背景
-            "border-color": currentTheme().grid.vertLines, // ✨ 侧边栏边框，使用网格线颜色作为分割线
+            "background-color": currentTheme().layout.background,
+            "border-color": currentTheme().grid.vertLines,
             "color": currentTheme().layout.textColor
         }}
       >
@@ -199,8 +155,11 @@ const ChartPageLayout: Component = () => {
           onHeaderClick={handleRankingHeaderClick}
           blockList={blockList()}
           onItemClick={handleRankingItemClick}
-          theme={currentTheme()} // ✨ 传递主题
+          theme={currentTheme()}
         />
+        <div style={{ "padding": "10px", "font-size": "0.8em", "opacity": 0.6, "text-align": "center" }}>
+            Status: {connectionStatus()}
+        </div>
       </div>
       
       <div class="right-chart-grid">
@@ -212,11 +171,11 @@ const ChartPageLayout: Component = () => {
                 <div class="active-timeframe-indicator">
                   <span>Timeframe: </span>
                   <strong>{activeTimeframe().toUpperCase()}</strong>
-                  <span class="hotkey-hint" style={{ opacity: 0.6 }}>(Keys: 1-5)</span>
+                  <span class="hotkey-hint" style={{ opacity: 0.6 }}> (Keys: 1-5)</span>
                   
                   <span style={{ "margin-left": "15px" }}>Theme: </span>
                   <strong>{currentTheme().name}</strong>
-                  <span class="hotkey-hint" style={{ opacity: 0.6 }}>(Key: T)</span>
+                  <span class="hotkey-hint" style={{ opacity: 0.6 }}> (Key: T)</span>
                 </div>
               </div>
               <MultiChartGrid
@@ -227,7 +186,7 @@ const ChartPageLayout: Component = () => {
                 onViewportChange={handleViewportChange}
                 activeChartId={activeChartId()}
                 onSetActiveChart={setActiveChartId}
-                theme={currentTheme()} // ✨ 传递主题
+                theme={currentTheme()}
               />
             </>
           }
@@ -235,7 +194,7 @@ const ChartPageLayout: Component = () => {
           <SingleTokenView
             token={focusedToken()!}
             activeTimeframe={activeTimeframe()}
-            theme={currentTheme()} // ✨ 传递主题
+            theme={currentTheme()}
           />
         </Show>
       </div>

@@ -1,12 +1,11 @@
 // packages/frontend/src/TokenPageLayout.tsx
 /** @jsxImportSource solid-js */
 import { Component, createSignal, onMount, onCleanup, createEffect, Show, createMemo } from 'solid-js';
-import { createStore, produce } from 'solid-js/store';
-import { socket } from './socket';
-import type { MarketItem, DataPayload } from 'shared-types';
+import type { MarketItem } from 'shared-types';
 import CompactRankingListsContainer from './CompactRankingListsContainer';
 import SingleTokenView from './SingleTokenView';
 import { PRESET_THEMES } from './themes';
+import { useMarketData } from './hooks/useMarketData'; // ✨ 引入 Hook
 
 const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
 
@@ -16,7 +15,7 @@ const TIMEFRAME_MAP: Record<string, string> = {
 
 // Logger helper
 const log = (msg: string, ...args: any[]) => {
-  console.log(`[TokenPageLayout] ${msg}`, ...args);
+  console.log(`[TokenPage] ${msg}`, ...args);
 };
 
 const loadBlockListFromStorage = (): Set<string> => {
@@ -31,13 +30,13 @@ const loadBlockListFromStorage = (): Set<string> => {
 };
 
 const TokenPageLayout: Component = () => {
-  const [marketData, setMarketData] = createStore<MarketItem[]>([]);
-  const [lastUpdate, setLastUpdate] = createSignal('Connecting...');
+  // ✨ 使用 Hook 共享数据
+  const { marketData, lastUpdate } = useMarketData();
+  
   const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
   const [currentToken, setCurrentToken] = createSignal<MarketItem | null>(null);
   const [activeTimeframe, setActiveTimeframe] = createSignal('5m');
 
-  // 初始化主题状态 (默认使用第一个主题，支持快捷键切换)
   const [themeIndex, setThemeIndex] = createSignal(0);
   const currentTheme = createMemo(() => PRESET_THEMES[themeIndex()]);
 
@@ -51,88 +50,49 @@ const TokenPageLayout: Component = () => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
     
-    // 支持 'T' 键切换主题
     if (e.key.toLowerCase() === 't') {
-      setThemeIndex((prev) => {
-        const next = (prev + 1) % PRESET_THEMES.length;
-        log('Theme switched to index:', next);
-        return next;
-      });
+      setThemeIndex((prev) => (prev + 1) % PRESET_THEMES.length);
       return;
     }
 
     if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
       const newTimeframe = TIMEFRAME_MAP[e.key];
-      log(`Timeframe switched via key ${e.key} to ${newTimeframe}`);
       setActiveTimeframe(newTimeframe);
     }
   };
 
   onMount(() => {
-    log('Mounted. Initializing socket and listeners.');
-    if (!socket.connected) socket.connect();
-
-    socket.on('data-broadcast', (payload: DataPayload) => {
-        if (!payload.data || payload.data.length === 0) return;
-        
-        setMarketData(produce(currentData => {
-            for (const item of payload.data) {
-                const index = currentData.findIndex(d => d.contractAddress === item.contractAddress && d.chain === item.chain);
-                if (index > -1) {
-                    Object.assign(currentData[index], item);
-                } else {
-                    currentData.push(item);
-                }
-            }
-        }));
-        setLastUpdate(new Date().toLocaleTimeString());
-    });
-
+    log('🚀 Mounting TokenPageLayout...');
     window.addEventListener('keydown', handleKeyDown);
-    onCleanup(() => {
-      window.removeEventListener('keydown', handleKeyDown);
-      log('Cleaned up event listeners.');
-    });
+    onCleanup(() => window.removeEventListener('keydown', handleKeyDown));
   });
 
-  // Effect to handle URL params and data matching
+  // Effect: 同步 URL 参数与 Store 数据
   createEffect(() => {
     const params = getTokenParamsFromURL();
-    // 只有当有市场数据且URL参数存在时才尝试匹配
+    
     if (marketData.length > 0 && params) {
         const current = currentToken();
-        // 如果当前已经选中了token，并且地址和URL一致，只更新数据
-        if (current && 
-            current.contractAddress.toLowerCase() === params.address.toLowerCase() && 
-            current.chain.toLowerCase() === params.chain.toLowerCase()) {
-            
-            const updatedTokenData = marketData.find(t => t.contractAddress === current.contractAddress);
-            if (updatedTokenData) {
-                // 保持引用更新（如果是 Store 的一部分，这里可能不需要手动 set，视 Store 实现而定，
-                // 但为了确保 SingleTokenView 拿到最新对象，显式 set 比较稳妥）
-                setCurrentToken(updatedTokenData); 
-            }
-            return;
-        }
-
-        // 如果是第一次加载或者 URL 变了，寻找对应的 Token
+        
+        // 尝试在最新的 marketData 中找到匹配项
         const foundToken = marketData.find(t => 
             t.contractAddress.toLowerCase() === params.address.toLowerCase() &&
             t.chain.toLowerCase() === params.chain.toLowerCase()
         );
 
         if (foundToken) {
-            log('Found token from URL params:', foundToken.symbol);
-            setCurrentToken(foundToken);
+            // 如果找到了，且引用已旧（Store更新会保持引用，但为了保险起见，或者从URL首次进入）
+            if (!current || current !== foundToken) {
+                 setCurrentToken(foundToken);
+            }
         } else {
-            // 这里可以加个日志，说明没找到数据还在等待
-            // log('Waiting for market data to match URL params...');
+            if (current) log('Current token removed from backend broadcast:', current.symbol);
         }
     }
   });
 
   const handleTokenSelect = (token: MarketItem) => {
-    log('Token selected from list:', token.symbol);
+    log('User selected token:', token.symbol);
     const newUrl = `/token.html?address=${token.contractAddress}&chain=${token.chain}`;
     window.history.pushState({ path: newUrl }, '', newUrl);
     setCurrentToken(token);
@@ -153,7 +113,7 @@ const TokenPageLayout: Component = () => {
         class="left-sidebar"
         style={{
             "background-color": currentTheme().layout.background,
-            "border-right": `1px solid ${currentTheme().grid.vertLines}`, // 增加边框分割感
+            "border-right": `1px solid ${currentTheme().grid.vertLines}`,
             "color": currentTheme().layout.textColor,
             "width": "350px",
             "flex-shrink": 0,
@@ -167,7 +127,7 @@ const TokenPageLayout: Component = () => {
           onHeaderClick={() => {}}
           blockList={blockList()}
           onItemClick={handleTokenSelect}
-          theme={currentTheme()} // 修复: 传递 theme
+          theme={currentTheme()}
         />
       </div>
       <div 
@@ -191,14 +151,14 @@ const TokenPageLayout: Component = () => {
                         "height": "100%"
                     }}
                 >
-                    Select a token from the list on the left or provide address/chain in URL.
+                    Waiting for data or invalid token...
                 </div>
             }
         >
           <SingleTokenView 
             token={currentToken()!} 
             activeTimeframe={activeTimeframe()}
-            theme={currentTheme()} // 修复: 传递 theme
+            theme={currentTheme()}
           />
         </Show>
       </div>
