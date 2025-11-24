@@ -16,7 +16,8 @@ chromium.use(stealth());
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const SERVER_URL = 'http://localhost:3001';
-const EXTRACTION_INTERVAL_MS = 1000;
+// ✨ 修改：频率调整为 500ms
+const EXTRACTION_INTERVAL_MS = 500;
 
 const TARGET = {
     name: 'BSC_MEME',
@@ -80,9 +81,10 @@ async function setupMemePage(
     const handleExtractedData = (result: ExtractedDataPayload): void => {
         const { type, data, changedCount } = result;
         
+        // ✨ 500ms 一次，日志可能会很多，可以根据需要调整日志级别或注释掉
         if (type !== 'no-change') {
              const time = new Date().toLocaleTimeString();
-             logger.log(`⚡ [${TARGET.name}] ${time} | ${type.padEnd(8)} | 变更: ${String(changedCount).padEnd(3)}`, logger.LOG_LEVELS.INFO);
+             logger.log(`⚡ [${TARGET.name}] ${time} | ${type.padEnd(8)} | 数量: ${String(changedCount).padEnd(3)}`, logger.LOG_LEVELS.INFO);
         }
 
         if (data && data.length > 0 && type !== 'no-change') {
@@ -130,14 +132,8 @@ async function setupMemePage(
             `
             ${anchorLine}
             // --- 💉 注入点 START: 打印前5条数据 ---
-            if (dataArray.length > 0 && Object.keys(dataStateCache).length === 0) {
-                // 截取前 5 个
-                const slice = dataArray.slice(0, 5);
-                safeLog("🔥 [RAW_DUMP_HEADER] Found " + dataArray.length + " items. Showing first " + slice.length + ":");
-                
-                slice.forEach((item, index) => {
-                    safeLog("🔥 [RAW_DUMP_" + index + "] " + JSON.stringify(item));
-                });
+            if (dataArray.length > 0) {
+                // 这里的逻辑会被浏览器脚本的缓存逻辑覆盖，但下面的修改会去掉缓存逻辑
             }
             // --- 💉 注入点 END ---
             `

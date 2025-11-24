@@ -48,7 +48,8 @@ window.initializeExtractor = function(options) {
   };
 
   let cachedPath = null;
-  let dataStateCache = {};
+  // ✨ 修改：移除缓存状态对象，我们现在每次都发送全量
+  // let dataStateCache = {}; 
   let lastExecutionTime = 0;
   const YIELD_THRESHOLD = 200;
 
@@ -106,14 +107,9 @@ window.initializeExtractor = function(options) {
     return null;
   };
 
-  const areObjectsDifferent = (oldObj, newObj) => {
-    for (const field of desiredFields) {
-      if (oldObj[field] !== newObj[field]) {
-        return true;
-      }
-    }
-    return false;
-  };
+  // ✨ 修改：移除 diff 对比函数
+  // const areObjectsDifferent = (oldObj, newObj) => { ... };
+
   // --- 辅助函数结束 ---
 
   const extractData = async () => {
@@ -161,26 +157,26 @@ window.initializeExtractor = function(options) {
     const readEndTime = performance.now();
 
     if (dataArray && dataArray.length > 0) {
-      const changedData = [];
-      const isFirstRun = Object.keys(dataStateCache).length === 0;
       const totalCount = dataArray.length;
+      
+      // ✨ 修改：直接全量映射，不再做 diff 检查
+      const currentSnapshot = [];
 
       for (const item of dataArray) {
-        const uniqueId = item.contractAddress;
-        if (!uniqueId) continue;
-        const oldItem = dataStateCache[uniqueId];
-        if (isFirstRun || !oldItem || areObjectsDifferent(oldItem, item)) {
-          const filteredItem = {};
-          for (const field of desiredFields) {
-            filteredItem[field] = item[field];
-          }
-          changedData.push(filteredItem);
-          dataStateCache[uniqueId] = item;
+        // 简单的空值检查
+        if (!item) continue;
+
+        const filteredItem = {};
+        for (const field of desiredFields) {
+          filteredItem[field] = item[field];
         }
+        currentSnapshot.push(filteredItem);
       }
 
       const diffEndTime = performance.now();
-      const changedCount = changedData.length;
+      
+      // ✨ 修改：changedCount 现在等于 totalCount (或者 snapshot 的长度)
+      const changedCount = currentSnapshot.length;
 
       const readDuration = (readEndTime - startTime).toFixed(2);
       const diffDuration = (diffEndTime - readEndTime).toFixed(2);
@@ -195,15 +191,18 @@ window.initializeExtractor = function(options) {
         totalCount,
         changedCount,
         cacheHit: cacheHit,
-        type: 'no-change', // default
+        // ✨ 修改：始终发送 snapshot 类型
+        type: 'snapshot', 
+        data: currentSnapshot
       };
 
+      // 只有当确实抓取到了数据时才发送
       if (changedCount > 0) {
-        payload.data = changedData;
-        payload.type = isFirstRun ? 'snapshot' : 'update';
         window.onDataExtracted(payload);
       } else {
-        // 即使没有变更，也发送性能数据
+        // 如果数组是空的，发送 no-change 防止心跳丢失（可选）
+        payload.type = 'no-change';
+        delete payload.data;
         window.onDataExtracted(payload);
       }
     }
@@ -217,7 +216,7 @@ window.initializeExtractor = function(options) {
     }
   };
 
-  safeLog(`✅ Smart Async Extractor initialized (JS version).`);
+  safeLog(`✅ Smart Async Extractor initialized (Full-Snapshot Mode).`);
   
   // 立即执行一次以获取快照，然后启动循环
   extractData().then(() => {

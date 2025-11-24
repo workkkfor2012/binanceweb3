@@ -19,7 +19,8 @@ chromium.use(stealth());
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 //const MIN_VOLUME_FILTER = 10;
-const EXTRACTION_INTERVAL_MS = 1000;
+// ✨ 修改：频率调整为 500ms
+const EXTRACTION_INTERVAL_MS = 500;
 const SERVER_URL = 'http://localhost:3001';
 
 // ✨ 修改：配置中增加 category 字段
@@ -103,17 +104,20 @@ async function setupPageForChain(
     const handleExtractedData = (result: ExtractedDataPayload): void => {
         const { type, data, duration, totalCount, changedCount, cacheHit } = result;
 
-        const perfString = `[${chainName.padEnd(6)}] 读取: ${String(totalCount).padEnd(3)} | 变更: ${String(changedCount).padEnd(3)} | 耗时: ${duration}ms | 缓存: ${cacheHit ? '命中' : '未命中'}`;
+        // ✨ 修改日志：不再强调 "变更数"，因为每次都是全量
+        // 但为了保持格式整洁，我们还是打印出来
+        const perfString = `[${chainName.padEnd(6)}] 读取: ${String(totalCount).padEnd(3)} | 耗时: ${duration}ms | 缓存: ${cacheHit ? '命中' : '未命中'}`;
         process.stdout.write(`\r[${new Date().toLocaleTimeString()}] ${perfString}   `);
 
         if (type !== 'no-change' && data && data.length > 0) {
             const enrichedData = data.map(item => ({ ...item, chain: chainName }));
             
-            const updateTypeLog = type === 'snapshot' ? '首次快照' : '增量更新';
+            // ✨ 永远都是 snapshot
+            const updateTypeLog = '全量快照';
             
             // ✨ 协议重构：发送双字段
             // category: 来自配置 (hotlist, new)
-            // type: 来自 browser-script (snapshot, update)
+            // type: 来自 browser-script (snapshot)
             socket.emit('data-update', { 
                 category: category, 
                 type: type, 
@@ -121,8 +125,8 @@ async function setupPageForChain(
             });
             
             // 换行打印，避免和 process.stdout.write 冲突
-            process.stdout.write('\n');
-            logger.log(`📦 [Emit][${chainName}][${category}] Action: ${type} (${updateTypeLog}, ${changedCount} 条)`, logger.LOG_LEVELS.INFO);
+            // process.stdout.write('\n'); // 可选：如果觉得 500ms 刷屏太快，可以注释掉这行详细日志
+            // logger.log(`📦 [Emit][${chainName}][${category}] Action: ${type} (${updateTypeLog}, ${totalCount} 条)`, logger.LOG_LEVELS.INFO);
         }
     };
 
@@ -139,7 +143,7 @@ async function main(): Promise<void> {
     socket.on('connect', () => logger.log(`✅ [Socket.IO] 成功连接到 Fastify 服务器: ${SERVER_URL}`, logger.LOG_LEVELS.INFO));
     socket.on('connect_error', (err: Error) => logger.log(`❌ [Socket.IO] 连接失败: ${err.message}.`, logger.LOG_LEVELS.ERROR));
 
-    logger.log('🚀 [Extractor v6.3 Categories] 脚本启动...', logger.LOG_LEVELS.INFO);
+    logger.log('🚀 [Extractor v6.4 High-Freq] 脚本启动...', logger.LOG_LEVELS.INFO);
 
     try {
         const browserScript = await fs.readFile(path.join(__dirname, '..', 'src', 'browser-script.js'), 'utf-8');
@@ -157,7 +161,7 @@ async function main(): Promise<void> {
         );
         await Promise.all(setupPromises);
 
-        logger.log(`\n👍 所有 [${TARGETS.length}] 个页面均已初始化完毕，脚本进入高频变更检测模式。`, logger.LOG_LEVELS.INFO);
+        logger.log(`\n👍 所有 [${TARGETS.length}] 个页面均已初始化完毕，脚本进入高频 [500ms] 全量推送模式。`, logger.LOG_LEVELS.INFO);
         await new Promise(() => { });
 
     } catch (error: any) {
