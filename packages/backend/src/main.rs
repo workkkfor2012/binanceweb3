@@ -30,6 +30,8 @@ pub struct ServerState {
     pub config: Arc<Config>,
     pub io: SocketIo,
     pub token_symbols: Arc<DashMap<String, String>>,
+    // ✨ 新增: 描述缓存 (Key: Address, Value: Text)
+    pub narrative_cache: state::NarrativeCache,
     pub db_pool: SqlitePool,
     pub client_pool: ClientPool,
 }
@@ -72,6 +74,8 @@ async fn main() {
         config: config.clone(),
         io: io.clone(),
         token_symbols: Arc::new(DashMap::new()),
+        // ✨ 初始化 Narrative Cache
+        narrative_cache: state::new_narrative_cache(),
         db_pool,
         client_pool,
     };

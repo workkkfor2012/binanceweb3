@@ -1,5 +1,4 @@
 // packages/backend/src/types.rs
-// 文件路径已包含在上方
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -65,6 +64,9 @@ pub struct MemeItem {
     pub liquidity: Option<f64>,
     pub market_cap: Option<f64>,
     
+    // ✨ 新增: 项目描述 (从 Binance Narrative API 获取)
+    pub narrative: Option<String>,
+    
     // 来源标记
     pub source: Option<String>,
 }
@@ -108,8 +110,28 @@ pub enum DataPayload {
 
 
 // ==============================================================================
-// 3. 其他辅助结构 (Binance/KLine/Socket) - 保持不变
+// 3. 其他辅助结构 (Binance/KLine/Socket/API)
 // ==============================================================================
+
+// ✨ 新增: Binance Narrative API 响应结构
+#[derive(Debug, Deserialize)]
+pub struct NarrativeResponse {
+    pub code: String,
+    pub data: Option<NarrativeData>,
+    pub success: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NarrativeData {
+    pub text: Option<NarrativeText>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NarrativeText {
+    pub en: Option<String>,
+    pub cn: Option<String>,
+}
+
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KlineSubscribePayload {
