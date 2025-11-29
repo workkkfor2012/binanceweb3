@@ -1,10 +1,9 @@
 // packages/backend/src/socket_handlers.rs
 
-
 use super::{
     binance_task,
     kline_handler,
-    types::{DataPayload, KlineSubscribePayload, Room, KlineTick, DataCategory},
+    types::{DataPayload, KlineSubscribePayload, Room, KlineTick},
     ServerState,
 };
 use socketioxide::{
@@ -15,7 +14,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-// ✨ 定义过滤阈值：10万 (成交额 USD)
+// ✨ 定义过滤阈值：1000 USD (成交量 * 价格)
+// 仅用于 Hotlist，Meme 币不使用此阈值
 const MIN_HOTLIST_AMOUNT: f64 = 1000.0;
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
@@ -26,7 +26,6 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     register_kline_unsubscribe_handler(&s, state.clone());
     register_disconnect_handler(&s, state.clone());
     register_kline_history_handler(&s, state);
-
 }
 
 fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
@@ -47,76 +46,96 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, payload: Data<serde_json::Value>| {
             let state = state.clone();
             async move {
-                // ✨ 修改逻辑顺序：先解析 -> 再过滤 -> 最后广播
-
+                // 1. 尝试反序列化为 types.rs 中定义的 DataPayload 枚举
+                // Serde 会根据 JSON 中的 "category" 字段自动匹配是 Hotlist 还是 MemeNew
                 match serde_json::from_value::<DataPayload>(payload.0) {
                     Ok(mut parsed_payload) => {
-                        let original_count = parsed_payload.data.len();
+                        let mut should_broadcast = false;
+                        let mut log_summary = String::new();
 
-                        // ✨ 核心过滤逻辑
-                        // 如果是 Hotlist，则应用成交额过滤 (成交量 * 价格)
-                        if parsed_payload.category == DataCategory::Hotlist {
-                            parsed_payload.data.retain(|item| {
-                                // ✨ 修改：使用 1小时成交量 (volume1h) 进行过滤
-                                let volume = item.volume1h.unwrap_or(0.0);
-                                let price = item.price.unwrap_or(0.0);
-                                // 简单的成交量 * 价格 = 估算成交额 (Amount)
-                                let amount = volume * price;
+                        // 2. 核心分流逻辑：根据枚举类型分别处理
+                        match &mut parsed_payload {
+                            // ==========================================================
+                            // 🟢 场景 A: 处理 Hotlist (常规热门币)
+                            // ==========================================================
+                            DataPayload::Hotlist { r#type, data } => {
+                                let original_count = data.len();
                                 
-                                // 日志记录极低成交量的数据（可选，用于调试）
-                                // if amount < MIN_HOTLIST_AMOUNT {
-                                //    info!("🔍 [FILTER DROP] {} (1H Vol: {}, Price: {}, Amount: {})", 
-                                //        item.symbol.as_deref().unwrap_or("?"), volume, price, amount);
-                                // }
+                                // ✨ Hotlist 专用逻辑: 执行金额过滤
+                                data.retain(|item| {
+                                    // 注意：HotlistItem 才有 volume1h 字段
+                                    let volume = item.volume1h.unwrap_or(0.0);
+                                    let price = item.price.unwrap_or(0.0);
+                                    let amount = volume * price;
+                                    amount >= MIN_HOTLIST_AMOUNT
+                                });
 
-                                amount >= MIN_HOTLIST_AMOUNT
-                            });
-                        }
+                                let filtered_count = data.len();
+                                should_broadcast = !data.is_empty();
+                                log_summary = format!(
+                                    "🔥 [HOTLIST] Act: {:?} | Filter: {} -> {} (Criteria: 1H Amount >= ${})", 
+                                    r#type, original_count, filtered_count, MIN_HOTLIST_AMOUNT
+                                );
 
-                        let filtered_count = parsed_payload.data.len();
-
-                        // ✨ 更新日志：明确显示是基于 1H Amount 进行过滤
-                        info!(
-                            "🕷️ [SPIDER DATA] Cat: {:?} | Act: {:?} | Filter: {} -> {} (1H Amount >= {})", 
-                            parsed_payload.category, 
-                            parsed_payload.r#type,
-                            original_count,
-                            filtered_count,
-                            MIN_HOTLIST_AMOUNT
-                        );
-
-                        // ✨ 只有当过滤后还有数据时，才广播给前端
-                        if !parsed_payload.data.is_empty() {
-                            // 这里直接广播处理过的 struct，socketioxide 会自动序列化它
-                            if let Err(e) = s.broadcast().emit("data-broadcast", &parsed_payload).await {
-                                error!("[Socket.IO] Failed to broadcast filtered data for {}: {:?}", s.id, e);
-                            }
-                        } else {
-                           // info!("[FILTER] Dropped empty payload after filtering.");
-                        }
-
-                        // 更新 Symbol Map (使用过滤后的高质量数据)
-                        match parsed_payload.category {
-                            DataCategory::Unknown => {
-                                warn!("[SPIDER DATA] Received unknown category, ignoring symbol map update.");
-                            },
-                            _ => {
-                                for item in parsed_payload.data {
-                                    if let (Some(address), Some(symbol)) = (item.contract_address, item.symbol) {
-                                        state.token_symbols.insert(address.to_lowercase(), symbol);
-                                    }
+                                // 更新 Symbol Map (用于 K 线查询)
+                                for item in data.iter() {
+                                    state.token_symbols.insert(
+                                        item.contract_address.to_lowercase(), 
+                                        item.symbol.clone()
+                                    );
                                 }
+                            },
+
+                            // ==========================================================
+                            // 🔵 场景 B: 处理 MemeNew (新币/土狗)
+                            // ==========================================================
+                            DataPayload::MemeNew { r#type, data } => {
+                                // let original_count = data.len();
+                                
+                                // ✨ Meme 专用逻辑: 
+                                // 1. 不过滤金额 (新币通常没有多少成交量)
+                                // 2. 可以添加简单的非空检查
+                                data.retain(|item| !item.symbol.is_empty());
+
+                                let filtered_count = data.len();
+                                should_broadcast = !data.is_empty();
+                                log_summary = format!(
+                                    "🐶 [MEME RUSH] Act: {:?} | Items: {} (No Amount Filter)", 
+                                    r#type, 
+                                    filtered_count
+                                );
+
+                                // 更新 Symbol Map
+                                for item in data.iter() {
+                                    state.token_symbols.insert(
+                                        item.contract_address.to_lowercase(), 
+                                        item.symbol.clone()
+                                    );
+                                }
+                            },
+
+                            // ⚪ 其他/未知
+                            DataPayload::Unknown => {
+                                warn!("⚠️ [DATA] Received unknown category payload.");
+                            }
+                        }
+
+                        // 3. 广播数据 (如果还有剩余数据)
+                        if should_broadcast {
+                            info!("{}", log_summary);
+                            // socketioxide 会自动序列化 DataPayload 枚举
+                            if let Err(e) = s.broadcast().emit("data-broadcast", &parsed_payload).await {
+                                error!("❌ [BROADCAST FAIL] {:?}", e);
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("[DATA ERROR] Failed to parse data-update payload: {}", e);
+                        warn!("❌ [JSON PARSE ERROR] Failed to parse data-update: {}", e);
                     }
                 }
             }
         },
     );
-
 }
 
 fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
@@ -126,8 +145,9 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
             let state = state.clone();
             async move {
                 let chain_lower = payload.chain.to_lowercase();
-
                 let address_lowercase = payload.address.to_lowercase();
+                
+                // 尝试从缓存中获取 Symbol，如果没有则截断地址显示
                 let symbol = state.token_symbols
                     .get(&address_lowercase)
                     .map_or_else(
@@ -151,11 +171,11 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 info!("🔔 [SUB] Client {} -> Room: {}", s.id, log_display_name);
                 s.join(room_name.clone());
 
+                // 初始化房间逻辑 (启动 Binance 任务)
                 state.app_state
                     .entry(room_name.clone())
                     .or_insert_with(|| {
                         info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
-                        
                         let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
                         
                         let task_handle = tokio::spawn(binance_task::binance_websocket_task(
@@ -179,7 +199,6 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
             }
         },
     );
-
 }
 
 fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
@@ -189,6 +208,7 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
             let state = state.clone();
             async move {
                 let chain_lower = payload.chain.to_lowercase();
+                // let address_lowercase = payload.address.to_lowercase(); // 未使用
 
                 let symbol = state.token_symbols
                     .get(&payload.address.to_lowercase())
@@ -206,6 +226,7 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
                 info!("🔽 [UNSUB] Client {} leaving room: {}", s.id, log_display_name);
                 s.leave(room_name.clone());
 
+                // 检查房间是否为空，为空则清理任务
                 if let Some(mut room) = state.app_state.get_mut(&room_name) {
                     room.clients.remove(&s.id);
                     if room.clients.is_empty() {
@@ -219,7 +240,6 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
             }
         },
     );
-
 }
 
 fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
@@ -253,5 +273,4 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
             }
         }
     });
-
 }

@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc -b",
-    "start": "tsc -b && node dist/extractor.js",
+    "start:hotlist": "tsc -b && node dist/hotlist-extractor.js",
     "investigate": "tsc -b && node dist/kline-investigator.js",
     "start:meme": "tsc -b && node dist/meme-extractor.js", 
     "scan:meme": "tsc -b && node dist/meme-scanner.js", 

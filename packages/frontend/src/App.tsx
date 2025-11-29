@@ -1,7 +1,7 @@
 // packages/frontend/src/App.tsx
 import { createSignal, onMount, For, Component, JSX, createMemo } from 'solid-js';
 import type { MarketItem } from 'shared-types';
-import { useMarketData } from './hooks/useMarketData'; // ✨ 引入核心 Hook
+import { useMarketData } from './hooks/useMarketData';
 
 const BACKEND_URL = 'http://localhost:3001';
 const CHAINS = ['BSC', 'Base', 'Solana'];
@@ -58,8 +58,7 @@ interface RankingListProps {
 
 const RankingList: Component<RankingListProps> = (props) => {
   const rankedData = createMemo(() => {
-    // 简单的排序逻辑，这里不需要过滤黑名单，因为 App 页通常显示全貌
-    // 如果需要过滤，可以传入 blockList
+    // 简单的排序逻辑
     const sorted = [...props.data].sort((a, b) => {
       const valA = a[props.rankBy] ?? -Infinity;
       const valB = b[props.rankBy] ?? -Infinity;
@@ -93,7 +92,7 @@ interface MarketRowProps {
 }
 const MarketRow: Component<MarketRowProps> = (props) => {
   const { item } = props;
-  const proxiedIconUrl = () => `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}`;
+  const proxiedIconUrl = () => item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
   
   // 点击跳转到详情页
   const handleRowClick = () => {
@@ -102,7 +101,7 @@ const MarketRow: Component<MarketRowProps> = (props) => {
 
   return (
     <tr onClick={handleRowClick} style={{ cursor: 'pointer' }}>
-      <td><img src={proxiedIconUrl()} alt={item.symbol} class="icon" /></td>
+      <td><img src={proxiedIconUrl()} alt={item.symbol} class="icon" onError={(e) => e.currentTarget.style.display='none'} /></td>
       <td>{item.symbol}</td>
       <td>{item.chain}</td>
       <td>{formatPrice(item.price)}</td>
@@ -141,8 +140,8 @@ const PRICE_CHANGE_RANKINGS = [
 ];
 
 const App: Component = () => {
-  // ✨ 核心: 使用统一的 Hook 获取数据和状态
-  const { marketData, connectionStatus, lastUpdate } = useMarketData();
+  // ✨ 核心: 使用统一的 Hook 获取数据和状态，明确订阅 'hotlist' 频道
+  const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
   
   const [desiredFields, setDesiredFields] = createSignal<string[]>([]);
   const [selectedChain, setSelectedChain] = createSignal<string>(CHAINS[0]);
@@ -180,21 +179,28 @@ const App: Component = () => {
   });
 
   return (
-    <>
-      <h1>实时市场数据监控 (Table View)</h1>
-      <div class="stats-and-logs">
-        <div class="stats">
-          <p>
-            状态: 
-            <span class={connectionStatus().includes('Connected') ? 'connected' : 'disconnected'}>
-               {connectionStatus()}
-            </span>
-          </p>
-          <p>最后更新: <span>{lastUpdate()}</span></p>
-          <p>总品种数: <span>{marketData.length}</span></p>
-          <p>当前链品种: <span>{filteredData().length}</span></p>
+    <div class="page-wrapper">
+      <header class="app-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <div class="header-left">
+            <h1>🔥 Market Hotlist</h1>
+            {/* 导航栏：指向 hotlist (当前页) 和 meme new (新页面) */}
+            <nav class="nav-links" style={{ display: 'flex', gap: '15px', marginTop: '10px' }}>
+                <span class="nav-btn active" style={{ fontWeight: 'bold', textDecoration: 'underline' }}>🔥 Hotlist</span>
+                <a href="/meme.html" class="nav-btn" style={{ textDecoration: 'none', color: '#666' }}>🐶 Meme New</a>
+            </nav>
         </div>
-      </div>
+        
+        <div class="stats-panel">
+            <div class="status-indicator">
+                <span>Status: </span>
+                <span class={connectionStatus().includes('Connected') ? 'positive' : 'negative'}>
+                   {connectionStatus()}
+                </span>
+            </div>
+            <div class="update-time">Upd: {lastUpdate()}</div>
+            <div class="count-badge">Count: {filteredData().length} / {marketData.length}</div>
+        </div>
+      </header>
 
       {/* --- 成交额排行榜 --- */}
       <div class="rankings-container">
@@ -266,7 +272,7 @@ const App: Component = () => {
           </tbody>
         </table>
       </div>
-    </>
+    </div>
   );
 };
 

@@ -38,8 +38,8 @@ const saveBlockListToStorage = (blockList: Set<string>): void => {
 };
 
 const ChartPageLayout: Component = () => {
-  // ✨ 使用 Hook 获取数据，不再自行管理 Socket
-  const { marketData, connectionStatus, lastUpdate } = useMarketData();
+  // ✨ 修复：显式传入 'hotlist' 作为分类
+  const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
   
   // UI 状态
   const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('priceChange5m');

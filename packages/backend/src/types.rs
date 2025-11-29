@@ -1,56 +1,78 @@
 // packages/backend/src/types.rs
+// 文件路径已包含在上方
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
-// use sqlx::FromRow; // 🔴 移除未使用的引用
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-// ✨ 添加 Serialize
+// ==============================================================================
+// 1. 定义独立的数据项结构体 (对应 shared-types)
+// ==============================================================================
+
+// 🟢 1.1 Hotlist 专用结构体 (对应 TypeScript 的 HotlistItem)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct MarketItem {
-    pub contract_address: Option<String>,
-    pub symbol: Option<String>,
+pub struct HotlistItem {
+    // --- BaseItem 字段 (重复定义以解耦) ---
+    pub chain: String,
+    pub contract_address: String,
+    pub symbol: String,
     pub icon: Option<String>,
-    pub chain: Option<String>,
+    
+    // --- Hotlist 核心字段 ---
     pub price: Option<f64>,
     pub market_cap: Option<f64>,
-    pub chain_id: Option<String>,
-    pub volume1m: Option<f64>,
-    pub volume5m: Option<f64>,
     pub volume1h: Option<f64>,
-    pub volume4h: Option<f64>,
     pub volume24h: Option<f64>,
-    pub price_change1m: Option<f64>,
-    pub price_change5m: Option<f64>,
     pub price_change1h: Option<f64>,
-    pub price_change4h: Option<f64>,
     pub price_change24h: Option<f64>,
+    
+    // --- 额外 K线 字段 ---
+    pub volume5m: Option<f64>,
+    pub price_change5m: Option<f64>,
+    
+    // 来源标记
+    pub source: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct KlineSubscribePayload {
-    pub address: String,
+// 🔵 1.2 Meme Rush 专用结构体 (对应 TypeScript 的 MemeItem)
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MemeItem {
+    // --- BaseItem 字段 ---
     pub chain: String,
-    pub interval: String,
+    pub contract_address: String,
+    pub symbol: String,
+    pub icon: Option<String>,
+
+    // --- Meme 核心字段 ---
+    pub name: String,
+    pub progress: f64,        // 绑定曲线进度 (0-100)
+    pub holders: i64,
+    pub dev_migrate_count: Option<i64>, // 可能为null
+    pub create_time: i64,
+    
+    // 社交
+    pub twitter: Option<String>,
+    pub telegram: Option<String>,
+    pub website: Option<String>,
+    
+    // Meme 交易属性
+    pub liquidity: Option<f64>,
+    pub market_cap: Option<f64>,
+    
+    // 来源标记
+    pub source: Option<String>,
 }
 
-// ✨ 1. 定义业务分类 (Category) - 添加 Serialize
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Hash, Clone)]
-pub enum DataCategory {
-    #[serde(rename = "hotlist")]
-    Hotlist,
-    #[serde(rename = "new")]
-    New,
-    #[serde(other)]
-    Unknown,
-}
+// ==============================================================================
+// 2. 定义严格分流的 Payload (核心解耦点)
+// ==============================================================================
 
-// ✨ 2. 定义动作类型 (Action/Type) - 添加 Serialize
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
 pub enum DataAction {
     #[serde(rename = "snapshot")]
@@ -61,12 +83,39 @@ pub enum DataAction {
     Unknown,
 }
 
-// ✨ 3. 更新后的 Payload 结构 - 添加 Serialize
+// ✨ 利用 serde(tag = "category") 实现自动分流
+// 当 category="hotlist" 时，data 被解析为 Vec<HotlistItem>
+// 当 category="meme_new" 时，data 被解析为 Vec<MemeItem>
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DataPayload {
-    pub category: DataCategory,
-    pub r#type: DataAction,
-    pub data: Vec<MarketItem>,
+#[serde(tag = "category")] 
+pub enum DataPayload {
+    #[serde(rename = "hotlist")]
+    Hotlist {
+        r#type: DataAction,
+        data: Vec<HotlistItem>,
+    },
+
+    #[serde(rename = "meme_new")]
+    MemeNew {
+        r#type: DataAction,
+        data: Vec<MemeItem>,
+    },
+    
+    // 处理未知的分类，防止报错崩溃
+    #[serde(other)]
+    Unknown,
+}
+
+
+// ==============================================================================
+// 3. 其他辅助结构 (Binance/KLine/Socket) - 保持不变
+// ==============================================================================
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KlineSubscribePayload {
+    pub address: String,
+    pub chain: String,
+    pub interval: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,8 +150,7 @@ pub struct BinanceTickDetail {
     pub t1a: String,
     pub t0pu: f64,
     pub t1pu: f64,
-    pub v: f64, // 这是 USD 价值，用于过滤垃圾交易
-    // ✨ 新增关键字段：Token 实际数量
+    pub v: f64, 
     pub a0: f64, 
     pub a1: f64,
     pub tp: String,

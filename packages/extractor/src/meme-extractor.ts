@@ -7,7 +7,9 @@ import stealth from 'puppeteer-extra-plugin-stealth';
 import { handleGuidePopup, checkAndClickCookieBanner } from './pageInitializer';
 import * as logger from './logger';
 import { io, Socket } from 'socket.io-client';
-import type { ExtractedDataPayload } from 'shared-types';
+// 引入类型
+import type { ExtractedDataPayload, MemeItem } from 'shared-types';
+import type { MemeRushRawItem } from 'shared-types/src/meme-rush';
 
 chromium.use(stealth());
 
@@ -21,22 +23,25 @@ const EXTRACTION_INTERVAL_MS = 500;
 const TARGET = {
     name: 'BSC_MEME',
     url: 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc',
+    // ✨ 关键区分点：Category 设为 meme_new
     category: 'meme_new' 
 };
 
+// 浏览器脚本使用的配置
 const MEME_CONFIG = {
     heuristic: {
         maxFiberTreeDepth: 100, 
         minArrayLength: 2, 
         requiredKeys: ['symbol', 'contractAddress'], 
     },
-    // 这里还是需要的，否则 browser-script.js 里的过滤逻辑会报错
+    // 需要从 React Fiber 中提取的原始字段
     desiredFields: [
         'contractAddress', 'symbol', 'name', 'marketCap', 'liquidity',      
         'volume', 'progress', 'holders', 'createTime', 'twitter', 
-        'telegram', 'website', 'icon',
+        'telegram', 'website', 'icon', 'devMigrateCount'
     ]
 };
+
 // ==============================================================================
 
 async function detectStableContainer(page: Page): Promise<string> {
@@ -56,36 +61,68 @@ async function setupMemePage(
     browserScriptOriginal: string, 
     socket: Socket
 ): Promise<void> {
-    logger.log(`[Setup] 初始化 Meme Rush (RAW DUMP MODE)...`, logger.LOG_LEVELS.INFO);
+    logger.log(`[Setup] 初始化 Meme Rush (MemeNew 模式)...`, logger.LOG_LEVELS.INFO);
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
 
-    // ✨✨✨ 核心：接收来自 browser-script.js 的 safeLog 打印 ✨✨✨
     page.on('console', msg => {
         const text = msg.text();
-        // 过滤掉无关的日志，只看我们关心的
-        if (text.includes('RAW DATA') || text.includes('{') || text.includes('Smart Async')) {
+        if (text.includes('RAW DATA') || text.includes('Smart Async')) {
              console.log(`🔎 [BROWSER] ${text}`);
         }
     });
 
+    // ✨ 数据处理回调：将 RawItem 转换为 MemeItem
     const handleExtractedData = (result: ExtractedDataPayload): void => {
         const { type, data, changedCount } = result;
+
         if (type !== 'no-change') {
              const time = new Date().toLocaleTimeString();
              logger.log(`⚡ [${TARGET.name}] ${time} | ${type.padEnd(8)} | 数量: ${String(changedCount).padEnd(3)}`, logger.LOG_LEVELS.INFO);
         }
+
         if (data && data.length > 0 && type !== 'no-change') {
-            const enrichedData = data.map(item => ({ 
-                ...item, chain: 'BSC', source: 'meme-rush', _scrapedAt: Date.now() 
+            // 强制类型转换为原始抓取类型
+            const rawItems = data as unknown as MemeRushRawItem[];
+
+            // 映射到 Shared Types 的 MemeItem
+            const enrichedData: MemeItem[] = rawItems.map(raw => ({
+                // --- BaseItem ---
+                chain: 'BSC',
+                contractAddress: raw.contractAddress,
+                symbol: raw.symbol,
+                icon: raw.icon,
+                updateTime: Date.now(),
+                source: 'meme-rush',
+
+                // --- MemeItem 特有 ---
+                name: raw.name || raw.symbol, // 防止 name 为空
+                progress: raw.progress || 0,
+                holders: raw.holders || 0,
+                devMigrateCount: raw.devMigrateCount || 0,
+                createTime: raw.createTime || 0,
+                
+                twitter: raw.twitter || undefined,
+                telegram: raw.telegram || undefined,
+                website: raw.website || undefined,
+                
+                liquidity: raw.liquidity || 0,
+                marketCap: raw.marketCap || 0,
+                
+                // 简单的状态推断逻辑
+                status: (raw.progress || 0) >= 100 ? 'dex' : 'trading'
             }));
-            socket.emit('data-update', { category: TARGET.category, type: type, data: enrichedData });
+
+            // 发送 Payload，Category 必须是 'meme_new' 以匹配后端 Enum
+            socket.emit('data-update', { 
+                category: TARGET.category, 
+                type: type, 
+                data: enrichedData 
+            });
         }
     };
 
     await page.exposeFunction('onDataExtracted', handleExtractedData);
-
-    // 注入 originalConsoleLog
     await page.addInitScript({ content: `window.originalConsoleLog = console.log;` });
 
     try {
@@ -97,7 +134,6 @@ async function setupMemePage(
         const dynamicSelector = await detectStableContainer(page);
         logger.log(`[Target] 挂载点: ${dynamicSelector}`, logger.LOG_LEVELS.INFO);
 
-        // 直接使用文件内容，不再做复杂的正则替换
         const options = {
             selectors: { stableContainer: dynamicSelector },
             interval: EXTRACTION_INTERVAL_MS,
@@ -120,8 +156,6 @@ async function setupMemePage(
         logger.log(`❌ [Navi] 错误: ${error.message}`, logger.LOG_LEVELS.ERROR);
         throw error;
     }
-
-    logger.log(`✅ [Setup] 运行中. 应该能在日志中看到 'RAW DATA DUMP START' 了。`, logger.LOG_LEVELS.INFO);
 }
 
 async function main() {
@@ -141,7 +175,7 @@ async function main() {
         });
 
         await setupMemePage(browser, browserScript, socket);
-        await new Promise(() => {});
+        await new Promise(() => {}); // 保持进程运行
     } catch (e: any) {
         logger.log(`❌ 错误: ${e.stack}`, logger.LOG_LEVELS.ERROR);
     } finally {

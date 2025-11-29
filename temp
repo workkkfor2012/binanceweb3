@@ -1,224 +1,710 @@
-`README.MD`这是项目描述我发现一个重大的bug，那就是目前计算成交金额的方式是错的，因为默认了品种的成交量是以美元计价的，其实并不是，目前爬虫端会返回三条链的热点数据，bsc 也就是bnb链，以bnb计价，sol链，以sol计价，还有base链，以eth计价，目前品种的价格，是相对于各自链币而言的，而并不是usdt，我们需要重新编写逻辑1 rust后端初始化启动时，先订阅三个链的主币bnb的地址：0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095csol的地址：So11111111111111111111111111111111111111112eth的地址：0x4200000000000000000000000000000000000006注意对应的链的id2 每一个订阅品种的链币的价格，都需要一个全局的实时价格去存储3 也就是有3个价格，bnb的价格，sol的价格，eth的价格，有了这三个基于usdt的价格，是否就可以计算出一个链上的代币的准确的成交金额了？4 三个链的主币的价格，不光需要计算下载的k线和实时更新k线的成交金额，还需要计算出hotlist中每个品种的成交量，hotlist中的成交量，应该是相对于主链而言的，比如币安人生的1分钟成交量是100，那么这100应该指的的是100个bnb，bnb的价格按当前800粗略计算，币安人生1分钟成交金额，以usdt计价应该是100*800=8万usdt这是`其他AI的回复供你参考综合`，你首先独立思考，然后评价下这个AI的方案，然后你再综合输出最终修改方案，注意不要省略输出代码的任何部分，不变的部分也要输出，我需要直接复制粘贴替换本地文件
-为了稳妥，我们需要将修改，分割成每一步都可以被日志验证的中间步骤，一步一步来实现
+`README.MD`这是项目描述`我正在端到端方案进行修改
+`packages\shared-types\src\index.ts`已经定义了两个独立的接口，
+packages\backend\src\types.rs，，已经对应了index.ts,
+这是一个完整的端到端实现方案，涵盖了从采集、传输、后端处理到前端展示的整个链路
+目前已经完成爬虫端和rust端的修改，接下来，需要修改前端，需要有一个新的页面来显示meme new的列表，同时检查当前的修改，是否影响到了旧的页面，因为rust后端已经区分了转发的数据类型hostlist，还是meme new
+下面的前端的修改初步方案，首先评价下这个方案，然后给出综合后的完整的修改方案，注意不要省略代码中不变的部分
+————————————————————————————————————————
 
 
 
+这是一个非常清晰的架构选择。既然你选择了 方案 B（区分 Socket 房间/订阅模式），我们将彻底重构通信机制，实现按需订阅、流量隔离。方案 B 修改核心点：Backend (socket_handlers.rs):新增 subscribe_feed 和 unsubscribe_feed 事件处理，允许客户端加入特定房间（room_hotlist 或 room_meme_new）。修改 data-update 逻辑：不再无差别 broadcast()，而是根据数据类型（Category）精准推送到对应的房间 (to(room_name).emit(...))。Frontend (useMarketData.ts):Hook 增加参数 category。组件挂载时自动发送 subscribe_feed，卸载时发送 unsubscribe_feed。依然保留数据的 update/insert/delete 逻辑，但现在接收到的数据是纯净的，不需要复杂的跨源清理逻辑。Frontend Pages:App.tsx 订阅 'hotlist'。MemePage.tsx 订阅 'meme_new'。下面是完整的端到端修改代码。1. 后端修改：Socket 路由与分发我们需要修改 Rust 后端，使其能够处理订阅请求，并根据数据类型进行定向推送。packages/backend/src/socket_handlers.rs code Rustdownloadcontent_copyexpand_less    // packages/backend/src/socket_handlers.rs
 
-`README.MD`这是项目描述
-
-k线下载和订阅kl行情的时候，获取的数据中，是成交量，我需要确定，tx行情获取的时候，目前是用什么值去更新基准k线中的成交量的，我感觉好像有问题这是tx的具体的一次的值{"stream": "tx@16_6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN","data": {"d": {"pid": 16,"f": "HpNfyc2Saw7RKkQd8nEL4khUcuPhQ7WwY1B2qjx8jxFq","h": "381777573","tp": "buy","pa": "6XaG4RMmyBmX2djczAQVVJWRHnmmVspxMUTDf5ruUjWP","t0a": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN","t1a": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB","v": 1.0486795004829428,"q": 6.2636848893028585,"t0pu": 6.261371238344814,"t1pu": 0.9996306246244928,"tx": "YhYPQShv7Uh3dvczZtGYSMDUbn13syx51Av42QZVyP1nDq9HN7NwFKnQUh7Z42aJBFVZaBNNBa6SbZp6Qc6RWtt","ts": "1763820150000","qi": 1,"ma": "Fv68iTMkbzG45aqnUCD2e7g2yrqM3EXhkjpVCG1uzhLy","ba": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN","a0": 0.167484,"a1": 1.049067,"tii": 1,"t0s": "TRUMP","t1s": "USDT","t0ts": "999999250.411964","t1ts": "2739917389.469811","lgid": "152027","top": false,"t0top": false,"t1top": false,"ex": false,"txtp": 0,"t0pt": 1,"t1pt": 4,"iix": "3-7","tid": "76"},"t": "1763820151671","c": "quote@transaction@tx@16_6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"}}
-
-下面是其他AI的回复，供你参考
-————————————————————————————————————————————————————————————————————
-
-你的直觉是完全正确的。目前的实现是有问题的。问题分析数据源分析 (tx JSON):v: 1.048...。这是 USD 总价值 (Value / Volume in USD)。a0: 0.167...。这是 Token0 (TRUMP) 的数量。a1: 1.049...。这是 Token1 (USDT) 的数量。t0pu: 6.26...。Token0 的单价。当前代码 (binance_task.rs):你目前使用的是 let volume = tick.v;。这意味着你把 USD 金额 当作 Token 数量 累加到了 K 线中。前端逻辑冲突 (SingleKlineChart.tsx):我们在上一个问题中确认，前端的计算逻辑是：成交金额 = Volume * Price。后果：如果后端传的是 USD (1.048)，前端再乘以价格 (6.26)，显示的成交金额变成了 ~6.56。结论：数据被放大了约 Price 倍。 后端必须传 Base Asset Volume (Token 数量)，也就是 a0 或 a1。修复方案我们需要修改两个文件：types.rs: 增加解析 a0 and a1 字段。binance_task.rs: 根据当前监听的合约地址，判断是取 a0 还是 a1。1. 修改 packages/backend/src/types.rs我们需要在结构体中添加 a0 和 a1 字段。<file path="packages/backend/src/types.rs"><![CDATA[// packages/backend/src/types.rsuse chrono::{DateTime, Utc};use serde::{Deserialize, Serialize};use socketioxide::socket::Sid;// use sqlx::FromRow; // 🔴 移除未使用的引用use std::collections::HashSet;use std::sync::Arc;use tokio::sync::Mutex;use tokio::task::JoinHandle;// ✨ 添加 Serialize#[derive(Debug, Deserialize, Serialize, Clone)]#[serde(rename_all = "camelCase")]pub struct MarketItem {pub contract_address: Option<String>,pub symbol: Option<String>,pub icon: Option<String>,pub chain: Option<String>,pub price: Option<f64>,pub market_cap: Option<f64>,pub chain_id: Option<String>,pub volume1m: Option<f64>,pub volume5m: Option<f64>,pub volume1h: Option<f64>,pub volume4h: Option<f64>,pub volume24h: Option<f64>,pub price_change1m: Option<f64>,pub price_change5m: Option<f64>,pub price_change1h: Option<f64>,pub price_change4h: Option<f64>,pub price_change24h: Option<f64>,}#[derive(Debug, Deserialize, Clone)]pub struct KlineSubscribePayload {pub address: String,pub chain: String,pub interval: String,}// ✨ 1. 定义业务分类 (Category) - 添加 Serialize#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Hash, Clone)]pub enum DataCategory {#[serde(rename = "hotlist")]Hotlist,#[serde(rename = "new")]New,#[serde(other)]Unknown,}// ✨ 2. 定义动作类型 (Action/Type) - 添加 Serialize#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]pub enum DataAction {#[serde(rename = "snapshot")]Snapshot,#[serde(rename = "update")]Update,#[serde(other)]Unknown,}// ✨ 3. 更新后的 Payload 结构 - 添加 Serialize#[derive(Debug, Deserialize, Serialize)]pub struct DataPayload {pub category: DataCategory,pub r#type: DataAction,pub data: Vec<MarketItem>,}#[derive(Debug, Deserialize)]pub struct BinanceStreamWrapper<T> {pub stream: String,pub data: T,}#[derive(Debug, Deserialize)]pub struct BinanceKlineDataWrapper {#[serde(rename = "d")]pub kline_data: BinanceKlineDetail,}#[derive(Debug, Deserialize)]#[allow(non_snake_case)]pub struct BinanceKlineDetail {#[serde(rename = "u")]pub values: (String, String, String, String, String, String),}#[derive(Debug, Deserialize)]pub struct BinanceTickDataWrapper {#[serde(rename = "d")]pub tick_data: BinanceTickDetail,}#[derive(Debug, Deserialize)]#[allow(non_snake_case)]pub struct BinanceTickDetail {pub t0a: String,pub t1a: String,pub t0pu: f64,pub t1pu: f64,pub v: f64,// ✨ 新增解析字段：a0 (Token0 Amount) 和 a1 (Token1 Amount)pub a0: f64,pub a1: f64,pub tp: String,}#[derive(Debug, Serialize, Clone)]pub struct KlineBroadcastData {pub room: String,pub data: KlineTick,}#[derive(Debug, Serialize, Clone, Default, PartialEq)]#[serde(rename_all = "camelCase")]pub struct KlineTick {#[serde(with = "chrono::serde::ts_seconds")]pub time: DateTime<Utc>,pub open: f64,pub high: f64,pub low: f64,pub close: f64,pub volume: f64,}#[derive(Debug, Serialize, Clone)]#[serde(rename_all = "camelCase")]pub struct KlineHistoryResponse {pub address: String,pub chain: String,pub interval: String,pub data: Vec<KlineTick>,}pub struct Room {pub clients: HashSet<Sid>,pub task_handle: JoinHandle<()>,pub symbol: String,pub current_kline: Arc<Mutex<Option<KlineTick>>>,}#[derive(Debug, Deserialize)]pub struct ImageProxyQuery {pub url: String,}#[derive(Serialize, Deserialize)]pub struct CacheMeta {pub content_type: String,}#[derive(Debug, Deserialize)]pub struct HistoricalDataWrapper {pub data: Vec<Vec<serde_json::Value>>,}]]></file>2. 修改 packages/backend/src/binance_task.rs我们需要修改 handle_message 中的 tx 处理逻辑，根据地址匹配取出正确的 volume（数量），而不是 v（美元价值）。<file path="packages/backend/src/binance_task.rs"><![CDATA[// packages/backend/src/binance_task.rsuse super::{config::Config,types::{BinanceKlineDataWrapper, BinanceStreamWrapper, BinanceTickDataWrapper, KlineBroadcastData,KlineTick,},};use anyhow::{anyhow, Context, Result};use chrono::{DateTime, Utc};use futures_util::{stream::SplitSink, SinkExt, StreamExt};use socketioxide::SocketIo;use std::{sync::Arc, time::SystemTime};use tokio::{io::{AsyncReadExt, AsyncWriteExt},net::TcpStream,sync::Mutex,time::interval,};use tokio_native_tls::TlsConnector as TokioTlsConnector;use tokio_tungstenite::{client_async_with_config,tungstenite::{client::IntoClientRequest, Message},WebSocketStream,};use tracing::{error, info, warn};use url::Url;type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;type WsWrite = SplitSink<WsStream, Message>;type WsRead = futures_util::stream::SplitStream<WsStream>;const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0;const LOW_VOLUME_THRESHOLD: f64 = 10.0;pub async fn binance_websocket_task(io: SocketIo,room_name: String,symbol: String,config: Arc<Config>,// ✨ 接收共享的状态current_kline: Arc<Mutex<Option<KlineTick>>>,) {let log_display_name = {let parts: Vec<&str> = room_name.split('@').collect();if parts.len() == 4 {format!("{}@{}@{}@{}", parts[0], parts[1], &symbol, parts[3])} else {room_name.clone()}}; code Codedownloadcontent_copyexpand_less    let address = match room_name.split('@').nth(2) {
-    Some(addr) => addr.to_lowercase(),
-    None => {
-        error!(
-            "❌ [TASK INIT FAILED] Invalid room name format: {}. Cannot extract address. Aborting task.",
-            log_display_name
-        );
-        return;
-    }
+use super::{
+    binance_task,
+    kline_handler,
+    types::{DataPayload, KlineSubscribePayload, Room, KlineTick},
+    ServerState,
 };
-let address = Arc::new(address);
+use socketioxide::{
+    extract::{Data, SocketRef},
+};
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{error, info, warn};
 
-loop {
-    match connect_and_run(&io, &room_name, &log_display_name, address.clone(), &config, current_kline.clone()).await {
-        Ok(_) => warn!(
-            "🔁 [TASK {}] Disconnected gracefully. Reconnecting...",
-            log_display_name
-        ),
-        Err(e) => error!(
-            "🔁 [TASK {}] Connection failed: {:#?}. Retrying in 3s...",
-            log_display_name, e
-        ),
-    }
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+// ✨ 定义过滤阈值：1000 USD (成交量 * 价格)
+const MIN_HOTLIST_AMOUNT: f64 = 1000.0;
+
+// ✨ 定义房间常量
+const ROOM_HOTLIST: &str = "room_hotlist";
+const ROOM_MEME_NEW: &str = "room_meme_new";
+
+pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
+    info!("🔌 [Socket.IO] Client connected: {}", s.id);
+
+    // 注册业务处理器
+    register_subscribe_feed_handler(&s);   // ✨ 新增：订阅数据流
+    register_unsubscribe_feed_handler(&s); // ✨ 新增：取消订阅
+    
+    register_data_update_handler(&s, state.clone());
+    register_kline_subscribe_handler(&s, state.clone());
+    register_kline_unsubscribe_handler(&s, state.clone());
+    register_disconnect_handler(&s, state.clone());
+    register_kline_history_handler(&s, state);
 }
-  }async fn connect_and_run(io: &SocketIo,room_name: &str,log_display_name: &str,address: Arc<String>,config: &Config,current_kline: Arc<Mutex<Option<KlineTick>>>,) -> Result<()> {let stream = establish_http_tunnel(log_display_name, config).await?;let host = Url::parse(&config.binance_wss_url)?.host_str().unwrap_or_default().to_string();let tls_stream = wrap_stream_with_tls(stream, &host).await?; code Codedownloadcontent_copyexpand_less    let mut request = config.binance_wss_url.as_str().into_client_request()?;
-let headers = request.headers_mut();
 
-headers.insert("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".parse()?);
-headers.insert("Origin", "https://web3.binance.com".parse()?);
-headers.insert("Accept-Encoding", "gzip, deflate, br, zstd".parse()?);
-headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse()?);
-headers.insert("Pragma", "no-cache".parse()?);
-headers.insert("Cache-Control", "no-cache".parse()?);
+// =================================================================================
+// ✨ 新增：订阅/取消订阅处理器 (方案B核心)
+// =================================================================================
 
-let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
-    .await
-    .context("WebSocket handshake failed")?;
-info!(
-    "✅ [TASK {}] WebSocket handshake successful. Status: {}",
-    log_display_name,
-    response.status()
-);
-
-let (mut write, mut read) = ws_stream.split();
-subscribe_all(&mut write, room_name, log_display_name).await?;
-
-message_loop(
-    io,
-    room_name,
-    log_display_name,
-    config,
-    &mut write,
-    &mut read,
-    current_kline, 
-    address,
-)
-.await
-  }async fn subscribe_all(write: &mut WsWrite,kline_room_name: &str,log_display_name: &str,) -> Result<()> {let parts: Vec<&str> = kline_room_name.split('@').collect();if parts.len() != 4 {return Err(anyhow!("Invalid kline room name format: {}",kline_room_name));}let pool_id = parts[1];let address = parts[2]; code Codedownloadcontent_copyexpand_less    let tick_param = format!("tx@{}_{}", pool_id, address);
-let tick_request_id = SystemTime::now()
-    .duration_since(SystemTime::UNIX_EPOCH)?
-    .as_millis();
-let tick_subscribe_msg = serde_json::json!({
-    "id": tick_request_id,
-    "method": "SUBSCRIBE",
-    "params": [tick_param]
-});
-info!(
-    "📤 [SEND SUB {}] Tick Stream Payload: {}",
-    log_display_name, tick_subscribe_msg
-);
-write
-    .send(Message::Text(tick_subscribe_msg.to_string().into()))
-    .await?;
-
-tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-let kline_request_id =
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() + 1;
-let kline_subscribe_msg = serde_json::json!({
-    "id": kline_request_id,
-    "method": "SUBSCRIBE",
-    "params": [kline_room_name]
-});
-info!(
-    "📤 [SEND SUB {}] Kline Stream Payload: {}",
-    log_display_name, kline_subscribe_msg
-);
-write
-    .send(Message::Text(kline_subscribe_msg.to_string().into()))
-    .await?;
-
-Ok(())
-  }async fn message_loop(io: &SocketIo,room_name: &str,log_display_name: &str,config: &Config,write: &mut WsWrite,read: &mut WsRead,current_kline: Arc<Mutex<Option<KlineTick>>>,address: Arc<String>,) -> Result<()> {let mut heartbeat = interval(config.heartbeat_interval);loop {tokio::select! {_ = heartbeat.tick() => {// info!("[HEARTBEAT {}] Sending Ping...", log_display_name);write.send(Message::Ping(vec![].into())).await.context("Failed to send heartbeat Ping")?;}msg_result = read.next() => {match msg_result {Some(Ok(msg)) => {let should_continue = handle_message(msg, io, room_name, log_display_name, write, current_kline.clone(), &address).await?;if !should_continue {break;}},Some(Err(e)) => return Err(e.into()),None => break,}}}}warn!("[TASK {}] Message loop exited.", log_display_name);Ok(())}async fn handle_message(msg: Message,io: &SocketIo,room_name: &str,log_display_name: &str,write: &mut WsWrite,current_kline: Arc<Mutex<Option<KlineTick>>>,tracked_address: &str,) -> Result<bool> {match msg {Message::Text(text) if !text.is_empty() => {if text.contains(""stream":"kl@") {match serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(&text) {Ok(wrapper) => {let values = &wrapper.data.kline_data.values;let timestamp_seconds = values.5.parse::<i64>().unwrap_or_default() / 1000;let new_kline = KlineTick {time: DateTime::from_timestamp(timestamp_seconds, 0).unwrap_or_default().with_timezone(&Utc),open: values.0.parse().unwrap_or_default(),high: values.1.parse().unwrap_or_default(),low: values.2.parse().unwrap_or_default(),close: values.3.parse().unwrap_or_default(),volume: values.4.parse().unwrap_or_default(),}; code Codedownloadcontent_copyexpand_less    // ✨ Step 6: 这里就是 WebSocket K 线数据到达的地方
-                    // 它会更新/替换掉我们通过 HTTP 注入的那一根
-                    //info!("🌊 [WS KLINE {}] Incoming Update. Time: {}, Close: {}", log_display_name, new_kline.time, new_kline.close);
-                    
-                    broadcast_update(io, room_name, new_kline.clone()).await;
-                    *current_kline.lock().await = Some(new_kline);
-                },
-                Err(e) => {
-                    error!("❌ [KLINE PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
-                }
+fn register_subscribe_feed_handler(socket: &SocketRef) {
+    socket.on(
+        "subscribe_feed",
+        move |s: SocketRef, Data(category): Data<String>| {
+            async move {
+                let room = match category.as_str() {
+                    "hotlist" => ROOM_HOTLIST,
+                    "meme_new" => ROOM_MEME_NEW,
+                    _ => {
+                        warn!("⚠️ [SUB FAIL] Client {} tried to subscribe to invalid feed: {}", s.id, category);
+                        return;
+                    }
+                };
+                
+                info!("🔔 [FEED SUB] Client {} joined feed: {}", s.id, room);
+                s.join(room);
             }
-        } else if text.contains("\"stream\":\"tx@") {
-            match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(&text) {
-                Ok(wrapper) => {
-                    let tick = &wrapper.data.tick_data;
+        },
+    );
+}
 
-                    // ✨ 逻辑修改：同时确定 价格(price) 和 基础成交量(volume)
-                    // 之前只用了 tick.v (这是 USD 金额)，前端又乘了价格，导致数值爆炸
-                    let (price, volume) = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
-                        // tracked_address 是 Token0
-                        (tick.t0pu, tick.a0)
-                    } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
-                        // tracked_address 是 Token1
-                        (tick.t1pu, tick.a1)
-                    } else {
-                        // 当前监控的地址既不是 t0 也不是 t1，通常不会发生，除非订阅错了
-                        return Ok(true);
-                    };
-                    
-                    // let usd_volume = tick.v; // 供参考：这才是 tick.v 的真实含义
-                    
-                    let mut kline_guard = current_kline.lock().await;
-                    if let Some(kline) = kline_guard.as_mut() {
-                        let last_price = kline.close;
+fn register_unsubscribe_feed_handler(socket: &SocketRef) {
+    socket.on(
+        "unsubscribe_feed",
+        move |s: SocketRef, Data(category): Data<String>| {
+            async move {
+                let room = match category.as_str() {
+                    "hotlist" => ROOM_HOTLIST,
+                    "meme_new" => ROOM_MEME_NEW,
+                    _ => return,
+                };
+                
+                info!("🔕 [FEED UNSUB] Client {} left feed: {}", s.id, room);
+                s.leave(room);
+            }
+        },
+    );
+}
 
-                        if last_price > 0.0 {
-                            let price_ratio = if price > last_price { price / last_price } else { last_price / price };
-                            // 这里使用 tick.v (USD Volume) 来做过滤阈值是合理的，因为 10.0 通常指 $10
-                            if price_ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && tick.v < LOW_VOLUME_THRESHOLD {
-                                warn!(
-                                    "🚫 [REJECT SPIKE {}] Price jump {:.2}x with low vol ${:.4}. Last: {}, New: {}",
-                                    log_display_name, price_ratio, tick.v, last_price, price
+// =================================================================================
+// 🟢 数据更新处理器 (修改为定向推送)
+// =================================================================================
+
+fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "data-update",
+        move |s: SocketRef, payload: Data<serde_json::Value>| {
+            let state = state.clone();
+            async move {
+                // 1. 尝试反序列化
+                match serde_json::from_value::<DataPayload>(payload.0) {
+                    Ok(mut parsed_payload) => {
+                        let mut should_broadcast = false;
+                        let mut log_summary = String::new();
+                        let target_room: &str; // ✨ 目标房间
+
+                        match &mut parsed_payload {
+                            // 🟢 Hotlist -> 推送到 ROOM_HOTLIST
+                            DataPayload::Hotlist { r#type, data } => {
+                                target_room = ROOM_HOTLIST;
+                                let original_count = data.len();
+                                
+                                // 过滤逻辑
+                                data.retain(|item| {
+                                    let volume = item.volume1h.unwrap_or(0.0);
+                                    let price = item.price.unwrap_or(0.0);
+                                    (volume * price) >= MIN_HOTLIST_AMOUNT
+                                });
+
+                                let filtered_count = data.len();
+                                should_broadcast = !data.is_empty();
+                                log_summary = format!(
+                                    "🔥 [HOTLIST] Act: {:?} | Filter: {} -> {} | Room: {}", 
+                                    r#type, original_count, filtered_count, target_room
                                 );
-                                return Ok(true);
+
+                                // 更新 Symbol Map
+                                for item in data.iter() {
+                                    state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
+                                }
+                            },
+
+                            // 🔵 MemeNew -> 推送到 ROOM_MEME_NEW
+                            DataPayload::MemeNew { r#type, data } => {
+                                target_room = ROOM_MEME_NEW;
+                                
+                                data.retain(|item| !item.symbol.is_empty());
+
+                                let filtered_count = data.len();
+                                should_broadcast = !data.is_empty();
+                                log_summary = format!(
+                                    "🐶 [MEME RUSH] Act: {:?} | Items: {} | Room: {}", 
+                                    r#type, filtered_count, target_room
+                                );
+
+                                for item in data.iter() {
+                                    state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
+                                }
+                            },
+
+                            DataPayload::Unknown => {
+                                warn!("⚠️ [DATA] Received unknown category payload.");
+                                return;
                             }
                         }
 
-                        kline.high = kline.high.max(price);
-                        kline.low = kline.low.min(price);
-                        kline.close = price;
-                        
-                        // ✨ 修正：累加的是 Token 数量，而不是 USD 金额
-                        kline.volume += volume;
-                        
-                        // info!("⚡ [WS TICK {}] P: {}, Vol+: {} (RawV: {})", log_display_name, price, volume, tick.v);
-                        
-                        broadcast_update(io, room_name, kline.clone()).await;
+                        // 3. ✨ 定向广播数据 (不再使用 s.broadcast().emit)
+                        // s.to(room) 会发送给房间内的所有人（包括发送者自己，虽然这里发送者是 extractor，它不在房间里，所以没问题）
+                        if should_broadcast {
+                            info!("{}", log_summary);
+                            if let Err(e) = s.to(target_room).emit("data-broadcast", &parsed_payload).await {
+                                error!("❌ [ROOM EMIT FAIL] Room: {}, Error: {:?}", target_room, e);
+                            }
+                        }
                     }
-                },
-                Err(_e) => { // ✨ 修复：未使用变量 e -> _e
-                    // error!("❌ [TICK PARSE ERROR {}] Error: {}. Raw: {}", log_display_name, e, text);
+                    Err(e) => {
+                        warn!("❌ [JSON PARSE ERROR] Failed to parse data-update: {}", e);
+                    }
                 }
             }
-        } else if text.contains("result") {
-            info!(
-                "✅ [CONFIRM {}] Subscription active. Server said: {}",
-                log_display_name, text
-            );
-        } else {
-            // warn!("❓ [UNHANDLED MSG {}] {}", log_display_name, text);
+        },
+    );
+}
+
+// ... 下面是 KLine 相关的代码，保持不变 ...
+
+fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "request_historical_kline",
+        move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
+            let state = state.clone();
+            async move {
+                kline_handler::handle_kline_request(s, payload, state).await;
+            }
+        },
+    );
+}
+
+fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "subscribe_kline",
+        move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
+            let state = state.clone();
+            async move {
+                let chain_lower = payload.chain.to_lowercase();
+                let address_lowercase = payload.address.to_lowercase();
+                
+                let symbol = state.token_symbols
+                    .get(&address_lowercase)
+                    .map_or_else(
+                        || format!("{}...", &payload.address[0..6]),
+                        |s| s.value().clone()
+                    );
+
+                let pool_id = match chain_lower.as_str() {
+                    "bsc" => 14, 
+                    "sol" | "solana" => 16, 
+                    "base" => 199,
+                    unsupported_chain => {
+                        warn!("⚠️ [SUBSCRIBE FAIL] Unsupported chain '{}' for {}. Ignored.", unsupported_chain, s.id);
+                        return;
+                    }
+                };
+
+                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+                let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
+
+                info!("🔔 [SUB] Client {} -> Room: {}", s.id, log_display_name);
+                s.join(room_name.clone());
+
+                state.app_state
+                    .entry(room_name.clone())
+                    .or_insert_with(|| {
+                        info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
+                        let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
+                        
+                        let task_handle = tokio::spawn(binance_task::binance_websocket_task(
+                            state.io.clone(),
+                            room_name.clone(),
+                            symbol.clone(), 
+                            state.config.clone(),
+                            current_kline.clone(),
+                        ));
+                        
+                        Room {
+                            clients: HashSet::new(),
+                            task_handle,
+                            symbol,
+                            current_kline,
+                        }
+                    })
+                    .value_mut()
+                    .clients
+                    .insert(s.id);
+            }
+        },
+    );
+}
+
+fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
+    socket.on(
+        "unsubscribe_kline",
+        move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
+            let state = state.clone();
+            async move {
+                let chain_lower = payload.chain.to_lowercase();
+                let symbol = state.token_symbols
+                    .get(&payload.address.to_lowercase())
+                    .map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
+
+                let pool_id = match chain_lower.as_str() {
+                    "bsc" => 14, 
+                    "sol" | "solana" => 16, 
+                    "base" => 199,
+                    _ => { return; }
+                };
+                let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+                let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
+
+                info!("🔽 [UNSUB] Client {} leaving room: {}", s.id, log_display_name);
+                s.leave(room_name.clone());
+
+                if let Some(mut room) = state.app_state.get_mut(&room_name) {
+                    room.clients.remove(&s.id);
+                    if room.clients.is_empty() {
+                        drop(room);
+                        if let Some((_, room_to_abort)) = state.app_state.remove(&room_name) {
+                            info!("🗑️ [ROOM EMPTY] Last client left '{}'. Aborting Binance task.", log_display_name);
+                            room_to_abort.task_handle.abort();
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
+    socket.on_disconnect(move |s: SocketRef| {
+        let state = state.clone();
+        async move {
+            let mut empty_rooms: Vec<(String, String)> = Vec::new();
+
+            for mut entry in state.app_state.iter_mut() {
+                if entry.value_mut().clients.remove(&s.id) {
+                    let log_display_name = {
+                        let parts: Vec<&str> = entry.key().split('@').collect();
+                        if parts.len() == 4 {
+                             format!("{}@{}@{}@{}", parts[0], parts[1], &entry.value().symbol, parts[3])
+                        } else {
+                            entry.key().to_string()
+                        }
+                    };
+                    if entry.clients.is_empty() {
+                        empty_rooms.push((entry.key().clone(), log_display_name));
+                    }
+                }
+            }
+
+            for (room_name, log_display_name) in empty_rooms {
+                if let Some((_, room)) = state.app_state.remove(&room_name) {
+                    info!("🗑️ [ROOM CLEANUP] Room '{}' is now empty. Aborting task.", log_display_name);
+                    room.task_handle.abort();
+                }
+            }
         }
-    }
-    Message::Ping(ping_data) => {
-        write
-            .send(Message::Pong(ping_data))
-            .await
-            .context("Failed to send Pong")?;
-    }
-    Message::Close(close_frame) => {
-        warn!(
-            "🛑 [TASK {}] Received Close frame: {:?}",
-            log_display_name, close_frame
-        );
-        return Ok(false);
-    }
-    _ => {}
+    });
 }
-Ok(true)
-  }async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {let broadcast_data = KlineBroadcastData {room: room_name.to_string(),data: kline,};if let Err(e) = io.to(room_name.to_string()).emit("kline_update", &broadcast_data).await{error!("❌ [BROADCAST FAIL {}] {:?}",room_name, e);}}async fn establish_http_tunnel(log_display_name: &str, config: &Config) -> Result<TcpStream> {let url_obj = Url::parse(&config.binance_wss_url)?;let host = url_obj.host_str().unwrap_or_default();let port = url_obj.port_or_known_default().unwrap_or(443);let target_addr = format!("{}:{}", host, port); code Codedownloadcontent_copyexpand_less    // info!("connecting to proxy...");
-let mut stream = TcpStream::connect(&config.proxy_addr)
-    .await
-    .context("HTTP proxy connection failed")?;
-let connect_req = format!(
-    "CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-    target_addr, target_addr
-);
-stream
-    .write_all(connect_req.as_bytes())
-    .await
-    .context("Failed to send CONNECT request")?;
+  2. 前端 Hook 修改：按需订阅修改 useMarketData，使其必须传入一个 category，并处理订阅逻辑。因为流量已经隔离，我们不再需要复杂的逻辑去判断数据来源是否匹配，只需要专注处理数据更新。packages/frontend/src/hooks/useMarketData.ts code TypeScriptdownloadcontent_copyexpand_less    // packages/frontend/src/hooks/useMarketData.ts
+import { createSignal, onMount, onCleanup } from 'solid-js';
+import { createStore, produce } from 'solid-js/store';
+import { socket } from '../socket';
+import type { MarketItem, DataPayload } from 'shared-types';
+import { checkAndTriggerAlerts } from '../AlertManager';
 
-let mut buf = vec![0; 1024];
-let n = stream
-    .read(&mut buf)
-    .await
-    .context("Failed to read proxy response")?;
+const loadBlockListFromStorage = (): Set<string> => {
+    try {
+        const storedList = localStorage.getItem('trading-dashboard-blocklist');
+        if (storedList) {
+            const parsedArray = JSON.parse(storedList);
+            if (Array.isArray(parsedArray)) return new Set(parsedArray);
+        }
+    } catch (error) { console.error('[Blocklist] Failed to load:', error); }
+    return new Set();
+};
 
-let response = String::from_utf8_lossy(&buf[..n]);
+// ✨ 新增参数 category
+export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
+    // 这个 Store 现在只会存储 targetCategory 的数据
+    const [marketData, setMarketData] = createStore<MarketItem[]>([]);
+    const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
+    const [lastUpdate, setLastUpdate] = createSignal('N/A');
+    const [blockList] = createSignal(loadBlockListFromStorage());
 
-if !response.starts_with("HTTP/1.1 200") {
-    return Err(anyhow!(
-        "❌ [TASK {}] Proxy CONNECT failed: {}",
-        log_display_name,
-        response.trim()
-    ));
-}
-Ok(stream)
-  }async fn wrap_stream_with_tls(stream: TcpStream,host: &str,) -> Result<tokio_native_tls::TlsStream<TcpStream>> {let tls_connector = native_tls::TlsConnector::builder().build()?;let tokio_tls_connector = TokioTlsConnector::from(tls_connector);tokio_tls_connector.connect(host, stream).await.context("TLS Handshake failed")}]]></file>
+    const handleAlertLog = (msg: string, type: 'volume' | 'price') => {
+        console.log(`[Alert System] 🚨 [${type.toUpperCase()}] ${msg}`);
+    };
+
+    onMount(() => {
+        console.log(`[useMarketData] 🔌 Initializing for scope: ${targetCategory}`);
+        
+        if (!socket.connected) {
+            socket.connect();
+        }
+
+        const onConnect = () => {
+            console.log(`[useMarketData] ✅ Socket Connected. Subscribing to ${targetCategory}...`);
+            setConnectionStatus('Connected');
+            // ✨ 核心：发送订阅请求
+            socket.emit('subscribe_feed', targetCategory);
+        };
+
+        const onDisconnect = () => {
+            console.warn('[useMarketData] ❌ Socket Disconnected');
+            setConnectionStatus('Disconnected');
+        };
+
+        // 📡 数据处理逻辑 (逻辑简化，因为已经是定向推送)
+        const onDataBroadcast = (payload: DataPayload) => {
+            // 双重保险：虽然后端已经分流，但前端再校验一次更安全
+            if (payload.category !== targetCategory) {
+                // console.debug(`[Ignored] Received ${payload.category} but listening to ${targetCategory}`);
+                return;
+            }
+
+            if (!payload.data || payload.data.length === 0) return;
+
+            const startTime = performance.now();
+            const blocked = blockList();
+
+            // 1. 报警检测
+            for (const newItem of payload.data) {
+                if (!blocked.has(newItem.contractAddress)) {
+                    const oldItem = marketData.find(d => 
+                        d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
+                    );
+                    if (oldItem) {
+                        checkAndTriggerAlerts(newItem, oldItem, handleAlertLog);
+                    }
+                }
+            }
+
+            // 2. 数据同步
+            setMarketData(produce(currentData => {
+                const incomingIds = new Set<string>();
+                let updatedCount = 0;
+                let addedCount = 0;
+                let removedCount = 0;
+
+                // A. 更新或插入
+                for (const rawItem of payload.data) {
+                    // 补全 source 字段 (可选，因为现在整个 store 都是同一类)
+                    const newItem = { ...rawItem, source: rawItem.source || targetCategory };
+                    
+                    const uniqueId = `${newItem.chain}-${newItem.contractAddress}`;
+                    incomingIds.add(uniqueId);
+
+                    const index = currentData.findIndex(d => 
+                        d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
+                    );
+
+                    if (index > -1) {
+                        Object.assign(currentData[index], newItem);
+                        updatedCount++;
+                    } else {
+                        currentData.push(newItem);
+                        addedCount++;
+                    }
+                }
+
+                // B. 清理 (Prune) - 移除不在本次推送列表中的数据
+                // ✨ 逻辑简化：不再需要判断 source，因为 Store 里全是当前 category 的数据
+                for (let i = currentData.length - 1; i >= 0; i--) {
+                    const item = currentData[i];
+                    const uniqueId = `${item.chain}-${item.contractAddress}`;
+                    
+                    if (!incomingIds.has(uniqueId)) {
+                        currentData.splice(i, 1);
+                        removedCount++;
+                    }
+                }
+                
+                const duration = (performance.now() - startTime).toFixed(2);
+                if (addedCount > 0 || removedCount > 0 || Number(duration) > 10) {
+                    console.log(`[Sync:${targetCategory}] +${addedCount} ~${updatedCount} -${removedCount} (${duration}ms)`);
+                }
+            }));
+
+            setLastUpdate(new Date().toLocaleTimeString());
+        };
+
+        socket.on('connect', onConnect);
+        socket.on('disconnect', onDisconnect);
+        socket.on('data-broadcast', onDataBroadcast);
+
+        // 如果已经连接（比如热重载时），手动触发一次订阅
+        if (socket.connected) {
+            onConnect();
+        }
+
+        onCleanup(() => {
+            console.log(`[useMarketData] 🧹 Cleaning up scope: ${targetCategory}`);
+            // ✨ 核心：发送取消订阅请求
+            if (socket.connected) {
+                socket.emit('unsubscribe_feed', targetCategory);
+            }
+            socket.off('connect', onConnect);
+            socket.off('disconnect', onDisconnect);
+            socket.off('data-broadcast', onDataBroadcast);
+        });
+    });
+
+    return {
+        marketData,
+        connectionStatus,
+        lastUpdate
+    };
+};
+  3. 前端页面修改：传入参数现在我们需要在调用 useMarketData 时显式指定需要的 Category。旧页面：Hotlist (App.tsx)packages/frontend/src/App.tsx code Tsxdownloadcontent_copyexpand_less    // packages/frontend/src/App.tsx
+import { createSignal, onMount, For, Component, JSX, createMemo } from 'solid-js';
+import type { MarketItem } from 'shared-types';
+import { useMarketData } from './hooks/useMarketData';
+
+const BACKEND_URL = 'http://localhost:3001';
+const CHAINS = ['BSC', 'Base', 'Solana'];
+
+// ... (辅助函数保持不变，省略以节省空间) ...
+const formatPrice = (price: number | null | undefined) => price ? price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '-';
+const formatPercentage = (val: any) => <span class={parseFloat(val) >= 0 ? 'positive' : 'negative'}>{parseFloat(val).toFixed(2)}%</span>;
+const formatVolume = (val: any) => val ? `$${(val/1000).toFixed(0)}K` : '-';
+
+const MarketRow: Component<{ item: MarketItem }> = (props) => {
+  const { item } = props;
+  const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
+  
+  return (
+    <tr onClick={() => window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank')} style={{ cursor: 'pointer' }}>
+      <td><img src={iconUrl} class="icon" onError={(e) => e.currentTarget.style.display='none'} /></td>
+      <td class="symbol-cell">{item.symbol}</td>
+      <td>{item.chain}</td>
+      <td>{formatPrice(item.price)}</td>
+      <td>{formatPercentage(item.priceChange24h)}</td>
+      <td>{formatVolume(item.volume24h)}</td>
+      <td>{formatVolume(item.marketCap)}</td>
+      <td class="address-cell">{item.contractAddress.substring(0, 6)}...</td>
+      <td>{formatVolume(item.volume1m)}</td>
+    </tr>
+  );
+};
+
+const App: Component = () => {
+  // ✨ 核心修改：明确订阅 'hotlist'
+  const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
+  const [selectedChain, setSelectedChain] = createSignal<string>(CHAINS[0]);
+  
+  // 过滤当前链 (不需要再过滤 source 了，因为 subscribe 已经做了隔离)
+  const hotData = createMemo(() => 
+    marketData.filter(item => item.chain === selectedChain())
+  );
+
+  onMount(() => console.log("[App] Hotlist Dashboard Mounted"));
+
+  return (
+    <div class="page-wrapper">
+      <header class="app-header">
+        <div class="header-left">
+            <h1>🔥 Market Hotlist</h1>
+            <nav class="nav-links">
+                <span class="nav-btn active">🔥 Hotlist</span>
+                <a href="/meme.html" class="nav-btn">🐶 Meme New</a>
+            </nav>
+        </div>
+        
+        <div class="stats-panel">
+             <div class="status-indicator">
+                <span class={`dot ${connectionStatus().includes('Connected') ? 'green' : 'red'}`}></span>
+                {connectionStatus()}
+            </div>
+            <div class="update-time">Upd: {lastUpdate()}</div>
+        </div>
+      </header>
+
+      {/* 链选择器 */}
+      <div class="sub-controls">
+        <div class="chain-selector">
+            <For each={CHAINS}>
+              {(chain) => (
+                <button
+                  class={selectedChain() === chain ? 'active' : ''}
+                  onClick={() => setSelectedChain(chain)}
+                >
+                  {chain}
+                </button>
+              )}
+            </For>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th width="40"></th>
+              <th>Symbol</th>
+              <th>Chain</th>
+              <th>Price</th>
+              <th>24h %</th>
+              <th>24h Vol</th>
+              <th>MCap</th>
+              <th>Contract</th>
+              <th>1m Vol</th>
+            </tr>
+          </thead>
+          <tbody>
+            <For each={hotData()} fallback={<tr><td colspan={9} class="empty-state">No hot data for {selectedChain()}</td></tr>}>
+              {(item) => <MarketRow item={item} />}
+            </For>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+export default App;
+  新页面：Meme New (MemePage.tsx)packages/frontend/src/MemePage.tsx code Tsxdownloadcontent_copyexpand_less    // packages/frontend/src/MemePage.tsx
+import { Component, createMemo, For, Show } from 'solid-js';
+import { useMarketData } from './hooks/useMarketData';
+import type { MarketItem } from 'shared-types';
+
+const BACKEND_URL = 'http://localhost:3001';
+
+// ... (BondingCurveProgress 组件保持不变) ...
+const BondingCurveProgress: Component<{ percent: number }> = (props) => {
+    const colorClass = () => {
+        if (props.percent >= 90) return 'bg-success';
+        if (props.percent >= 50) return 'bg-warning';
+        return 'bg-primary';
+    };
+    return (
+        <div class="progress-container" title={`Bonding Curve: ${props.percent.toFixed(2)}%`}>
+            <div class="progress-bar">
+                <div class={`progress-fill ${colorClass()}`} style={{ width: `${props.percent}%` }}></div>
+            </div>
+            <span class="progress-text">{props.percent.toFixed(1)}%</span>
+        </div>
+    );
+};
+
+// ... (MemeRow 组件保持不变) ...
+const MemeRow: Component<{ item: MarketItem }> = (props) => {
+    const { item } = props;
+    const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
+    const handleRowClick = () => { window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank'); };
+    const formatTime = (ts: number | undefined) => ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '-';
+
+    return (
+        <tr onClick={handleRowClick} class="meme-row">
+            <td>
+                <div class="meme-icon-wrapper">
+                    <Show when={item.icon} fallback={<div class="icon-placeholder">?</div>}>
+                        <img src={iconUrl} class="icon" onError={(e) => e.currentTarget.style.display='none'} />
+                    </Show>
+                </div>
+            </td>
+            <td>
+                <div class="meme-name-group">
+                    <span class="symbol">{item.symbol}</span>
+                    <Show when={item.name}><span class="fullname">{item.name}</span></Show>
+                </div>
+            </td>
+            <td class="time-cell">{formatTime(item.createTime)}</td>
+            <td><BondingCurveProgress percent={item.progress || 0} /></td>
+            <td>${item.marketCap?.toLocaleString() || '-'}</td>
+            <td>{item.holders?.toLocaleString() || '-'}</td>
+            <td>
+                <span class={`dev-count ${item.devMigrateCount && item.devMigrateCount > 0 ? 'highlight' : ''}`}>
+                    {item.devMigrateCount ?? '-'}
+                </span>
+            </td>
+            <td class="address-cell">{item.contractAddress.substring(0, 4)}...{item.contractAddress.slice(-4)}</td>
+        </tr>
+    );
+};
+
+const MemePage: Component = () => {
+    // ✨ 核心修改：明确订阅 'meme_new'
+    const { marketData, connectionStatus, lastUpdate } = useMarketData('meme_new');
+
+    const memeList = createMemo(() => {
+        // 不需要 .filter(source === 'meme-rush') 了，因为数据源已经纯净
+        return marketData
+            .slice() // 创建副本以进行排序
+            .sort((a, b) => (b.createTime || 0) - (a.createTime || 0));
+    });
+
+    return (
+        <div class="page-wrapper">
+            <header class="app-header">
+                <div class="header-left">
+                    <h1>🐶 Meme Rush <span class="subtitle">Realtime Scanner</span></h1>
+                    <nav class="nav-links">
+                        <a href="/" class="nav-btn">🔥 Hotlist</a>
+                        <span class="nav-btn active">🐶 Meme New</span>
+                    </nav>
+                </div>
+                
+                <div class="stats-panel">
+                    <div class="status-indicator">
+                        <span class={`dot ${connectionStatus().includes('Connected') ? 'green' : 'red'}`}></span>
+                        {connectionStatus()}
+                    </div>
+                    <div class="update-time">Upd: {lastUpdate()}</div>
+                    <div class="count-badge">Total: {memeList().length}</div>
+                </div>
+            </header>
+
+            <div class="table-container meme-table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th width="50">Icon</th>
+                            <th>Token</th>
+                            <th>Created</th>
+                            <th width="200">Bonding Curve</th>
+                            <th>MCap</th>
+                            <th>Holders</th>
+                            <th>Dev Coins</th>
+                            <th>Address</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <For each={memeList()} fallback={
+                            <tr><td colspan={8} class="empty-state">
+                                📡 Waiting for new meme tokens... <br/>
+                                <small>(Check backend connection if this persists)</small>
+                            </td></tr>
+                        }>
+                            {(item) => <MemeRow item={item} />}
+                        </For>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+
+export default MemePage;
+  4. 其他需要微调的文件ChartPageLayout.tsx 和 TokenPageLayout.tsx 也使用了 useMarketData，它们通常需要显示 Hotlist 数据（作为侧边栏），所以需要更新调用参数。packages/frontend/src/ChartPageLayout.tsx (修改一行) code Tsxdownloadcontent_copyexpand_less    // ... imports
+const ChartPageLayout: Component = () => {
+  // ✨ 仪表盘通常显示 Hotlist
+  const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
+  // ... rest of the code
+  packages/frontend/src/TokenPageLayout.tsx (修改一行) code Tsxdownloadcontent_copyexpand_less    // ... imports
+const TokenPageLayout: Component = () => {
+  // ✨ 详情页侧边栏通常也显示 Hotlist
+  const { marketData, lastUpdate } = useMarketData('hotlist'); 
+  // ... rest of the code
+  至此，方案 B 已完整实现。前端通过 subscribe_feed 主动选择数据源，后端精准推送，真正实现了流量隔离和逻辑解耦。

@@ -16,46 +16,54 @@ const loadBlockListFromStorage = (): Set<string> => {
     return new Set();
 };
 
-export const useMarketData = () => {
+// ✨ 核心修改：强制要求传入 category
+export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
+    // 这里的 Store 现在只包含特定分类的数据，不再是混合数据
     const [marketData, setMarketData] = createStore<MarketItem[]>([]);
     const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
     const [lastUpdate, setLastUpdate] = createSignal('N/A');
-    const [blockList] = createSignal(loadBlockListFromStorage()); // 仅用于报警过滤，不用于数据过滤
+    const [blockList] = createSignal(loadBlockListFromStorage());
 
-    // 报警日志回调
     const handleAlertLog = (msg: string, type: 'volume' | 'price') => {
         console.log(`[Alert System] 🚨 [${type.toUpperCase()}] ${msg}`);
     };
 
     onMount(() => {
-        console.log('[useMarketData] 🔌 Initializing socket connection...');
+        console.log(`[useMarketData] 🔌 Initializing for category: ${targetCategory}`);
         
         if (!socket.connected) {
             socket.connect();
         }
 
         const onConnect = () => {
-            console.log('[useMarketData] ✅ Socket Connected');
-            setConnectionStatus('Connected, waiting for data...');
+            console.log(`[useMarketData] ✅ Socket Connected. Subscribing to room: ${targetCategory}`);
+            setConnectionStatus('Connected');
+            // ✨ 关键点：连接后立即加入对应的房间
+            socket.emit('subscribe_feed', targetCategory);
         };
 
         const onDisconnect = () => {
-            console.warn('[useMarketData] ❌ Socket Disconnected');
+            console.warn(`[useMarketData] ❌ Socket Disconnected (Scope: ${targetCategory})`);
             setConnectionStatus('Disconnected');
         };
 
-        // 📡 核心全量同步逻辑
         const onDataBroadcast = (payload: DataPayload) => {
+            // 🛡️ 安全检查：防止后端广播错误（虽然房间机制已隔离）
+            // 注意：Payload 中的 category 需要与 shared-types 定义一致
+            // 如果后端 payload.category 是 "hotlist" 而 targetCategory 是 "hotlist"，则匹配
+            if (payload.category !== targetCategory) {
+                 // Debug: console.debug(`[Ignored] Scope mismatch: received ${payload.category}, expecting ${targetCategory}`);
+                 return;
+            }
+
             if (!payload.data || payload.data.length === 0) return;
 
             const startTime = performance.now();
             const blocked = blockList();
 
-            // 1. 报警检测 (Alert Check) - 在更新 Store 之前对比
-            // 只有不在黑名单的币种才触发报警
+            // 1. 报警检测 (仅针对不在黑名单的)
             for (const newItem of payload.data) {
                 if (!blocked.has(newItem.contractAddress)) {
-                    // 在现有 Store 中查找旧数据
                     const oldItem = marketData.find(d => 
                         d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
                     );
@@ -65,16 +73,17 @@ export const useMarketData = () => {
                 }
             }
 
-            // 2. 数据同步 (Sync Store)
+            // 2. 数据同步 (Upsert / Prune)
             setMarketData(produce(currentData => {
                 const incomingIds = new Set<string>();
                 let updatedCount = 0;
                 let addedCount = 0;
                 let removedCount = 0;
 
-                // A. 更新或插入 (Upsert)
-                for (const newItem of payload.data) {
-                    // 构建复合唯一键用于 Pruning 检查
+                // A. 更新或插入
+                for (const rawItem of payload.data) {
+                    // 确保 source 字段存在
+                    const newItem = { ...rawItem, source: rawItem.source || targetCategory };
                     const uniqueId = `${newItem.chain}-${newItem.contractAddress}`;
                     incomingIds.add(uniqueId);
 
@@ -91,22 +100,27 @@ export const useMarketData = () => {
                     }
                 }
 
-                // B. 清理 (Prune) - 移除后端不再包含的数据
-                // 倒序遍历以安全删除
-                for (let i = currentData.length - 1; i >= 0; i--) {
-                    const item = currentData[i];
-                    const uniqueId = `${item.chain}-${item.contractAddress}`;
-                    if (!incomingIds.has(uniqueId)) {
-                        console.log(`[useMarketData] 🗑️ Pruning stale token: ${item.symbol}`);
-                        currentData.splice(i, 1);
-                        removedCount++;
+                // B. 清理 (Prune) - 移除当前房间不再包含的数据
+                // 因为我们在特定房间，所以如果后端推过来的全量/增量列表里没有某项，说明它掉出了该列表
+                // 注意：根据后端的实现（是 snapshot 还是 update），如果是 snapshot，这里必须清理
+                // 如果是 update 增量，这里不能随便清理。
+                // 假设后端是 Snapshot 模式（每次推送完整的 Top N）：
+                if (payload.type === 'snapshot') {
+                    for (let i = currentData.length - 1; i >= 0; i--) {
+                        const item = currentData[i];
+                        const uniqueId = `${item.chain}-${item.contractAddress}`;
+                        
+                        if (!incomingIds.has(uniqueId)) {
+                            // console.log(`[useMarketData] 🗑️ Pruning stale item: ${item.symbol}`);
+                            currentData.splice(i, 1);
+                            removedCount++;
+                        }
                     }
                 }
-                
-                // 性能日志 (仅在有变动或耗时较长时打印)
+
                 const duration = (performance.now() - startTime).toFixed(2);
                 if (addedCount > 0 || removedCount > 0 || Number(duration) > 5) {
-                    console.log(`[Sync] ${payload.data.length} items (Add:${addedCount} Upd:${updatedCount} Del:${removedCount}) in ${duration}ms`);
+                    console.log(`[Sync:${targetCategory}] +${addedCount} ~${updatedCount} -${removedCount} (${duration}ms)`);
                 }
             }));
 
@@ -117,8 +131,16 @@ export const useMarketData = () => {
         socket.on('disconnect', onDisconnect);
         socket.on('data-broadcast', onDataBroadcast);
 
+        // 如果组件加载时 socket 已经是连接状态，手动触发一次订阅
+        if (socket.connected) {
+            onConnect();
+        }
+
         onCleanup(() => {
-            console.log('[useMarketData] 🧹 Cleaning up listeners');
+            console.log(`[useMarketData] 🧹 Cleanup: Unsubscribing from ${targetCategory}`);
+            if (socket.connected) {
+                socket.emit('unsubscribe_feed', targetCategory);
+            }
             socket.off('connect', onConnect);
             socket.off('disconnect', onDisconnect);
             socket.off('data-broadcast', onDataBroadcast);

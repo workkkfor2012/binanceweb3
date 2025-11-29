@@ -13,7 +13,7 @@
     "dev:full-part": "concurrently  \"pnpm dev:frontend\" \"pnpm start:extractor\"",
     "dev:frontend": "pnpm --filter frontend dev",
     "dev:backend": "pnpm --filter backend dev",
-    "start:extractor": "pnpm --filter extractor start",
+    "start:hotlist": "pnpm --filter extractor start:hotlist",
     "start:meme": "pnpm --filter extractor start:meme",
     "build": "pnpm --filter shared-types build && pnpm --filter backend build && pnpm --filter extractor build && pnpm --filter frontend build"
   },

@@ -30,8 +30,8 @@ const loadBlockListFromStorage = (): Set<string> => {
 };
 
 const TokenPageLayout: Component = () => {
-  // ✨ 使用 Hook 共享数据
-  const { marketData, lastUpdate } = useMarketData();
+  // ✨ 修复：显式传入 'hotlist' 作为分类
+  const { marketData, lastUpdate } = useMarketData('hotlist');
   
   const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
   const [currentToken, setCurrentToken] = createSignal<MarketItem | null>(null);
