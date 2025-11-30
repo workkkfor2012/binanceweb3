@@ -49,11 +49,23 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
 
         const onDataBroadcast = (payload: DataPayload) => {
             // 🛡️ 安全检查：防止后端广播错误（虽然房间机制已隔离）
-            // 注意：Payload 中的 category 需要与 shared-types 定义一致
-            // 如果后端 payload.category 是 "hotlist" 而 targetCategory 是 "hotlist"，则匹配
             if (payload.category !== targetCategory) {
-                 // Debug: console.debug(`[Ignored] Scope mismatch: received ${payload.category}, expecting ${targetCategory}`);
                  return;
+            }
+
+            // ✨✨✨ 调试日志：打印接收到的所有原始数据 ✨✨✨
+            if (payload.data && payload.data.length > 0) {
+               // console.groupCollapsed(`[Data Received] ${targetCategory} (${payload.data.length} items)`);
+               // console.log('Raw Payload Data:', payload.data);
+                
+                // 专门检查 twitterId
+                const itemsWithTwitter = payload.data.filter((item: any) => item.twitterId);
+                if (itemsWithTwitter.length > 0) {
+                    console.log(`👉 Found ${itemsWithTwitter.length} items with Twitter ID:`, itemsWithTwitter);
+                } else {
+                    //console.log('❌ No Twitter IDs found in this batch.');
+                }
+                console.groupEnd();
             }
 
             if (!payload.data || payload.data.length === 0) return;
@@ -101,9 +113,6 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
                 }
 
                 // B. 清理 (Prune) - 移除当前房间不再包含的数据
-                // 因为我们在特定房间，所以如果后端推过来的全量/增量列表里没有某项，说明它掉出了该列表
-                // 注意：根据后端的实现（是 snapshot 还是 update），如果是 snapshot，这里必须清理
-                // 如果是 update 增量，这里不能随便清理。
                 // 假设后端是 Snapshot 模式（每次推送完整的 Top N）：
                 if (payload.type === 'snapshot') {
                     for (let i = currentData.length - 1; i >= 0; i--) {
@@ -111,7 +120,6 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
                         const uniqueId = `${item.chain}-${item.contractAddress}`;
                         
                         if (!incomingIds.has(uniqueId)) {
-                            // console.log(`[useMarketData] 🗑️ Pruning stale item: ${item.symbol}`);
                             currentData.splice(i, 1);
                             removedCount++;
                         }
@@ -120,7 +128,7 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
 
                 const duration = (performance.now() - startTime).toFixed(2);
                 if (addedCount > 0 || removedCount > 0 || Number(duration) > 5) {
-                    console.log(`[Sync:${targetCategory}] +${addedCount} ~${updatedCount} -${removedCount} (${duration}ms)`);
+                    // console.log(`[Sync:${targetCategory}] +${addedCount} ~${updatedCount} -${removedCount} (${duration}ms)`);
                 }
             }));
 
