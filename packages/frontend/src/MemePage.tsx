@@ -5,53 +5,57 @@ import type { MarketItem } from 'shared-types';
 
 const BACKEND_URL = 'http://localhost:3001';
 
-// --- 全局类型定义 ---
 declare global {
     interface Window {
         twttr: any;
     }
 }
 
-// ✨ 工具函数：提取推特 ID
+interface MemeCardProps {
+    item: MarketItem;
+}
+
+interface ColumnProps {
+    title: string;
+    items: MarketItem[];
+    count: number;
+}
+
+// ✨ 增强版 ID 提取 (支持 x.com 和 twitter.com)
 const extractTweetId = (input: string | undefined | null): string | null => {
     if (!input) return null;
     const str = String(input).trim();
+    
+    // 1. 纯数字 ID
     if (/^\d+$/.test(str)) return str;
+    
+    // 2. 匹配 /status/123456...
     const match = str.match(/status\/(\d+)/);
     if (match && match[1]) return match[1];
+    
     return null;
 };
 
-// --- 组件：Bonding Curve 进度条 (紧凑版) ---
-const BondingCurveProgress: Component<{ percent: number }> = (props) => {
-    const colorClass = () => {
-        if (props.percent >= 90) return 'bg-success';
-        if (props.percent >= 50) return 'bg-warning';
-        return 'bg-primary';
-    };
-    return (
-        <div class="progress-container" title={`Bonding Curve: ${props.percent.toFixed(2)}%`} style={{ width: '100%', backgroundColor: '#e9ecef', borderRadius: '3px', height: '12px', overflow: 'hidden', position: 'relative' }}>
-            <div 
-                class={`progress-fill ${colorClass()}`} 
-                style={{ 
-                    width: `${props.percent}%`, 
-                    height: '100%', 
-                    backgroundColor: props.percent >= 90 ? '#28a745' : props.percent >= 50 ? '#ffc107' : '#007bff',
-                }}
-            ></div>
-            <span style={{ fontSize: '9px', color: '#000', position: 'absolute', top: 0, left: '4px', lineHeight: '12px', fontWeight: 'bold' }}>{props.percent.toFixed(1)}%</span>
-        </div>
-    );
+const formatTime = (ts: number | undefined) => {
+    if (!ts) return '';
+    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 };
 
-// --- 组件：推特嵌入 (固定宽度版) ---
-const TweetEmbed: Component<{ tweetId: string; symbol: string }> = (props) => {
+// --- 推特组件 (参照您提供的有效版本修改) ---
+const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
     let containerRef: HTMLDivElement | undefined;
     const [isLoaded, setIsLoaded] = createSignal(false);
+    const [hasError, setHasError] = createSignal(false);
 
     onMount(() => {
-        if (!props.tweetId) return;
+        if (!props.tweetId) {
+            console.warn('[TweetEmbed] No ID provided');
+            return;
+        }
 
+        console.log(`[TweetEmbed] Mounting for ID: ${props.tweetId}`);
+
+        // 1. 动态加载脚本 (如果还没加载)
         if (!window.twttr) {
             const script = document.createElement('script');
             script.src = 'https://platform.twitter.com/widgets.js';
@@ -59,26 +63,37 @@ const TweetEmbed: Component<{ tweetId: string; symbol: string }> = (props) => {
             document.head.appendChild(script);
         }
 
+        // 2. 渲染推特
         const renderTweet = () => {
+            // 确保脚本已加载 且 DOM 节点存在
             if (window.twttr && window.twttr.widgets && containerRef) {
-                containerRef.innerHTML = '';
+                containerRef.innerHTML = ''; // 清空可能存在的 "Loading..."
+                
                 window.twttr.widgets.createTweet(
-                    props.tweetId,
-                    containerRef,
+                    props.tweetId, 
+                    containerRef, 
                     {
-                        theme: 'light',
-                        lang: 'zh-cn',
-                        dnt: true,
-                        conversation: 'none',
-                        cards: 'visible',
-                        width: 350 // ✨ 核心：强制固定宽度，避免拉伸
+                        theme: 'light', 
+                        lang: 'zh-cn', 
+                        dnt: true, 
+                        conversation: 'none', 
+                        cards: 'visible', 
+                        // ✨ 关键：Kanban 列较窄，设为 'auto' 或具体数值(如 280)
+                        width: 290 
                     }
                 ).then((el: any) => {
-                    if (el) setIsLoaded(true);
-                    else if(containerRef) containerRef.innerHTML = `<div style="color:#ccc; font-size:11px;">Tweet removed</div>`;
+                    if (el) {
+                        console.log(`[TweetEmbed] Success: ${props.tweetId}`);
+                        setIsLoaded(true);
+                    } else {
+                        console.error(`[TweetEmbed] Failed to render: ${props.tweetId}`);
+                        setHasError(true);
+                        if(containerRef) containerRef.innerHTML = `<div style="color:#ccc; font-size:11px; padding:10px; text-align:center;">Tweet unavailable</div>`;
+                    }
                 });
-            } else {
-                setTimeout(renderTweet, 100);
+            } else { 
+                // 脚本还没好，轮询等待
+                setTimeout(renderTweet, 200); 
             }
         };
         renderTweet();
@@ -88,234 +103,190 @@ const TweetEmbed: Component<{ tweetId: string; symbol: string }> = (props) => {
         <div 
             class="tweet-embed-wrapper" 
             style={{ 
+                // ✨ 核心修正：不要使用 display:none，否则 JS 无法计算高度
                 "min-height": isLoaded() ? "auto" : "150px",
-                "width": "350px", // 容器也固定宽度
+                "width": "100%", 
                 "background": isLoaded() ? "transparent" : "#f8f9fa",
                 "border-radius": "8px",
                 "display": "flex",
                 "justify-content": "center",
                 "align-items": "center",
-                "flex-shrink": 0 // 防止被 Flexbox 压缩
+                "margin-top": "8px",
+                "border": isLoaded() ? "none" : "1px dashed #e1e4e8"
             }}
         >
-            <div ref={containerRef} style={{ width: '100%' }}>
-                <span style={{ color: '#aaa', fontSize: '11px' }}>Loading...</span>
+            <div ref={containerRef} style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
+                <span style={{ color: '#aaa', fontSize: '11px' }}>Loading Tweet...</span>
             </div>
         </div>
     );
 };
 
-// --- 组件：表格行 (核心布局逻辑) ---
-const MemeRow: Component<{ item: MarketItem }> = (props) => {
+// --- 卡片组件 ---
+const MemeCard: Component<MemeCardProps> = (props) => {
     const { item } = props;
+
+    // 提取推特 ID (增加容错)
+    const cleanTwitterId = createMemo(() => {
+        const raw = (item as any).twitterId || (item as any).twitter;
+        const id = extractTweetId(raw);
+        // Debug Log: 看看哪些 Token 有推特
+        if (id) {
+             // console.log(`[MemeCard] Found Twitter ID for ${item.symbol}: ${id}`);
+        }
+        return id;
+    });
     
-    const cleanTwitterId = () => extractTweetId((item as any).twitterId || (item as any).twitter);
-    const hasDetails = () => !!item.narrative || !!cleanTwitterId();
     const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
 
-    const handleRowClick = (e: MouseEvent) => { 
-        // 允许用户复制文字，不触发跳转
-        if (window.getSelection()?.toString()) return;
-        window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank'); 
+    const handleCardClick = () => {
+        window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
     };
 
-    const formatTime = (ts: number | undefined) => ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit', second:'2-digit' }) : '-';
-    
-    // 辅助样式：小字体
-    const smallCellStyle = { "font-size": "0.85em", "color": "#555", "vertical-align": "middle" };
+    const handleContentClick = (e: MouseEvent) => {
+        e.stopPropagation();
+    };
+
+    const formattedCap = () => {
+        if (!item.marketCap) return '-';
+        if (item.marketCap >= 1000000) return (item.marketCap/1000000).toFixed(1) + 'M';
+        if (item.marketCap >= 1000) return (item.marketCap/1000).toFixed(1) + 'K';
+        return item.marketCap.toString();
+    };
 
     return (
-        <>
-            {/* --- 第一行：核心指标 (紧凑布局) --- */}
-            <tr 
-                onClick={handleRowClick} 
-                style={{ 
-                    cursor: 'pointer', 
-                    "background-color": "#fff",
-                    "border-bottom": hasDetails() ? "none" : "1px solid #eee",
-                    "transition": "background-color 0.1s"
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f9fbfd'}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#fff'}
-            >
-                {/* 1. Icon (极简) */}
-                <td style={{ padding: "8px 10px", width: "40px" }}>
-                    <div style={{ width: '36px', height: '36px' }}>
-                        <Show when={item.icon} fallback={<div style={{width:'100%', height:'100%', background:'#eee', borderRadius:'50%'}}></div>}>
-                            <img src={iconUrl} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} onError={(e) => e.currentTarget.style.display='none'} />
-                        </Show>
-                    </div>
-                </td>
+        <div class="meme-card" onClick={handleCardClick}>
+            
+            {/* 1. Header */}
+            <div class="card-header-layout">
+                <Show when={item.icon} fallback={<div style={{width:'42px', height:'42px', background:'#eee', borderRadius:'50%'}}></div>}>
+                    <img src={iconUrl} class="card-icon" loading="lazy" onError={(e) => e.currentTarget.style.display='none'} />
+                </Show>
 
-                {/* 2. Token Name (突出显示) */}
-                <td style={{ padding: "8px 10px" }}>
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <span style={{ fontWeight: 'bold', fontSize: '1rem', color: '#000' }}>
-                                {item.symbol}
-                            </span>
-                            {/* Twitter 标 */}
+                <div class="card-info-col">
+                    <div class="info-row-top">
+                        <span class="card-symbol">{item.symbol}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                            {/* 如果有推特ID，显示一个小图标 */}
                             <Show when={cleanTwitterId()}>
                                 <a 
                                     href={`https://twitter.com/i/status/${cleanTwitterId()}`} 
-                                    target="_blank" 
+                                    target="_blank"
                                     onClick={(e) => e.stopPropagation()}
-                                    title="Open on Twitter"
-                                    style={{ 
-                                        "font-size": "10px", 
-                                        "background": "#1DA1F2", 
-                                        "color": "white", 
-                                        "padding": "1px 4px", 
-                                        "border-radius": "3px", 
-                                        "text-decoration": "none",
-                                        "line-height": "1.2"
-                                    }}
+                                    style={{ fontSize: '0.7em', background:'#1DA1F2', color:'#fff', padding:'1px 4px', borderRadius:'3px', textDecoration:'none' }}
                                 >
                                     𝕏
                                 </a>
                             </Show>
+                            <span class="card-time">{formatTime(item.createTime || Date.now())}</span>
                         </div>
-                        <Show when={item.name}>
-                            <span style={{ fontSize: '0.75em', color: '#888', maxWidth: '200px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                {item.name}
-                            </span>
+                    </div>
+                    
+                    <div class="info-row-bottom">
+                        <span class="stat-badge badge-cap">${formattedCap()}</span>
+                        <span class="stat-badge">👥 {item.holders || '-'}</span>
+                        <Show when={(item.devMigrateCount || 0) > 0}>
+                            <span class="stat-badge badge-dev">Dev:{item.devMigrateCount}</span>
                         </Show>
                     </div>
-                </td>
+                </div>
+            </div>
 
-                {/* 辅助列：紧凑显示 */}
-                <td style={{...smallCellStyle, "font-family": "monospace"}}>{formatTime(item.createTime)}</td>
-                <td style={{ padding: "8px 10px", width: "120px", verticalAlign: "middle" }}>
-                    <BondingCurveProgress percent={item.progress || 0} />
-                </td>
-                <td style={smallCellStyle}>${item.marketCap?.toLocaleString() || '-'}</td>
-                <td style={smallCellStyle}>{item.holders?.toLocaleString() || '-'}</td>
-                <td style={smallCellStyle}>
-                    <span style={{ fontWeight: (item.devMigrateCount || 0) > 0 ? 'bold' : 'normal', color: (item.devMigrateCount || 0) > 0 ? '#d63384' : 'inherit' }}>
-                        {item.devMigrateCount ?? '-'}
-                    </span>
-                </td>
-                <td style={{...smallCellStyle, "font-family": "monospace", color: "#999"}}>
-                    {item.contractAddress.slice(0, 4)}...{item.contractAddress.slice(-4)}
-                </td>
-            </tr>
-
-            {/* --- 第二行：详情 (左右分栏布局) --- */}
-            <Show when={hasDetails()}>
-                <tr style={{ "border-bottom": "1px solid #e1e4e8", "background-color": "#fff" }}>
-                    <td style={{ border: "none" }}></td> {/* 留空对齐 Icon */}
-                    <td colspan={7} style={{ padding: "0 20px 15px 0", border: "none" }}>
-                        
-                        {/* ✨ 核心布局容器：Flexbox */}
-                        <div style={{ 
-                            display: "flex", 
-                            gap: "20px", 
-                            "align-items": "flex-start", // 顶部对齐
-                            "flex-wrap": "wrap" // 极窄屏幕自动换行
-                        }}>
-                            
-                            {/* 左侧：Narrative (占据剩余空间) */}
-                            <Show when={item.narrative}>
-                                <div style={{ 
-                                    flex: "1", 
-                                    "min-width": "300px", // 最小宽度
-                                    "background-color": "#f8f9fa",
-                                    "padding": "12px 16px",
-                                    "border-radius": "6px",
-                                    "border": "1px solid #eee",
-                                    "box-shadow": "inset 0 1px 2px rgba(0,0,0,0.02)"
-                                }}>
-                                    <div style={{ "font-size": "0.75em", "font-weight": "bold", "color": "#888", "margin-bottom": "6px", "text-transform": "uppercase", "letter-spacing": "0.5px" }}>
-                                        Narrative / Story
-                                    </div>
-                                    <div style={{ 
-                                        "font-size": "0.95em", 
-                                        color: "#222", 
-                                        "line-height": "1.6",
-                                        "white-space": "pre-wrap",
-                                        "font-family": "-apple-system, system-ui, sans-serif"
-                                    }}>
-                                        {item.narrative}
-                                    </div>
-                                </div>
-                            </Show>
-
-                            {/* 右侧：Twitter (固定宽度) */}
-                            <Show when={cleanTwitterId()}>
-                                <div style={{ flex: "0 0 auto" }}> {/* 不伸缩，保持本身大小 */}
-                                    <TweetEmbed tweetId={cleanTwitterId()!} symbol={item.symbol} />
-                                </div>
-                            </Show>
-
-                        </div>
-                    </td>
-                </tr>
+            {/* 2. Narrative */}
+            <Show when={item.narrative}>
+                <div class="card-narrative-box" onClick={handleContentClick}>
+                    {item.narrative}
+                </div>
             </Show>
-        </>
+
+            {/* 3. Tweet Embed */}
+            <Show when={cleanTwitterId()}>
+                <div onClick={handleContentClick} style={{ width: '100%', overflow: 'hidden' }}>
+                    {/* 强制重新渲染 TweetEmbed 当 ID 变化时 */}
+                    <TweetEmbed tweetId={cleanTwitterId()!} />
+                </div>
+            </Show>
+
+            {/* 4. Bonding Curve */}
+            <div class="card-bonding-line" title={`Bonding Curve: ${item.progress?.toFixed(1)}%`}>
+                <div 
+                    class="bonding-fill" 
+                    style={{ 
+                        width: `${Math.min(item.progress || 0, 100)}%`,
+                        "background-color": (item.progress || 0) > 90 ? '#28a745' : '#007bff'
+                    }}
+                ></div>
+            </div>
+        </div>
     );
 };
 
-// --- 主页面 ---
+// --- Column ---
+const MemeColumn: Component<ColumnProps> = (props) => {
+    return (
+        <div class="meme-column">
+            <div class="column-header">
+                <span>{props.title}</span>
+                <span class="column-badge" style={{ background: '#dce4ea', padding: '2px 8px', borderRadius: '10px', fontSize: '0.85em' }}>
+                    {props.count}
+                </span>
+            </div>
+            <div class="column-content">
+                <For each={props.items}>
+                    {(item) => <MemeCard item={item} />}
+                </For>
+                <Show when={props.items.length === 0}>
+                    <div style={{ textAlign: 'center', padding: '50px 0', color: '#999', fontSize: '0.9em' }}>
+                        Waiting for data...
+                    </div>
+                </Show>
+            </div>
+        </div>
+    );
+};
+
+// --- Page ---
 const MemePage: Component = () => {
     const { marketData, connectionStatus, lastUpdate } = useMarketData('meme_new');
 
-    const memeList = createMemo(() => {
+    const newTokens = createMemo(() => {
         return marketData
             .slice()
             .sort((a, b) => (b.createTime || 0) - (a.createTime || 0));
     });
 
-    onMount(() => console.log('[MemePage] 🚀 Mounted.'));
+    const upcomingTokens = createMemo<MarketItem[]>(() => []);
+    const migratedTokens = createMemo<MarketItem[]>(() => []);
+
+    onMount(() => console.log('[MemePage] 🚀 Kanban Layout Mounted.'));
 
     return (
-        <div class="page-wrapper" style={{ padding: '20px', "background-color": "#f4f7f9", "min-height": "100vh" }}>
-            {/* Header */}
-            <header class="app-header" style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff', padding: '15px 20px', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-                <div class="header-left">
-                    <h1 style={{ margin: 0, fontSize: '1.5rem', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        🐶 Meme Rush 
-                        <span class="subtitle" style={{ fontSize: '0.4em', color: '#999', fontWeight: 'normal', marginTop: '5px' }}>REALTIME SCANNER</span>
-                    </h1>
-                </div>
-                
-                <div class="stats-panel" style={{ textAlign: 'right', display: 'flex', gap: '20px', alignItems: 'center', fontSize: '0.85em', color: '#666' }}>
-                    <nav class="nav-links" style={{ display: 'flex', gap: '10px', marginRight: '20px' }}>
-                        <a href="/" class="nav-btn" style={{ textDecoration: 'none', color: '#666', padding: '4px 8px' }}>🔥 Hotlist</a>
-                        <span class="nav-btn active" style={{ fontWeight: 'bold', textDecoration: 'none', color: '#007bff', background: '#e7f1ff', padding: '4px 12px', borderRadius: '12px' }}>🐶 Meme New</span>
+        <div class="meme-board-container">
+            <header class="meme-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                    <h1>🐶 Meme Rush <span style={{fontSize: '0.6em', color: '#999', fontWeight: 'normal'}}>KANBAN</span></h1>
+                    <nav class="nav-links" style={{ display: 'flex', gap: '10px' }}>
+                         <a href="/" class="nav-btn" style={{ textDecoration: 'none', color: '#666', fontSize: '0.9rem' }}>🔥 Hotlist</a>
+                         <span class="nav-btn active" style={{ fontWeight: 'bold', color: '#007bff', background: '#e7f1ff', padding: '4px 10px', borderRadius: '4px', fontSize: '0.9rem' }}>看板视图</span>
                     </nav>
-                    <div>
-                        <span class={`dot ${connectionStatus().includes('Connected') ? 'green' : 'red'}`} style={{display:'inline-block', width:'8px', height:'8px', borderRadius:'50%', background: connectionStatus().includes('Connected')?'#28a745':'#dc3545', marginRight:'5px'}}></span>
+                </div>
+                <div style={{ display: 'flex', gap: '15px', alignItems: 'center', fontSize: '0.85em', color: '#666' }}>
+                    <div>⏱ {lastUpdate()}</div>
+                    <div class="status-indicator">
+                        <span style={{ 
+                            display:'inline-block', width:'8px', height:'8px', borderRadius:'50%', 
+                            background: connectionStatus().includes('Connected') ? '#28a745' : '#dc3545', 
+                            marginRight:'6px'
+                        }}></span>
                         {connectionStatus()}
                     </div>
-                    <div>Wait: {memeList().length}</div>
                 </div>
             </header>
 
-            {/* Table */}
-            <div class="table-container meme-table-container" style={{ background: '#fff', borderRadius: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)', overflow: 'hidden' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}> {/* ✨ table-layout: fixed 很重要 */}
-                    <thead style={{ backgroundColor: '#f8f9fa', color: '#666', fontSize: '0.85em', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                        <tr>
-                            <th style={{ width: '60px', padding: '12px 10px' }}>Icon</th>
-                            <th style={{ width: 'auto', padding: '12px 10px' }}>Token</th> {/* 自动宽度，占据剩余空间 */}
-                            <th style={{ width: '90px', padding: '12px 10px' }}>Created</th>
-                            <th style={{ width: '140px', padding: '12px 10px' }}>Bonding</th>
-                            <th style={{ width: '90px', padding: '12px 10px' }}>MCap</th>
-                            <th style={{ width: '70px', padding: '12px 10px' }}>Holders</th>
-                            <th style={{ width: '70px', padding: '12px 10px' }}>Dev</th>
-                            <th style={{ width: '90px', padding: '12px 10px' }}>Addr</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <For each={memeList()} fallback={
-                            <tr><td colspan={8} class="empty-state" style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
-                                📡 Waiting for new meme tokens...
-                            </td></tr>
-                        }>
-                            {(item) => <MemeRow item={item} />}
-                        </For>
-                    </tbody>
-                </table>
+            <div class="meme-board-grid">
+                <MemeColumn title="🚀 新币监控 (New)" items={newTokens()} count={newTokens().length} />
+                <MemeColumn title="⏳ 即将发行 (Upcoming)" items={upcomingTokens()} count={upcomingTokens().length} />
+                <MemeColumn title="🦋 已迁移 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />
             </div>
         </div>
     );
