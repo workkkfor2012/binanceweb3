@@ -2,7 +2,8 @@
 import { createSignal, onMount, onCleanup } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { socket } from '../socket';
-import type { MarketItem, DataPayload } from 'shared-types';
+import type { MarketItem } from 'shared-types';
+import type { LocalDataPayload, MemeItem } from '../types'; // ✨ 引入本地扩展类型
 import { checkAndTriggerAlerts } from '../AlertManager';
 
 const loadBlockListFromStorage = (): Set<string> => {
@@ -16,10 +17,13 @@ const loadBlockListFromStorage = (): Set<string> => {
     return new Set();
 };
 
-// ✨ 核心修改：强制要求传入 category
-export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
-    // 这里的 Store 现在只包含特定分类的数据，不再是混合数据
-    const [marketData, setMarketData] = createStore<MarketItem[]>([]);
+// ✨ 核心修改：支持泛型 T，默认为 MarketItem
+// 增加 'meme_migrated' 到允许的 category
+export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
+    targetCategory: 'hotlist' | 'meme_new' | 'meme_migrated'
+) => {
+    // 这里的 Store 现在只包含特定分类的数据
+    const [marketData, setMarketData] = createStore<T[]>([]);
     const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
     const [lastUpdate, setLastUpdate] = createSignal('N/A');
     const [blockList] = createSignal(loadBlockListFromStorage());
@@ -47,25 +51,11 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
             setConnectionStatus('Disconnected');
         };
 
-        const onDataBroadcast = (payload: DataPayload) => {
-            // 🛡️ 安全检查：防止后端广播错误（虽然房间机制已隔离）
+        // 使用泛型 Payload
+        const onDataBroadcast = (payload: LocalDataPayload<T>) => {
+            // 🛡️ 安全检查
             if (payload.category !== targetCategory) {
                  return;
-            }
-
-            // ✨✨✨ 调试日志：打印接收到的所有原始数据 ✨✨✨
-            if (payload.data && payload.data.length > 0) {
-               // console.groupCollapsed(`[Data Received] ${targetCategory} (${payload.data.length} items)`);
-               // console.log('Raw Payload Data:', payload.data);
-                
-                // 专门检查 twitterId
-                const itemsWithTwitter = payload.data.filter((item: any) => item.twitterId);
-                if (itemsWithTwitter.length > 0) {
-                    console.log(`👉 Found ${itemsWithTwitter.length} items with Twitter ID:`, itemsWithTwitter);
-                } else {
-                    //console.log('❌ No Twitter IDs found in this batch.');
-                }
-                console.groupEnd();
             }
 
             if (!payload.data || payload.data.length === 0) return;
@@ -73,20 +63,24 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
             const startTime = performance.now();
             const blocked = blockList();
 
-            // 1. 报警检测 (仅针对不在黑名单的)
-            for (const newItem of payload.data) {
-                if (!blocked.has(newItem.contractAddress)) {
-                    const oldItem = marketData.find(d => 
-                        d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
-                    );
-                    if (oldItem) {
-                        checkAndTriggerAlerts(newItem, oldItem, handleAlertLog);
+            // 1. 报警检测 (仅针对 Hotlist 类型的 MarketItem，避免 Meme 类型缺少字段报错)
+            // 这里做一个简单的 duck typing 检查，只有包含 priceChange 的才检查报警
+            if (targetCategory === 'hotlist') {
+                for (const newItem of payload.data) {
+                    const item = newItem as unknown as MarketItem; // Cast for checking
+                    if (!blocked.has(item.contractAddress)) {
+                        const oldItem = (marketData as unknown as MarketItem[]).find(d => 
+                            d.contractAddress === item.contractAddress && d.chain === item.chain
+                        );
+                        if (oldItem) {
+                            checkAndTriggerAlerts(item, oldItem, handleAlertLog);
+                        }
                     }
                 }
             }
 
             // 2. 数据同步 (Upsert / Prune)
-            setMarketData(produce(currentData => {
+            setMarketData(produce((currentData: T[]) => {
                 const incomingIds = new Set<string>();
                 let updatedCount = 0;
                 let addedCount = 0;
@@ -95,7 +89,7 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
                 // A. 更新或插入
                 for (const rawItem of payload.data) {
                     // 确保 source 字段存在
-                    const newItem = { ...rawItem, source: rawItem.source || targetCategory };
+                    const newItem = { ...rawItem, source: rawItem.source || targetCategory } as T;
                     const uniqueId = `${newItem.chain}-${newItem.contractAddress}`;
                     incomingIds.add(uniqueId);
 
@@ -104,6 +98,7 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
                     );
 
                     if (index > -1) {
+                        // ✨ Merge logic: 保留旧对象引用，更新属性
                         Object.assign(currentData[index], newItem);
                         updatedCount++;
                     } else {
@@ -113,7 +108,7 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
                 }
 
                 // B. 清理 (Prune) - 移除当前房间不再包含的数据
-                // 假设后端是 Snapshot 模式（每次推送完整的 Top N）：
+                // 仅当 snapshot 模式时执行清理，增量 update 不清理
                 if (payload.type === 'snapshot') {
                     for (let i = currentData.length - 1; i >= 0; i--) {
                         const item = currentData[i];
@@ -125,11 +120,6 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
                         }
                     }
                 }
-
-                const duration = (performance.now() - startTime).toFixed(2);
-                if (addedCount > 0 || removedCount > 0 || Number(duration) > 5) {
-                    // console.log(`[Sync:${targetCategory}] +${addedCount} ~${updatedCount} -${removedCount} (${duration}ms)`);
-                }
             }));
 
             setLastUpdate(new Date().toLocaleTimeString());
@@ -137,9 +127,9 @@ export const useMarketData = (targetCategory: 'hotlist' | 'meme_new') => {
 
         socket.on('connect', onConnect);
         socket.on('disconnect', onDisconnect);
-        socket.on('data-broadcast', onDataBroadcast);
+        // Cast the event handler because Socket.IO types might conflict with our Generic
+        socket.on('data-broadcast', onDataBroadcast as any);
 
-        // 如果组件加载时 socket 已经是连接状态，手动触发一次订阅
         if (socket.connected) {
             onConnect();
         }

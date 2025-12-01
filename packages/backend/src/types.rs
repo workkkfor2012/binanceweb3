@@ -21,7 +21,7 @@ pub struct HotlistItem {
     pub contract_address: String,
     pub symbol: String,
     pub icon: Option<String>,
-    
+
     // --- Hotlist 核心字段 ---
     pub price: Option<f64>,
     pub market_cap: Option<f64>,
@@ -29,11 +29,11 @@ pub struct HotlistItem {
     pub volume24h: Option<f64>,
     pub price_change1h: Option<f64>,
     pub price_change24h: Option<f64>,
-    
+
     // --- 额外 K线 字段 ---
     pub volume5m: Option<f64>,
     pub price_change5m: Option<f64>,
-    
+
     // 来源标记
     pub source: Option<String>,
 }
@@ -50,23 +50,27 @@ pub struct MemeItem {
 
     // --- Meme 核心字段 ---
     pub name: String,
-    pub progress: f64,        // 绑定曲线进度 (0-100)
+    pub progress: f64,                  // 绑定曲线进度 (0-100)
     pub holders: i64,
     pub dev_migrate_count: Option<i64>, // 可能为null
     pub create_time: i64,
-    
+
+    // ✨ 新增: 兼容 migrated 数据中的字段
+    pub status: Option<String>, // e.g. "dex"
+    pub update_time: Option<i64>,
+
     // 社交
     pub twitter: Option<String>,
     pub telegram: Option<String>,
     pub website: Option<String>,
-    
+
     // Meme 交易属性
     pub liquidity: Option<f64>,
     pub market_cap: Option<f64>,
-    
+
     // ✨ 新增: 项目描述 (从 Binance Narrative API 获取)
     pub narrative: Option<String>,
-    
+
     // 来源标记
     pub source: Option<String>,
 }
@@ -82,14 +86,14 @@ pub enum DataAction {
     #[serde(rename = "update")]
     Update,
     #[serde(other)]
-    Unknown,
+    Unknown, // 处理 "full" 或其他未预期的 action
 }
 
 // ✨ 利用 serde(tag = "category") 实现自动分流
 // 当 category="hotlist" 时，data 被解析为 Vec<HotlistItem>
 // 当 category="meme_new" 时，data 被解析为 Vec<MemeItem>
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "category")] 
+#[serde(tag = "category")]
 pub enum DataPayload {
     #[serde(rename = "hotlist")]
     Hotlist {
@@ -102,12 +106,18 @@ pub enum DataPayload {
         r#type: DataAction,
         data: Vec<MemeItem>,
     },
-    
+
+    // ✨ 新增: 处理已发射(Migrated)的 Meme 代币
+    #[serde(rename = "meme_migrated")]
+    MemeMigrated {
+        r#type: DataAction,
+        data: Vec<MemeItem>, // 复用 MemeItem 结构
+    },
+
     // 处理未知的分类，防止报错崩溃
     #[serde(other)]
     Unknown,
 }
-
 
 // ==============================================================================
 // 3. 其他辅助结构 (Binance/KLine/Socket/API)
@@ -131,7 +141,6 @@ pub struct NarrativeText {
     pub en: Option<String>,
     pub cn: Option<String>,
 }
-
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct KlineSubscribePayload {
@@ -172,8 +181,8 @@ pub struct BinanceTickDetail {
     pub t1a: String,
     pub t0pu: f64,
     pub t1pu: f64,
-    pub v: f64, 
-    pub a0: f64, 
+    pub v: f64,
+    pub a0: f64,
     pub a1: f64,
     pub tp: String,
 }

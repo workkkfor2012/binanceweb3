@@ -1,7 +1,7 @@
 // packages/frontend/src/MemePage.tsx
 import { Component, createMemo, For, Show, onMount, createSignal } from 'solid-js';
 import { useMarketData } from './hooks/useMarketData';
-import type { MarketItem } from 'shared-types';
+import type { MemeItem } from './types'; // ✨ 使用新的类型
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -12,12 +12,12 @@ declare global {
 }
 
 interface MemeCardProps {
-    item: MarketItem;
+    item: MemeItem;
 }
 
 interface ColumnProps {
     title: string;
-    items: MarketItem[];
+    items: MemeItem[];
     count: number;
 }
 
@@ -41,7 +41,7 @@ const formatTime = (ts: number | undefined) => {
     return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 };
 
-// --- 推特组件 (参照您提供的有效版本修改) ---
+// --- ✨✨✨ 完整恢复的推特组件 ✨✨✨ ---
 const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
     let containerRef: HTMLDivElement | undefined;
     const [isLoaded, setIsLoaded] = createSignal(false);
@@ -128,13 +128,8 @@ const MemeCard: Component<MemeCardProps> = (props) => {
 
     // 提取推特 ID (增加容错)
     const cleanTwitterId = createMemo(() => {
-        const raw = (item as any).twitterId || (item as any).twitter;
-        const id = extractTweetId(raw);
-        // Debug Log: 看看哪些 Token 有推特
-        if (id) {
-             // console.log(`[MemeCard] Found Twitter ID for ${item.symbol}: ${id}`);
-        }
-        return id;
+        const raw = item.twitterId || item.twitter;
+        return extractTweetId(raw);
     });
     
     const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
@@ -154,6 +149,14 @@ const MemeCard: Component<MemeCardProps> = (props) => {
         return item.marketCap.toString();
     };
 
+    // ✨ 新增: 状态徽章颜色判断
+    const getStatusColor = (status: string | undefined) => {
+        if (!status) return '#6c757d';
+        if (status === 'dex') return '#28a745'; // 已发射
+        if (status === 'bonding_curve') return '#007bff'; // 还在内盘
+        return '#6c757d';
+    };
+
     return (
         <div class="meme-card" onClick={handleCardClick}>
             
@@ -167,16 +170,16 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                     <div class="info-row-top">
                         <span class="card-symbol">{item.symbol}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                            {/* 如果有推特ID，显示一个小图标 */}
-                            <Show when={cleanTwitterId()}>
-                                <a 
-                                    href={`https://twitter.com/i/status/${cleanTwitterId()}`} 
-                                    target="_blank"
-                                    onClick={(e) => e.stopPropagation()}
-                                    style={{ fontSize: '0.7em', background:'#1DA1F2', color:'#fff', padding:'1px 4px', borderRadius:'3px', textDecoration:'none' }}
-                                >
-                                    𝕏
-                                </a>
+                             <Show when={item.status}>
+                                <span style={{ 
+                                    fontSize: '0.6em', 
+                                    background: getStatusColor(item.status), 
+                                    color: '#fff', 
+                                    padding: '1px 4px', 
+                                    borderRadius: '3px' 
+                                }}>
+                                    {item.status?.toUpperCase()}
+                                </span>
                             </Show>
                             <span class="card-time">{formatTime(item.createTime || Date.now())}</span>
                         </div>
@@ -247,16 +250,34 @@ const MemeColumn: Component<ColumnProps> = (props) => {
 
 // --- Page ---
 const MemePage: Component = () => {
-    const { marketData, connectionStatus, lastUpdate } = useMarketData('meme_new');
+    // ✨ 1. 获取 "新盘" 数据 (MemeItem 类型)
+    const { 
+        marketData: newMemeData, 
+        connectionStatus: newStatus, 
+        lastUpdate: lastUpdateNew 
+    } = useMarketData<MemeItem>('meme_new');
 
+    // ✨ 2. 获取 "已发射/金狗" 数据 (MemeItem 类型)
+    const { 
+        marketData: migratedMemeData, 
+        connectionStatus: migratedStatus 
+    } = useMarketData<MemeItem>('meme_migrated');
+
+    // 处理新盘 (按创建时间倒序)
     const newTokens = createMemo(() => {
-        return marketData
+        return newMemeData
             .slice()
             .sort((a, b) => (b.createTime || 0) - (a.createTime || 0));
     });
 
-    const upcomingTokens = createMemo<MarketItem[]>(() => []);
-    const migratedTokens = createMemo<MarketItem[]>(() => []);
+    // 处理已发射 (按市值或更新时间排序)
+    const migratedTokens = createMemo(() => {
+        return migratedMemeData
+            .slice()
+            .sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+    });
+
+    const upcomingTokens = createMemo<MemeItem[]>(() => []);
 
     onMount(() => console.log('[MemePage] 🚀 Kanban Layout Mounted.'));
 
@@ -271,14 +292,23 @@ const MemePage: Component = () => {
                     </nav>
                 </div>
                 <div style={{ display: 'flex', gap: '15px', alignItems: 'center', fontSize: '0.85em', color: '#666' }}>
-                    <div>⏱ {lastUpdate()}</div>
-                    <div class="status-indicator">
+                    <div>⏱ {lastUpdateNew()}</div>
+                    {/* 显示两个连接状态 */}
+                    <div class="status-indicator" title="New Tokens Feed">
                         <span style={{ 
                             display:'inline-block', width:'8px', height:'8px', borderRadius:'50%', 
-                            background: connectionStatus().includes('Connected') ? '#28a745' : '#dc3545', 
-                            marginRight:'6px'
+                            background: newStatus().includes('Connected') ? '#28a745' : '#dc3545', 
+                            marginRight:'4px'
                         }}></span>
-                        {connectionStatus()}
+                        New
+                    </div>
+                    <div class="status-indicator" title="Migrated Tokens Feed">
+                        <span style={{ 
+                            display:'inline-block', width:'8px', height:'8px', borderRadius:'50%', 
+                            background: migratedStatus().includes('Connected') ? '#28a745' : '#dc3545', 
+                            marginRight:'4px'
+                        }}></span>
+                        Dex
                     </div>
                 </div>
             </header>
@@ -286,7 +316,8 @@ const MemePage: Component = () => {
             <div class="meme-board-grid">
                 <MemeColumn title="🚀 新币监控 (New)" items={newTokens()} count={newTokens().length} />
                 <MemeColumn title="⏳ 即将发行 (Upcoming)" items={upcomingTokens()} count={upcomingTokens().length} />
-                <MemeColumn title="🦋 已迁移 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />
+                {/* ✨ 绑定第三列到已发射数据源 */}
+                <MemeColumn title="🦋 已发射/金狗 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />
             </div>
         </div>
     );

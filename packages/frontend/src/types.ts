@@ -1,7 +1,7 @@
 // packages/frontend/src/types.ts
 
-// 后端返回的、用于 lightweight-charts 的K线数据结构
-// 注意：time 是秒级时间戳
+// --- K-Line Related Types ---
+
 export interface LightweightChartKline {
     time: number;
     open: number;
@@ -11,14 +11,13 @@ export interface LightweightChartKline {
     volume: number; 
 }
 
-// 数据库和完整K线逻辑使用的完整数据结构
 export interface KlineData {
-    primaryKey: string; // 复合主键
+    primaryKey: string;
     address: string;
     chain: string;
     interval: string;
-    timestamp: number; // 毫秒级时间戳
-    time: number;      // 秒级时间戳 (用于图表)
+    timestamp: number;
+    time: number;
     open: number;
     high: number;
     low: number;
@@ -26,14 +25,53 @@ export interface KlineData {
     volume: number;
 }
 
-// 实时K线更新的 payload
 export interface KlineUpdatePayload {
     room: string;
     data: LightweightChartKline;
 }
 
-// K线历史数据请求失败的 payload
 export interface KlineFetchErrorPayload {
     key: string; 
     error: string;
 }
+
+// --- Meme / Market Data Types ---
+
+// ✨ 新增: MemeItem 接口定义 (对应后端更新)
+export interface MemeItem {
+    chain: string;
+    contractAddress: string;
+    symbol: string;
+    icon?: string;
+  
+    name: string;
+    progress: number;
+    holders: number;
+    devMigrateCount?: number;
+    createTime: number; 
+  
+    // ✨ 新增字段
+    status?: string;      // 例如 "dex", "bonding_curve"
+    updateTime?: number;  // 更新时间戳
+  
+    twitter?: string;
+    telegram?: string;
+    website?: string;
+    twitterId?: string;   // 辅助字段，如果后端解析了 ID
+  
+    liquidity?: number;
+    marketCap?: number;
+  
+    narrative?: string;   // 叙事描述
+    source?: string;      // 数据来源标记
+}
+
+// 扩展 DataPayload 类型以支持本地处理
+export type DataAction = 'snapshot' | 'update';
+
+// 这是一个本地的 Payload 定义，用于 Hook 内部转换
+export type LocalDataPayload<T> = {
+    category: string;
+    type: DataAction;
+    data: T[];
+};

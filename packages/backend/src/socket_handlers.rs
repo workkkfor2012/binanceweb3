@@ -1,17 +1,15 @@
 // packages/backend/src/socket_handlers.rs
 
 use super::{
-    binance_task,
-    kline_handler,
-    types::{DataPayload, KlineSubscribePayload, Room, KlineTick, MemeItem, NarrativeResponse},
+    binance_task, kline_handler,
+    types::{DataPayload, KlineSubscribePayload, KlineTick, MemeItem, NarrativeResponse, Room},
     ServerState,
 };
-use socketioxide::{
-    extract::{Data, SocketRef},
-};
+use socketioxide::extract::{Data, SocketRef};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 // ✨ 定义过滤阈值：1000 USD (成交量 * 价格)
@@ -65,7 +63,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             // ==========================================================
                             DataPayload::Hotlist { r#type, data } => {
                                 let original_count = data.len();
-                                
+
                                 // ✨ Hotlist 专用逻辑: 执行金额过滤
                                 data.retain(|item| {
                                     let volume = item.volume1h.unwrap_or(0.0);
@@ -77,18 +75,18 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                 let filtered_count = data.len();
                                 should_broadcast = !data.is_empty();
                                 log_summary = format!(
-                                    "🔥 [HOTLIST] Act: {:?} | Filter: {} -> {} (Criteria: 1H Amount >= ${})", 
+                                    "🔥 [HOTLIST] Act: {:?} | Filter: {} -> {} (Criteria: 1H Amount >= ${})",
                                     r#type, original_count, filtered_count, MIN_HOTLIST_AMOUNT
                                 );
 
                                 // 更新 Symbol Map
                                 for item in data.iter() {
                                     state.token_symbols.insert(
-                                        item.contract_address.to_lowercase(), 
-                                        item.symbol.clone()
+                                        item.contract_address.to_lowercase(),
+                                        item.symbol.clone(),
                                     );
                                 }
-                            },
+                            }
 
                             // ==========================================================
                             // 🔵 场景 B: 处理 MemeNew (新币/土狗)
@@ -103,22 +101,49 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                 let filtered_count = data.len();
                                 should_broadcast = !data.is_empty();
                                 log_summary = format!(
-                                    "🐶 [MEME RUSH] Act: {:?} | Items: {} | Narrative Check Done", 
-                                    r#type, 
+                                    "🐶 [MEME RUSH] Act: {:?} | Items: {} | Narrative Check Done",
+                                    r#type, filtered_count
+                                );
+
+                                // 更新 Symbol Map
+                                for item in data.iter() {
+                                    state.token_symbols.insert(
+                                        item.contract_address.to_lowercase(),
+                                        item.symbol.clone(),
+                                    );
+                                }
+                            }
+
+                            // ==========================================================
+                            // 🟣 场景 C: 处理 MemeMigrated (发射成功的金狗)
+                            // ==========================================================
+                            DataPayload::MemeMigrated { r#type, data } => {
+                                // 逻辑与 MemeNew 类似，但可以独立统计日志
+                                data.retain(|item| !item.symbol.is_empty());
+
+                                // 发射成功的币种也需要 Narrative
+                                enrich_meme_data(data, &state).await;
+
+                                let filtered_count = data.len();
+                                should_broadcast = !data.is_empty();
+                                log_summary = format!(
+                                    "🚀 [MEME MIGRATED] Act: {:?} | Items: {} | Narrative Check Done",
+                                    r#type,
                                     filtered_count
                                 );
 
                                 // 更新 Symbol Map
                                 for item in data.iter() {
                                     state.token_symbols.insert(
-                                        item.contract_address.to_lowercase(), 
-                                        item.symbol.clone()
+                                        item.contract_address.to_lowercase(),
+                                        item.symbol.clone(),
                                     );
                                 }
-                            },
+                            }
 
                             // ⚪ 其他/未知
                             DataPayload::Unknown => {
+                                // 现在 MemeMigrated 已经被处理，这里应该很少触发了
                                 warn!("⚠️ [DATA] Received unknown category payload.");
                             }
                         }
@@ -127,7 +152,8 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         if should_broadcast {
                             info!("{}", log_summary);
                             // socketioxide 会自动序列化 DataPayload 枚举
-                            if let Err(e) = s.broadcast().emit("data-broadcast", &parsed_payload).await {
+                            if let Err(e) = s.broadcast().emit("data-broadcast", &parsed_payload).await
+                            {
                                 error!("❌ [BROADCAST FAIL] {:?}", e);
                             }
                         }
@@ -142,9 +168,6 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
 }
 
 // ✨✨✨ 辅助函数：批量填充 Meme 数据的描述信息 ✨✨✨
-// 修复 1: 使用 PENDING 状态防止重复请求
-// 修复 2: 使用随机/线性延迟错峰请求，防止触发 WAF
-// 修复 3: 使用 PROXY 解决网络连接问题
 async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
     let mut indices_to_fetch = Vec::new();
 
@@ -152,16 +175,21 @@ async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
     for (i, item) in items.iter().enumerate() {
         // 如果缓存里有 key（无论是真正的内容，还是 "__PENDING__"），都跳过请求
         if state.narrative_cache.contains_key(&item.contract_address) {
-            continue; 
+            continue;
         }
-        
+
         // 关键点：立即占位！防止后续的高频 Update 再次触发请求
-        state.narrative_cache.insert(item.contract_address.clone(), "__PENDING__".to_string());
+        state
+            .narrative_cache
+            .insert(item.contract_address.clone(), "__PENDING__".to_string());
         indices_to_fetch.push(i);
     }
 
     if !indices_to_fetch.is_empty() {
-        info!("🔍 [NARRATIVE] Queuing fetch for {} NEW items (staggered with proxy).", indices_to_fetch.len());
+        info!(
+            "🔍 [NARRATIVE] Queuing fetch for {} NEW items (staggered with proxy).",
+            indices_to_fetch.len()
+        );
     }
 
     // 2. 执行请求 (异步 Spawn，不阻塞 Socket 广播)
@@ -185,15 +213,15 @@ async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
                     Ok(Some(text)) => {
                         info!("✅ [FETCH SUCCESS] For {}: {:.20}...", address, text);
                         cache.insert(address, text);
-                    },
+                    }
                     Ok(None) => {
                         // info!("📭 [FETCH EMPTY] For {}.", address);
                         cache.insert(address, "".to_string()); // 标记为空，防止重复请求
-                    },
+                    }
                     Err(e) => {
                         warn!("❌ [FETCH ERROR] For {}: {}", address, e);
                         // 出错后移除 PENDING 状态，允许未来重试
-                        cache.remove(&address); 
+                        cache.remove(&address);
                     }
                 }
             });
@@ -215,7 +243,10 @@ async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
 
 // ✨ 修改：不再依赖全局 ClientPool，而是创建一个带 Proxy 的专用 Client
 async fn fetch_narrative(address: &str, chain_id: u64) -> anyhow::Result<Option<String>> {
-    let url = format!("{}?contractAddress={}&chainId={}", NARRATIVE_API_URL, address, chain_id);
+    let url = format!(
+        "{}?contractAddress={}&chainId={}",
+        NARRATIVE_API_URL, address, chain_id
+    );
 
     // 1. 配置代理
     let proxy = reqwest::Proxy::all(PROXY_URL)?;
@@ -228,24 +259,24 @@ async fn fetch_narrative(address: &str, chain_id: u64) -> anyhow::Result<Option<
 
     // 3. 发起请求 (在这里伪装成真实浏览器 Headers)
     let resp = client.get(&url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-        .header("Accept", "application/json, text/plain, */*")
-        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .header("ClientType", "web")
-        .header("ClientVersion", "1.0.0")
-        .header("Cache-Control", "no-cache")
-        .header("Pragma", "no-cache")
-        .header("Origin", "https://web3.binance.com")
-        .header("Referer", "https://web3.binance.com/zh-CN/meme-rush")
-        .header("Sec-Ch-Ua", "\"Google Chrome\";v=\"125\", \"Chromium\";v=\"125\", \"Not.A/Brand\";v=\"24\"")
-        .header("Sec-Ch-Ua-Mobile", "?0")
-        .header("Sec-Ch-Ua-Platform", "\"Windows\"")
-        .header("Sec-Fetch-Dest", "empty")
-        .header("Sec-Fetch-Mode", "cors")
-        .header("Sec-Fetch-Site", "same-origin")
-        .send()
-        .await?;
+.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+.header("Accept", "application/json, text/plain, */*")
+.header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+.header("Accept-Encoding", "gzip, deflate, br")
+.header("ClientType", "web")
+.header("ClientVersion", "1.0.0")
+.header("Cache-Control", "no-cache")
+.header("Pragma", "no-cache")
+.header("Origin", "https://web3.binance.com")
+.header("Referer", "https://web3.binance.com/zh-CN/meme-rush")
+.header("Sec-Ch-Ua", "\"Google Chrome\";v=\"125\", \"Chromium\";v=\"125\", \"Not.A/Brand\";v=\"24\"")
+.header("Sec-Ch-Ua-Mobile", "?0")
+.header("Sec-Ch-Ua-Platform", "\"Windows\"")
+.header("Sec-Fetch-Dest", "empty")
+.header("Sec-Fetch-Mode", "cors")
+.header("Sec-Fetch-Site", "same-origin")
+.send()
+.await?;
 
     if !resp.status().is_success() {
         warn!("❌ [API FAIL] Status: {} | URL: {}", resp.status(), url);
@@ -258,10 +289,14 @@ async fn fetch_narrative(address: &str, chain_id: u64) -> anyhow::Result<Option<
         if let Some(text_obj) = data.text {
             // 优先使用中文，其次英文
             if let Some(cn) = text_obj.cn {
-                if !cn.is_empty() { return Ok(Some(cn)); }
+                if !cn.is_empty() {
+                    return Ok(Some(cn));
+                }
             }
             if let Some(en) = text_obj.en {
-                 if !en.is_empty() { return Ok(Some(en)); }
+                if !en.is_empty() {
+                    return Ok(Some(en));
+                }
             }
         }
     }
@@ -279,7 +314,7 @@ fn get_chain_id(chain: &str) -> Option<u64> {
         "op" | "optimism" => Some(10),
         "avax" | "avalanche" => Some(43114),
         "sol" | "solana" => None, // Binance 暂不支持 Solana Narrative
-        _ => None, // 不支持的链跳过 fetch
+        _ => None,                // 不支持的链跳过 fetch
     }
 }
 
@@ -293,16 +328,14 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 let address_lowercase = payload.address.to_lowercase();
 
                 // 尝试从缓存中获取 Symbol，如果没有则截断地址显示
-                let symbol = state.token_symbols
-                    .get(&address_lowercase)
-                    .map_or_else(
-                        || format!("{}...", &payload.address[0..6]),
-                        |s| s.value().clone()
-                    );
+                let symbol = state.token_symbols.get(&address_lowercase).map_or_else(
+                    || format!("{}...", &payload.address[0..6]),
+                    |s| s.value().clone(),
+                );
 
                 let pool_id = match chain_lower.as_str() {
-                    "bsc" => 14, 
-                    "sol" | "solana" => 16, 
+                    "bsc" => 14,
+                    "sol" | "solana" => 16,
                     "base" => 199,
                     unsupported_chain => {
                         warn!("⚠️ [SUBSCRIBE FAIL] Unsupported chain '{}' (original: '{}') for {}. Ignored.", unsupported_chain, payload.chain, s.id);
@@ -317,20 +350,24 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 s.join(room_name.clone());
 
                 // 初始化房间逻辑 (启动 Binance 任务)
-                state.app_state
+                state
+                    .app_state
                     .entry(room_name.clone())
                     .or_insert_with(|| {
-                        info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
+                        info!(
+                            "✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...",
+                            log_display_name
+                        );
                         let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
-                        
+
                         let task_handle = tokio::spawn(binance_task::binance_websocket_task(
                             state.io.clone(),
                             room_name.clone(),
-                            symbol.clone(), 
+                            symbol.clone(),
                             state.config.clone(),
                             current_kline.clone(),
                         ));
-                        
+
                         Room {
                             clients: HashSet::new(),
                             task_handle,
@@ -355,20 +392,29 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
                 let chain_lower = payload.chain.to_lowercase();
                 // let address_lowercase = payload.address.to_lowercase(); // 未使用
 
-                let symbol = state.token_symbols
+                let symbol = state
+                    .token_symbols
                     .get(&payload.address.to_lowercase())
-                    .map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
+                    .map_or_else(
+                        || format!("{}...", &payload.address[0..6]),
+                        |s| s.value().clone(),
+                    );
 
                 let pool_id = match chain_lower.as_str() {
-                    "bsc" => 14, 
-                    "sol" | "solana" => 16, 
+                    "bsc" => 14,
+                    "sol" | "solana" => 16,
                     "base" => 199,
-                    _ => { return; }
+                    _ => {
+                        return;
+                    }
                 };
                 let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
                 let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
 
-                info!("🔽 [UNSUB] Client {} leaving room: {}", s.id, log_display_name);
+                info!(
+                    "🔽 [UNSUB] Client {} leaving room: {}",
+                    s.id, log_display_name
+                );
                 s.leave(room_name.clone());
 
                 // 检查房间是否为空，为空则清理任务
@@ -377,7 +423,10 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
                     if room.clients.is_empty() {
                         drop(room);
                         if let Some((_, room_to_abort)) = state.app_state.remove(&room_name) {
-                            info!("🗑️ [ROOM EMPTY] Last client left '{}'. Aborting Binance task.", log_display_name);
+                            info!(
+                                "🗑️ [ROOM EMPTY] Last client left '{}'. Aborting Binance task.",
+                                log_display_name
+                            );
                             room_to_abort.task_handle.abort();
                         }
                     }
@@ -399,7 +448,13 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
                     let log_display_name = {
                         let parts: Vec<&str> = entry.key().split('@').collect();
                         if parts.len() == 4 {
-                             format!("{}@{}@{}@{}", parts[0], parts[1], &entry.value().symbol, parts[3])
+                            format!(
+                                "{}@{}@{}@{}",
+                                parts[0],
+                                parts[1],
+                                &entry.value().symbol,
+                                parts[3]
+                            )
                         } else {
                             entry.key().to_string()
                         }
@@ -412,7 +467,10 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
 
             for (room_name, log_display_name) in empty_rooms {
                 if let Some((_, room)) = state.app_state.remove(&room_name) {
-                    info!("🗑️ [ROOM CLEANUP] Room '{}' is now empty. Aborting task.", log_display_name);
+                    info!(
+                        "🗑️ [ROOM CLEANUP] Room '{}' is now empty. Aborting task.",
+                        log_display_name
+                    );
                     room.task_handle.abort();
                 }
             }
