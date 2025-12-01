@@ -3,141 +3,116 @@ import { chromium } from 'playwright-extra';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import * as logger from './logger';
 
+
 chromium.use(stealth());
 
 const MEME_RUSH_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
 
-const ANCHOR_SCAN_SCRIPT = `
+const DEEP_DUMP_SCRIPT = `
 (() => {
-    const results = [];
-    
-    // 辅助：获取 DOM 元素的 React Fiber
-    const getReactFiber = (element) => {
-        const key = Object.keys(element).find(key => key.startsWith('__reactFiber$'));
-        return key ? element[key] : null;
-    };
+console.log('🕵️ [Scanner V9] 启动全链路爬升扫描...');
 
-    // 辅助：判断一个对象是否是我们想要的“市场数据列表”
-    const isTargetDataArray = (arr) => {
-        if (!Array.isArray(arr) || arr.length === 0) return false;
-        const item = arr[0];
-        if (!item || typeof item !== 'object') return false;
-        
-        // 检查是否包含关键金融字段 (大小写不敏感)
-        const keys = Object.keys(item).join(',').toLowerCase();
-        // 必须包含 price 或 address 或 symbol，且不能全是 react 内部属性
-        return (keys.includes('price') || keys.includes('address') || keys.includes('symbol')) 
-               && !keys.includes('$$typeof');
-    };
+const results = new Map(); // Key: 第一条数据的合约地址 (去重用)
+const visitedFibers = new WeakSet(); // 性能优化：避免重复扫描同一个父组件
 
-    console.log('🕵️ [AnchorScan] 开始基于 DOM 锚点的反向搜索...');
+// --- 辅助函数 ---
+const getReactFiber = (el) => {
+    const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
+    return key ? el[key] : null;
+};
 
-    // 1. 寻找锚点元素
-    // 我们寻找包含 "TX" (交易次数) 文本的元素，因为截图显示每张卡片都有 "TX"
-    // 或者寻找包含 "%" 的元素
-    const allDivs = document.querySelectorAll('div, span');
-    let anchorElements = [];
-    
-    allDivs.forEach(el => {
-        // 筛选条件：看起来像是列表里的具体的数值或标签
-        if (el.innerText && (el.innerText.includes('TX') || el.innerText.includes('MC'))) {
-            anchorElements.push(el);
-        }
-    });
+const isValidTokenList = (list) => {
+    if (!Array.isArray(list) || list.length < 2) return false;
+    const first = list[0];
+    // 宽松匹配：只要有 symbol 且有某种 address 字段
+    return first && typeof first === 'object' && 
+           (first.symbol || first.name) && 
+           (Object.keys(first).some(k => k.toLowerCase().includes('address') || k === 'contract'));
+};
 
-    // 如果找不到 TX，尝试找任意一个看起来像列表容器的子元素
-    if (anchorElements.length === 0) {
-        console.log('⚠️ 未找到 "TX" 锚点，尝试使用主要容器的子元素...');
-        const container = document.querySelector('.markets-table') || document.querySelector('#__APP');
-        if (container && container.children.length > 0) {
-            anchorElements.push(container.children[0]);
-        }
-    }
+// --- 主逻辑 ---
+// 1. 获取所有可能包含数据的 DOM 节点
+const allElements = document.querySelectorAll('div, span, section, main');
 
-    console.log(\`Found \${anchorElements.length} potential anchor elements.\`);
+console.log(\`Found \${allElements.length} DOM elements. Climbing trees...\`);
 
-    // 2. 向上爬升并检查数据
-    const foundPathSet = new Set();
+allElements.forEach(el => {
+    let fiber = getReactFiber(el);
+    let depth = 0;
+    const MAX_CLIMB = 80; // 爬高点
 
-    anchorElements.slice(0, 5).forEach((el, idx) => {
-        let fiber = getReactFiber(el);
-        let depth = 0;
-        const maxClimb = 50; // 向上爬 50 层够不够？
-
-        while (fiber && depth < maxClimb) {
-            const checkSource = [
-                { name: 'memoizedProps', val: fiber.memoizedProps },
-                { name: 'memoizedState', val: fiber.memoizedState }
-            ];
-
-            checkSource.forEach(src => {
-                if (!src.val || typeof src.val !== 'object') return;
-
-                // 遍历 Props/State 的每一个 key
-                Object.keys(src.val).forEach(key => {
-                    const value = src.val[key];
-                    
-                    // 情况 A: 直接是数组
-                    if (isTargetDataArray(value)) {
-                        const pathId = \`Depth-\${depth}.\${src.name}.\${key}\`;
-                        if (!foundPathSet.has(pathId)) {
-                            foundPathSet.add(pathId);
-                            results.push({
-                                source: 'Direct',
-                                depth: depth,
-                                location: src.name,
-                                key: key,
-                                length: value.length,
-                                sampleKeys: Object.keys(value[0])
-                            });
-                        }
-                    }
-                    
-                    // 情况 B: 数组被包了一层对象 (例如 data: { list: [...] })
-                    if (value && typeof value === 'object' && !Array.isArray(value)) {
-                         Object.keys(value).forEach(subKey => {
-                             // 跳过 react 内部大对象
-                             if (subKey === 'children' || subKey.startsWith('_')) return;
-                             
-                             const subValue = value[subKey];
-                             if (isTargetDataArray(subValue)) {
-                                const pathId = \`Depth-\${depth}.\${src.name}.\${key}.\${subKey}\`;
-                                if (!foundPathSet.has(pathId)) {
-                                    foundPathSet.add(pathId);
-                                    results.push({
-                                        source: 'Nested',
-                                        depth: depth,
-                                        location: src.name,
-                                        parentKey: key,
-                                        key: subKey,
-                                        length: subValue.length,
-                                        sampleKeys: Object.keys(subValue[0])
-                                    });
-                                }
-                             }
-                         });
-                    }
-                });
-            });
-
-            fiber = fiber.return; // 向上爬一级
+    while (fiber && depth < MAX_CLIMB) {
+        // 优化：如果这个组件已经被扫描过，就不用再扫了
+        // 因为同一个组件是许多子元素的共同父级
+        if (visitedFibers.has(fiber)) {
+            fiber = fiber.return;
             depth++;
+            continue;
         }
-    });
+        visitedFibers.add(fiber);
 
-    window.__ANCHOR_RESULTS__ = results;
-    console.log(\`✅ Anchor Scan Complete. Found \${results.length} potential sources.\`);
+        // 检查 props 和 state
+        const candidates = [
+            fiber.memoizedProps,
+            fiber.memoizedProps?.value, // Context Provider value
+            fiber.memoizedState,
+            fiber.memoizedState?.memoizedState // Hooks
+        ];
+
+        candidates.forEach(source => {
+            if (!source || typeof source !== 'object') return;
+
+            // 遍历所有 key
+            Object.keys(source).forEach(key => {
+                const val = source[key];
+                
+                if (isValidTokenList(val)) {
+                    const firstItem = val[0];
+                    // 生成指纹：Symbol + Address + ListLength
+                    // 加入 Length 是为了区分“全部列表”和“当前页列表”
+                    const fingerprint = \`\${firstItem.symbol}_\${firstItem.contractAddress || 'NA'}_\${val.length}\`;
+                    
+                    if (!results.has(fingerprint)) {
+                        results.set(fingerprint, {
+                            location: key, // 属性名 (allTokens, currentTokens 等)
+                            length: val.length,
+                            // 提取前 5 个用于人工核对
+                            preview: val.slice(0, 5).map(item => ({
+                                name: item.name,
+                                symbol: item.symbol,
+                                progress: item.progress,
+                                status: item.status,
+                                // 格式化时间
+                                time: item.startTime ? new Date(item.startTime).toLocaleString() : 
+                                      (item.createTime ? new Date(item.createTime).toLocaleString() : 'N/A')
+                            }))
+                        });
+                    }
+                }
+            });
+        });
+
+        fiber = fiber.return; // 继续向上爬
+        depth++;
+    }
+});
+
+// 转换 Map 为数组返回
+window.__V9_RESULTS__ = Array.from(results.values());
+
 })();
 `;
 
 async function scanMemePage() {
     logger.init();
-    logger.log(`🕵️ [MemeScanner V2] 启动反向溯源扫描: ${MEME_RUSH_URL}`, logger.LOG_LEVELS.INFO);
+    // 注意：原代码此处缺少引号，已修复为反引号字符串
+    logger.log(`🕵️ [MemeScanner V9] 启动全链路爬升扫描: ${MEME_RUSH_URL}`, logger.LOG_LEVELS.INFO);
 
     const browser = await chromium.launch({
         headless: false,
         args: ['--start-maximized'],
-        proxy: { server: 'socks5://127.0.0.1:1080' }
+        // ✨ 代理配置
+        proxy: { server: 'socks5://127.0.0.1:1080' } 
     });
 
     try {
@@ -145,51 +120,64 @@ async function scanMemePage() {
         const page = await context.newPage();
         
         await page.addInitScript({
-            content: `
-                window.originalConsoleLog = console.log;
-                console.log = (...args) => window.originalConsoleLog(...args);
-            `
+            content: `window.originalConsoleLog = console.log; console.log = (...args) => window.originalConsoleLog(...args);`
         });
 
         logger.log(`[Navi] 访问页面...`, logger.LOG_LEVELS.INFO);
         await page.goto(MEME_RUSH_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 等待数据渲染
-        logger.log(`[Wait] 等待页面渲染 (10s)...`, logger.LOG_LEVELS.INFO);
+        logger.log(`[Wait] 等待加载 (10s)...`, logger.LOG_LEVELS.INFO);
         await page.waitForTimeout(10000); 
 
-        // 尝试滚动一下，确保懒加载的数据出现
-        await page.evaluate(() => window.scrollTo(0, 500));
-        await page.waitForTimeout(2000);
+        // 强力滚动
+        logger.log(`[Scroll] 滚动加载所有板块...`, logger.LOG_LEVELS.INFO);
+        await page.evaluate(async () => {
+            window.scrollTo(0, 1000);
+            await new Promise(r => setTimeout(r, 1000));
+            window.scrollTo(0, 2000); 
+            await new Promise(r => setTimeout(r, 1000));
+            window.scrollTo(0, 3000); // 确保已迁移到底部
+            await new Promise(r => setTimeout(r, 1000));
+            window.scrollTo(0, 0);
+        });
+        await page.waitForTimeout(3000);
 
-        logger.log(`[Inject] 执行锚点扫描...`, logger.LOG_LEVELS.INFO);
-        await page.evaluate(ANCHOR_SCAN_SCRIPT);
+        logger.log(`[Inject] 执行 V9 扫描...`, logger.LOG_LEVELS.INFO);
+        await page.evaluate(DEEP_DUMP_SCRIPT);
 
-        const results: any[] = await page.evaluate(() => (window as any).__ANCHOR_RESULTS__);
+        const results: any[] = await page.evaluate(() => (window as any).__V9_RESULTS__);
 
         if (!results || results.length === 0) {
-            logger.log(`❌ 反向扫描也未找到数据。可能原因：Canvas 渲染 / ShadowDOM 封闭 / 数据经过了严重的混淆加密。`, logger.LOG_LEVELS.ERROR);
+            logger.log(`❌ 依然未找到。这极不正常，请检查页面是否为空白。`, logger.LOG_LEVELS.ERROR);
         } else {
-            logger.log(`\n🎉 成功! 找到了 ${results.length} 个数据源挂载点。\n`, logger.LOG_LEVELS.INFO);
+            logger.log(`\n🎉 扫描完成! 发现了 ${results.length} 个不同的数据列表。\n`, logger.LOG_LEVELS.INFO);
             
             console.log('===============================================================');
-            console.log('                 FOUND DATA SOURCES (Bottom-Up)                ');
+            console.log('                 MemeScanner V9 - DATA INSPECTION              ');
             console.log('===============================================================');
             
+            // 按长度排序，长列表通常更有价值
+            results.sort((a, b) => b.length - a.length);
+
             results.forEach((res, index) => {
-                console.log(`\n[${index + 1}] Depth: ${res.depth} (向上爬了 ${res.depth} 层组件)`);
-                if (res.source === 'Direct') {
-                    console.log(`    Location: fiber.${res.location}.${res.key}`);
-                } else {
-                    console.log(`    Location: fiber.${res.location}.${res.parentKey}.${res.key}`);
-                }
-                console.log(`    Length:   ${res.length}`);
-                console.log(`    Sample Keys: [${res.sampleKeys.slice(0, 15).join(', ')}]`);
+                console.log(`\n📦 [List #${index + 1}] Found key: "${res.location}" | Count: ${res.length}`);
+                console.log(`----------------------------------------------------------------------------------`);
+                // 使用 console.table 在终端可能显示不全，手动格式化打印
+                console.log(`| Symbol       | Name            | Prog   | Status   | Time`);
+                console.log(`|--------------|-----------------|--------|----------|-----------------------`);
+                res.preview.forEach((p: any) => {
+                    const name = (p.name || '').substring(0, 15).padEnd(15);
+                    const sym = (p.symbol || '').substring(0, 12).padEnd(12);
+                    const prog = (p.progress !== undefined ? p.progress + '%' : 'N/A').padEnd(6);
+                    const stat = (p.status || 'N/A').padEnd(8);
+                    const time = p.time;
+                    console.log(`| ${sym} | ${name} | ${prog} | ${stat} | ${time}`);
+                });
             });
 
             console.log('\n===============================================================');
-            console.log('💡 提示：选择 Keys 最丰富、Length 最符合预期的那个 Location。');
-            console.log('   例如，如果看到有 "newListingData", "upcomingData" 等字段，那就是它了！');
+            console.log('💡 决策时刻:');
+            console.log('   请截图告诉我，哪个列表是【即将发行】（看 Time 是未来的），哪个是【已迁移】（看 Prog 是 100%）。');
         }
 
     } catch (e: any) {
