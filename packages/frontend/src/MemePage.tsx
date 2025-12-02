@@ -265,16 +265,30 @@ const MemePage: Component = () => {
 
     // 处理新盘 (按创建时间倒序)
     const newTokens = createMemo(() => {
-        return newMemeData
+        const sorted = newMemeData
             .slice()
+            // ✨ 核心排序逻辑: createTime 越大(越新)越靠前
             .sort((a, b) => (b.createTime || 0) - (a.createTime || 0));
+        
+        // 📊 日志: 监控新币排序情况
+        if (sorted.length > 0) {
+            console.log(`[MemePage] 🔥 NewTokens Sorted (Top 1): ${sorted[0].symbol}, Time: ${new Date(sorted[0].createTime).toLocaleTimeString()}`);
+        }
+        return sorted;
     });
 
-    // 处理已发射 (按市值或更新时间排序)
+    // 处理已发射 (按创建时间倒序)
     const migratedTokens = createMemo(() => {
-        return migratedMemeData
+        const sorted = migratedMemeData
             .slice()
-            .sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0));
+            // ✨ 核心排序逻辑修改: marketCap -> createTime
+            .sort((a, b) => (b.createTime || 0) - (a.createTime || 0));
+
+        // 📊 日志: 监控已发射币种排序情况 (Updated to show time)
+        if (sorted.length > 0) {
+             console.log(`[MemePage] 🦋 MigratedTokens Sorted (Top 1): ${sorted[0].symbol}, Time: ${new Date(sorted[0].createTime).toLocaleTimeString()}`);
+        }
+        return sorted;
     });
 
     const upcomingTokens = createMemo<MemeItem[]>(() => []);

@@ -1,717 +1,354 @@
-
-`README.MD`这是项目介绍
-`packages\backend\src\socket_handlers.rs`
-我记得meme new的数据中有推特id，你确认下，我找到了请求这个推特的api，但这不是图片，也不是文字，这应该怎么缓存？还是说在前端缓存？
-https://platform.twitter.com/embed/Tweet.html?frame=false&hideCard=false&hideThread=true&id=1994973228901831106&origin=web3.binance.com&theme=dark&lang=zh-cn&width=300px
-https://platform.twitter.com/embed/Tweet.html?frame=false&hideCard=false&hideThread=true&id=1995106090363805856&theme=light&lang=zh-cn&width=100%
-https://platform.twitter.com/embed/Tweet.html?frame=false&hideCard=false&hideThread=true&id=1995106090363805856&theme=dark&lang=zh-cn&width=300px
-
-
-
-
-没错，你的分析很准确！
-
-根据你提供的原始数据，category 确实是 "meme_migrated"。数据结构看起来和现有的 MemeItem 几乎一致，只是多了 status 和 updateTime 字段，且 category 变了。
-
-为了解决这个 WARN 并正确处理这部分数据（这些通常是已经“毕业”发射到 DEX 的金狗，价值很高），我们需要做两件事：
-
-修改 types.rs：在 DataPayload 枚举中添加 MemeMigrated 类型，并更新 MemeItem 结构体以包含新字段（可选）。
-
-修改 socket_handlers.rs：增加对 MemeMigrated 的处理逻辑（逻辑与 MemeNew 类似，都需要获取叙事 Narrative 和更新符号缓存）。
-
-下面是修改后的代码：
-
-
-// packages/backend/src/types.rs
-
-
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use socketioxide::socket::Sid;
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
-
-// ==============================================================================
-// 1. 定义独立的数据项结构体 (对应 shared-types)
-// ==============================================================================
-
-// 🟢 1.1 Hotlist 专用结构体 (对应 TypeScript 的 HotlistItem)
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct HotlistItem {
-// --- BaseItem 字段 (重复定义以解耦) ---
-pub chain: String,
-pub contract_address: String,
-pub symbol: String,
-pub icon: Option<String>,
-
-
-// --- Hotlist 核心字段 ---
-pub price: Option<f64>,
-pub market_cap: Option<f64>,
-pub volume1h: Option<f64>,
-pub volume24h: Option<f64>,
-pub price_change1h: Option<f64>,
-pub price_change24h: Option<f64>,
-
-// --- 额外 K线 字段 ---
-pub volume5m: Option<f64>,
-pub price_change5m: Option<f64>,
-
-// 来源标记
-pub source: Option<String>,
-
-}
-
-// 🔵 1.2 Meme Rush 专用结构体 (对应 TypeScript 的 MemeItem)
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MemeItem {
-// --- BaseItem 字段 ---
-pub chain: String,
-pub contract_address: String,
-pub symbol: String,
-pub icon: Option<String>,
-
-
-// --- Meme 核心字段 ---
-pub name: String,
-pub progress: f64,        // 绑定曲线进度 (0-100)
-pub holders: i64,
-pub dev_migrate_count: Option<i64>, // 可能为null
-pub create_time: i64,
-
-// ✨ 新增: 兼容 migrated 数据中的字段
-pub status: Option<String>,      // e.g. "dex"
-pub update_time: Option<i64>,
-
-// 社交
-pub twitter: Option<String>,
-pub telegram: Option<String>,
-pub website: Option<String>,
-
-// Meme 交易属性
-pub liquidity: Option<f64>,
-pub market_cap: Option<f64>,
-
-// ✨ 新增: 项目描述 (从 Binance Narrative API 获取)
-pub narrative: Option<String>,
-
-// 来源标记
-pub source: Option<String>,
-
-}
-
-// ==============================================================================
-// 2. 定义严格分流的 Payload (核心解耦点)
-// ==============================================================================
-
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
-pub enum DataAction {
-#[serde(rename = "snapshot")]
-Snapshot,
-#[serde(rename = "update")]
-Update,
-#[serde(other)]
-Unknown, // 处理 "full" 或其他未预期的 action
-}
-
-// ✨ 利用 serde(tag = "category") 实现自动分流
-// 当 category="hotlist" 时，data 被解析为 Vec<HotlistItem>
-// 当 category="meme_new" 时，data 被解析为 Vec<MemeItem>
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "category")]
-pub enum DataPayload {
-#[serde(rename = "hotlist")]
-Hotlist {
-r#type: DataAction,
-data: Vec<HotlistItem>,
-},
-
-
-#[serde(rename = "meme_new")]
-MemeNew {
-    r#type: DataAction,
-    data: Vec<MemeItem>,
-},
-
-// ✨ 新增: 处理已发射(Migrated)的 Meme 代币
-#[serde(rename = "meme_migrated")]
-MemeMigrated {
-    r#type: DataAction,
-    data: Vec<MemeItem>, // 复用 MemeItem 结构
-},
-
-// 处理未知的分类，防止报错崩溃
-#[serde(other)]
-Unknown,
-
-}
-
-// ==============================================================================
-// 3. 其他辅助结构 (Binance/KLine/Socket/API)
-// ==============================================================================
-
-// ✨ 新增: Binance Narrative API 响应结构
-#[derive(Debug, Deserialize)]
-pub struct NarrativeResponse {
-pub code: String,
-pub data: Option<NarrativeData>,
-pub success: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct NarrativeData {
-pub text: Option<NarrativeText>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct NarrativeText {
-pub en: Option<String>,
-pub cn: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct KlineSubscribePayload {
-pub address: String,
-pub chain: String,
-pub interval: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BinanceStreamWrapper<T> {
-pub stream: String,
-pub data: T,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BinanceKlineDataWrapper {
-#[serde(rename = "d")]
-pub kline_data: BinanceKlineDetail,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(non_snake_case)]
-pub struct BinanceKlineDetail {
-#[serde(rename = "u")]
-pub values: (String, String, String, String, String, String),
-}
-
-#[derive(Debug, Deserialize)]
-pub struct BinanceTickDataWrapper {
-#[serde(rename = "d")]
-pub tick_data: BinanceTickDetail,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(non_snake_case)]
-pub struct BinanceTickDetail {
-pub t0a: String,
-pub t1a: String,
-pub t0pu: f64,
-pub t1pu: f64,
-pub v: f64,
-pub a0: f64,
-pub a1: f64,
-pub tp: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct KlineBroadcastData {
-pub room: String,
-pub data: KlineTick,
-}
-
-#[derive(Debug, Serialize, Clone, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct KlineTick {
-#[serde(with = "chrono::serde::ts_seconds")]
-pub time: DateTime<Utc>,
-pub open: f64,
-pub high: f64,
-pub low: f64,
-pub close: f64,
-pub volume: f64,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct KlineHistoryResponse {
-pub address: String,
-pub chain: String,
-pub interval: String,
-pub data: Vec<KlineTick>,
-}
-
-pub struct Room {
-pub clients: HashSet<Sid>,
-pub task_handle: JoinHandle<()>,
-pub symbol: String,
-pub current_kline: Arc<Mutex<Option<KlineTick>>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ImageProxyQuery {
-pub url: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct CacheMeta {
-pub content_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HistoricalDataWrapper {
-pub data: Vec<Vec<serde_json::Value>>,
-}
-]]>
-
-// packages/backend/src/socket_handlers.rs
-
-use super::{
-binance_task,
-kline_handler,
-types::{DataPayload, KlineSubscribePayload, Room, KlineTick, MemeItem, NarrativeResponse},
-ServerState,
-};
-use socketioxide::{
-extract::{Data, SocketRef},
-};
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::{error, info, warn};
-
-// ✨ 定义过滤阈值：1000 USD (成交量 * 价格)
-// 仅用于 Hotlist，Meme 币不使用此阈值
-const MIN_HOTLIST_AMOUNT: f64 = 1.0;
-
-// ✨ Binance Narrative API URL
-const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
-
-// ✨ 本地代理地址 (解决 API 连接被阻断问题)
-const PROXY_URL: &str = "http://127.0.0.1:1080";
-
-pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
-info!("🔌 [Socket.IO] Client connected: {}", s.id);
-
-register_data_update_handler(&s, state.clone());
-register_kline_subscribe_handler(&s, state.clone());
-register_kline_unsubscribe_handler(&s, state.clone());
-register_disconnect_handler(&s, state.clone());
-register_kline_history_handler(&s, state);
-}
-
-fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
-socket.on(
-"request_historical_kline",
-move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
-let state = state.clone();
-async move {
-kline_handler::handle_kline_request(s, payload, state).await;
-}
-},
-);
-}
-
-fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
-socket.on(
-"data-update",
-move |s: SocketRef, payload: Data<serde_json::Value>| {
-let state = state.clone();
-async move {
-// 1. 尝试反序列化为 types.rs 中定义的 DataPayload 枚举
-match serde_json::from_value::<DataPayload>(payload.0) {
-Ok(mut parsed_payload) => {
-let mut should_broadcast = false;
-let mut log_summary = String::new();
-
-// 2. 核心分流逻辑：根据枚举类型分别处理
-match &mut parsed_payload {
-// ==========================================================
-// 🟢 场景 A: 处理 Hotlist (常规热门币)
-// ==========================================================
-DataPayload::Hotlist { r#type, data } => {
-let original_count = data.len();
-
-// ✨ Hotlist 专用逻辑: 执行金额过滤
-data.retain(|item| {
-let volume = item.volume1h.unwrap_or(0.0);
-let price = item.price.unwrap_or(0.0);
-let amount = volume * price;
-amount >= MIN_HOTLIST_AMOUNT
-});
-
-let filtered_count = data.len();
-should_broadcast = !data.is_empty();
-log_summary = format!(
-"🔥 [HOTLIST] Act: {:?} | Filter: {} -> {} (Criteria: 1H Amount >= ${})",
-r#type, original_count, filtered_count, MIN_HOTLIST_AMOUNT
-);
-
-// 更新 Symbol Map
-for item in data.iter() {
-state.token_symbols.insert(
-item.contract_address.to_lowercase(),
-item.symbol.clone()
-);
-}
-},
-
-// ==========================================================
-// 🔵 场景 B: 处理 MemeNew (新币/土狗)
-// ==========================================================
-DataPayload::MemeNew { r#type, data } => {
-// ✨ Meme 专用逻辑:
-data.retain(|item| !item.symbol.is_empty());
-
-// ✨✨✨ 核心逻辑：获取项目描述 (Narrative) ✨✨✨
-enrich_meme_data(data, &state).await;
-
-let filtered_count = data.len();
-should_broadcast = !data.is_empty();
-log_summary = format!(
-"🐶 [MEME RUSH] Act: {:?} | Items: {} | Narrative Check Done",
-r#type,
-filtered_count
-);
-
-// 更新 Symbol Map
-for item in data.iter() {
-state.token_symbols.insert(
-item.contract_address.to_lowercase(),
-item.symbol.clone()
-);
-}
-},
-
-// ==========================================================
-// 🟣 场景 C: 处理 MemeMigrated (发射成功的金狗)
-// ==========================================================
-DataPayload::MemeMigrated { r#type, data } => {
-// 逻辑与 MemeNew 类似，但可以独立统计日志
-data.retain(|item| !item.symbol.is_empty());
-
-// 发射成功的币种也需要 Narrative
-enrich_meme_data(data, &state).await;
-
-let filtered_count = data.len();
-should_broadcast = !data.is_empty();
-log_summary = format!(
-"🚀 [MEME MIGRATED] Act: {:?} | Items: {} | Narrative Check Done",
-r#type,
-filtered_count
-);
-
-// 更新 Symbol Map
-for item in data.iter() {
-state.token_symbols.insert(
-item.contract_address.to_lowercase(),
-item.symbol.clone()
-);
-}
-},
-
-// ⚪ 其他/未知
-DataPayload::Unknown => {
-// 现在 MemeMigrated 已经被处理，这里应该很少触发了
-warn!("⚠️ [DATA] Received unknown category payload.");
-}
-}
-
-// 3. 广播数据 (如果还有剩余数据)
-if should_broadcast {
-info!("{}", log_summary);
-// socketioxide 会自动序列化 DataPayload 枚举
-if let Err(e) = s.broadcast().emit("data-broadcast", &parsed_payload).await {
-error!("❌ [BROADCAST FAIL] {:?}", e);
-}
-}
-}
-Err(e) => {
-warn!("❌ [JSON PARSE ERROR] Failed to parse data-update: {}", e);
-}
-}
-}
-},
-);
-}
-
-// ✨✨✨ 辅助函数：批量填充 Meme 数据的描述信息 ✨✨✨
-async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
-let mut indices_to_fetch = Vec::new();
-
-// 1. 快速检查缓存，找出需要请求的项
-for (i, item) in items.iter().enumerate() {
-// 如果缓存里有 key（无论是真正的内容，还是 "__PENDING__"），都跳过请求
-if state.narrative_cache.contains_key(&item.contract_address) {
-continue;
-}
-
-// 关键点：立即占位！防止后续的高频 Update 再次触发请求
-state.narrative_cache.insert(item.contract_address.clone(), "__PENDING__".to_string());
-indices_to_fetch.push(i);
-}
-
-if !indices_to_fetch.is_empty() {
-info!("🔍 [NARRATIVE] Queuing fetch for {} NEW items (staggered with proxy).", indices_to_fetch.len());
-}
-
-// 2. 执行请求 (异步 Spawn，不阻塞 Socket 广播)
-// 错峰请求：每隔 200ms 发一个，防止瞬间把代理打挂或被目标 API 封锁
-for (queue_idx, &item_idx) in indices_to_fetch.iter().enumerate() {
-let address = items[item_idx].contract_address.clone();
-let chain = items[item_idx].chain.clone();
-// let client_pool = state.client_pool.clone(); // 🔴 不使用全局池，改用独立的代理 Client
-let cache = state.narrative_cache.clone();
-
-// 延迟递增
-let delay = std::time::Duration::from_millis(queue_idx as u64 * 200);
-
-if let Some(chain_id) = get_chain_id(&chain) {
-tokio::spawn(async move {
-// 等待轮到自己
-tokio::time::sleep(delay).await;
-
-// 开始请求 (传入 None 表示不使用 Pool，而是内部新建代理连接)
-match fetch_narrative(&address, chain_id).await {
-Ok(Some(text)) => {
-info!("✅ [FETCH SUCCESS] For {}: {:.20}...", address, text);
-cache.insert(address, text);
-},
-Ok(None) => {
-// info!("📭 [FETCH EMPTY] For {}.", address);
-cache.insert(address, "".to_string()); // 标记为空，防止重复请求
-},
-Err(e) => {
-warn!("❌ [FETCH ERROR] For {}: {}", address, e);
-// 出错后移除 PENDING 状态，允许未来重试
-cache.remove(&address);
-}
-}
-});
-} else {
-// 不支持的链，标记为空，不再尝试
-cache.insert(address, "".to_string());
-}
-}
-
-// 3. 统一填充 (从缓存读取内容给前端)
-for item in items.iter_mut() {
-if let Some(text) = state.narrative_cache.get(&item.contract_address) {
-if !text.is_empty() && text.as_str() != "__PENDING__" {
-item.narrative = Some(text.clone());
-}
-}
-}
-}
-
-// ✨ 修改：不再依赖全局 ClientPool，而是创建一个带 Proxy 的专用 Client
-async fn fetch_narrative(address: &str, chain_id: u64) -> anyhow::Result<Option<String>> {
-let url = format!("{}?contractAddress={}&chainId={}", NARRATIVE_API_URL, address, chain_id);
-
-// 1. 配置代理
-let proxy = reqwest::Proxy::all(PROXY_URL)?;
-
-// 2. 构建专用 Client (ClientBuilder 没有 .header 方法，需在 Request 中设置)
-let client = reqwest::Client::builder()
-.proxy(proxy)
-.timeout(std::time::Duration::from_secs(10))
-.build()?;
-
-// 3. 发起请求 (在这里伪装成真实浏览器 Headers)
-let resp = client.get(&url)
-.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-.header("Accept", "application/json, text/plain, */*")
-.header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-.header("Accept-Encoding", "gzip, deflate, br")
-.header("ClientType", "web")
-.header("ClientVersion", "1.0.0")
-.header("Cache-Control", "no-cache")
-.header("Pragma", "no-cache")
-.header("Origin", "https://web3.binance.com")
-.header("Referer", "https://web3.binance.com/zh-CN/meme-rush")
-.header("Sec-Ch-Ua", "\"Google Chrome\";v=\"125\", \"Chromium\";v=\"125\", \"Not.A/Brand\";v=\"24\"")
-.header("Sec-Ch-Ua-Mobile", "?0")
-.header("Sec-Ch-Ua-Platform", "\"Windows\"")
-.header("Sec-Fetch-Dest", "empty")
-.header("Sec-Fetch-Mode", "cors")
-.header("Sec-Fetch-Site", "same-origin")
-.send()
-.await?;
-
-if !resp.status().is_success() {
-warn!("❌ [API FAIL] Status: {} | URL: {}", resp.status(), url);
-return Ok(None);
-}
-
-let body: NarrativeResponse = resp.json().await?;
-
-if let Some(data) = body.data {
-if let Some(text_obj) = data.text {
-// 优先使用中文，其次英文
-if let Some(cn) = text_obj.cn {
-if !cn.is_empty() { return Ok(Some(cn)); }
-}
-if let Some(en) = text_obj.en {
-if !en.is_empty() { return Ok(Some(en)); }
-}
-}
-}
-
-Ok(None)
-}
-
-fn get_chain_id(chain: &str) -> Option<u64> {
-match chain.to_lowercase().as_str() {
-"bsc" => Some(56),
-"eth" | "ethereum" => Some(1),
-"base" => Some(8453),
-"arb" | "arbitrum" => Some(42161),
-"matic" | "polygon" => Some(137),
-"op" | "optimism" => Some(10),
-"avax" | "avalanche" => Some(43114),
-"sol" | "solana" => None, // Binance 暂不支持 Solana Narrative
-_ => None, // 不支持的链跳过 fetch
-}
-}
-
-fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
-socket.on(
-"subscribe_kline",
-move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
-let state = state.clone();
-async move {
-let chain_lower = payload.chain.to_lowercase();
-let address_lowercase = payload.address.to_lowercase();
-
-// 尝试从缓存中获取 Symbol，如果没有则截断地址显示
-let symbol = state.token_symbols
-.get(&address_lowercase)
-.map_or_else(
-|| format!("{}...", &payload.address[0..6]),
-|s| s.value().clone()
-);
-
-let pool_id = match chain_lower.as_str() {
-"bsc" => 14,
-"sol" | "solana" => 16,
-"base" => 199,
-unsupported_chain => {
-warn!("⚠️ [SUBSCRIBE FAIL] Unsupported chain '{}' (original: '{}') for {}. Ignored.", unsupported_chain, payload.chain, s.id);
-return;
-}
-};
-
-let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
-let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
-
-info!("🔔 [SUB] Client {} -> Room: {}", s.id, log_display_name);
-s.join(room_name.clone());
-
-// 初始化房间逻辑 (启动 Binance 任务)
-state.app_state
-.entry(room_name.clone())
-.or_insert_with(|| {
-info!("✨ [ROOM NEW] First subscriber for '{}'. Spawning Binance task...", log_display_name);
-let current_kline = Arc::new(Mutex::new(None::<KlineTick>));
-
-let task_handle = tokio::spawn(binance_task::binance_websocket_task(
-state.io.clone(),
-room_name.clone(),
-symbol.clone(),
-state.config.clone(),
-current_kline.clone(),
-));
-
-Room {
-clients: HashSet::new(),
-task_handle,
-symbol,
-current_kline,
-}
-})
-.value_mut()
-.clients
-.insert(s.id);
-}
-},
-);
-}
-
-fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
-socket.on(
-"unsubscribe_kline",
-move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
-let state = state.clone();
-async move {
-let chain_lower = payload.chain.to_lowercase();
-// let address_lowercase = payload.address.to_lowercase(); // 未使用
-
-let symbol = state.token_symbols
-.get(&payload.address.to_lowercase())
-.map_or_else(|| format!("{}...", &payload.address[0..6]), |s| s.value().clone());
-
-let pool_id = match chain_lower.as_str() {
-"bsc" => 14,
-"sol" | "solana" => 16,
-"base" => 199,
-_ => { return; }
-};
-let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
-let log_display_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
-
-info!("🔽 [UNSUB] Client {} leaving room: {}", s.id, log_display_name);
-s.leave(room_name.clone());
-
-// 检查房间是否为空，为空则清理任务
-if let Some(mut room) = state.app_state.get_mut(&room_name) {
-room.clients.remove(&s.id);
-if room.clients.is_empty() {
-drop(room);
-if let Some((_, room_to_abort)) = state.app_state.remove(&room_name) {
-info!("🗑️ [ROOM EMPTY] Last client left '{}'. Aborting Binance task.", log_display_name);
-room_to_abort.task_handle.abort();
-}
-}
-}
-}
-},
-);
-}
-
-fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
-socket.on_disconnect(move |s: SocketRef| {
-let state = state.clone();
-async move {
-// info!("🔌 [Socket.IO] Client disconnected: {}", s.id);
-let mut empty_rooms: Vec<(String, String)> = Vec::new();
-
-for mut entry in state.app_state.iter_mut() {
-if entry.value_mut().clients.remove(&s.id) {
-let log_display_name = {
-let parts: Vec<&str> = entry.key().split('@').collect();
-if parts.len() == 4 {
-format!("{}@{}@{}@{}", parts[0], parts[1], &entry.value().symbol, parts[3])
-} else {
-entry.key().to_string()
-}
-};
-if entry.clients.is_empty() {
-empty_rooms.push((entry.key().clone(), log_display_name));
-}
-}
-}
-
-for (room_name, log_display_name) in empty_rooms {
-if let Some((_, room)) = state.app_state.remove(&room_name) {
-info!("🗑️ [ROOM CLEANUP] Room '{}' is now empty. Aborting task.", log_display_name);
-room.task_handle.abort();
-}
-}
-}
-});
-}
-
+`packages\extractor\src\meme-scanner.ts`输出的日志如下
+ F:\work\github\binanceweb3> pnpm scan:meme 
+
+> realtime-monitor@1.0.0 scan:meme F:\work\github\binanceweb3
+> pnpm --filter extractor scan:meme
+
+
+> extractor@1.0.0 scan:meme F:\work\github\binanceweb3\packages\extractor
+> tsc -b && node dist/meme-scanner.js
+
+[Logger] 日志文件已创建: F:\work\github\binanceweb3\packages\logs\run_2025-12-02T04-15-17.log
+[15:17.153] [INFO]     🕵️ [MemeScanner V10] 启动全字段深度扫描
+[15:19.714] [INFO]     [Navi] 前往目标页面: https://web3.binance.com/zh-CN/meme-rush?chain=bsc
+[15:25.664] [INFO]     [Wait] 等待数据流加载 (10秒)...
+[15:35.690] [INFO]     [Scroll] 触发页面滚动...
+[15:41.336] [INFO]     [Inject] 执行 V10 分析脚本...
+[15:41.377] [INFO]     
+🎉 扫描成功! 发现了 6 个候选列表。
+
+
+===============================================================
+📦 [LIST #1] source: Props.Value -> allTokens | Count: 40
+===============================================================
+📊 [SORTING TRENDS] (这决定了谁在队列最上面)
+   Time:     Descending (⬇️)
+   Progress: Random/Mixed
+   MktCap:   Random/Mixed
+
+🔍 [OBJECT INSPECTION] (第一个币的所有字段 - 寻找 status/migrated 标志)
+┌───────────────────────┬─────────────────────────────────────────────────────────┐
+│ (index)               │ Values                                                  │
+├───────────────────────┼─────────────────────────────────────────────────────────┤
+│ firstSeen             │ '1764648940864'                                         │
+│ chainId               │ '56'                                                    │
+│ contractAddress       │ '0xbeb9b6aee2e59ffd0f930581f834b0841c5a4444'            │
+│ symbol                │ 'GTOK'                                                  │
+│ name                  │ 'Grok takes over'                                       │
+│ icon                  │ 'https://static.four.meme/market/d2e5a2d2-9111-4397...' │
+│ caIcon                │ 'null'                                                  │
+│ iconStatus            │ '1'                                                     │
+│ caIconStatus          │ '1'                                                     │
+│ createTime            │ '1764648937000'                                         │
+│ height                │ '70196571'                                              │
+│ twitter               │ 'https://x.com/user_ydyb575n/status/199570828988398...' │
+│ website               │ 'https://axiom.trade/@sellhigh'                         │
+│ telegram              │ 'null'                                                  │
+│ progress              │ 'null'                                                  │
+│ protocol              │ '2001'                                                  │
+│ holders               │ '1'                                                     │
+│ liquidity             │ 'null'                                                  │
+│ volume                │ 'null'                                                  │
+│ marketCap             │ 'null'                                                  │
+│ count                 │ 'null'                                                  │
+│ countBuy              │ 'null'                                                  │
+│ countSell             │ 'null'                                                  │
+│ holdersTop10Percent   │ '5'                                                     │
+│ holdersDevPercent     │ '5'                                                     │
+│ holdersSniperPercent  │ 'null'                                                  │
+│ holdersInsiderPercent │ 'null'                                                  │
+│ devSellPercent        │ '0'                                                     │
+│ migrateStatus         │ 'false'                                                 │
+│ migrateTime           │ 'null'                                                  │
+│ paidOnDexScreener     │ 'false'                                                 │
+│ devMigrateCount       │ '2'                                                     │
+│ decimal               │ '18'                                                    │
+│ sensitiveToken        │ 'false'                                                 │
+│ exclusive             │ 'false'                                                 │
+└───────────────────────┴─────────────────────────────────────────────────────────┘
+
+👀 [PREVIEW] (前 3 个数据)
+   - GTOK     | Prog: null% | Status: N/A | Time: 1764648937000
+   - GTO      | Prog: 9.51% | Status: N/A | Time: 1764648930000
+   - Grok接管   | Prog: 3.85% | Status: N/A | Time: 1764648923000
+
+===============================================================
+📦 [LIST #2] source: Props.Value -> currentTokens | Count: 40
+===============================================================
+📊 [SORTING TRENDS] (这决定了谁在队列最上面)
+   Time:     Descending (⬇️)
+   Progress: Random/Mixed
+   MktCap:   Random/Mixed
+
+🔍 [OBJECT INSPECTION] (第一个币的所有字段 - 寻找 status/migrated 标志)
+┌───────────────────────┬─────────────────────────────────────────────────────────┐
+│ (index)               │ Values                                                  │
+├───────────────────────┼─────────────────────────────────────────────────────────┤
+│ firstSeen             │ '1764648940864'                                         │
+│ chainId               │ '56'                                                    │
+│ contractAddress       │ '0xbeb9b6aee2e59ffd0f930581f834b0841c5a4444'            │
+│ symbol                │ 'GTOK'                                                  │
+│ name                  │ 'Grok takes over'                                       │
+│ icon                  │ 'https://static.four.meme/market/d2e5a2d2-9111-4397...' │
+│ caIcon                │ 'null'                                                  │
+│ iconStatus            │ '1'                                                     │
+│ caIconStatus          │ '1'                                                     │
+│ createTime            │ '1764648937000'                                         │
+│ height                │ '70196571'                                              │
+│ twitter               │ 'https://x.com/user_ydyb575n/status/199570828988398...' │
+│ website               │ 'https://axiom.trade/@sellhigh'                         │
+│ telegram              │ 'null'                                                  │
+│ progress              │ 'null'                                                  │
+│ protocol              │ '2001'                                                  │
+│ holders               │ '1'                                                     │
+│ liquidity             │ 'null'                                                  │
+│ volume                │ 'null'                                                  │
+│ marketCap             │ 'null'                                                  │
+│ count                 │ 'null'                                                  │
+│ countBuy              │ 'null'                                                  │
+│ countSell             │ 'null'                                                  │
+│ holdersTop10Percent   │ '5'                                                     │
+│ holdersDevPercent     │ '5'                                                     │
+│ holdersSniperPercent  │ 'null'                                                  │
+│ holdersInsiderPercent │ 'null'                                                  │
+│ devSellPercent        │ '0'                                                     │
+│ migrateStatus         │ 'false'                                                 │
+│ migrateTime           │ 'null'                                                  │
+│ paidOnDexScreener     │ 'false'                                                 │
+│ devMigrateCount       │ '2'                                                     │
+│ decimal               │ '18'                                                    │
+│ sensitiveToken        │ 'false'                                                 │
+│ exclusive             │ 'false'                                                 │
+└───────────────────────┴─────────────────────────────────────────────────────────┘
+
+👀 [PREVIEW] (前 3 个数据)
+   - GTOK     | Prog: null% | Status: N/A | Time: 1764648937000
+   - GTO      | Prog: 9.51% | Status: N/A | Time: 1764648930000
+   - Grok接管   | Prog: 3.85% | Status: N/A | Time: 1764648923000
+
+===============================================================
+📦 [LIST #3] source: Props.Value -> allTokens | Count: 40
+===============================================================
+📊 [SORTING TRENDS] (这决定了谁在队列最上面)
+   Time:     Random/Mixed
+   Progress: Descending (⬇️)
+   MktCap:   Random/Mixed
+
+🔍 [OBJECT INSPECTION] (第一个币的所有字段 - 寻找 status/migrated 标志)
+┌───────────────────────┬─────────────────────────────────────────────────────────┐
+│ (index)               │ Values                                                  │
+├───────────────────────┼─────────────────────────────────────────────────────────┤
+│ firstSeen             │ '1764648938751'                                         │
+│ chainId               │ '56'                                                    │
+│ contractAddress       │ '0xd4e0e063e1e7b90afec8668f6b8785066db94444'            │
+│ symbol                │ '2026'                                                  │
+│ name                  │ '2026'                                                  │
+│ icon                  │ 'https://static.four.meme/market/6bea4c8c-4d91-416c...' │
+│ caIcon                │ 'null'                                                  │
+│ iconStatus            │ '1'                                                     │
+│ caIconStatus          │ '1'                                                     │
+│ createTime            │ '1764590830000'                                         │
+│ height                │ '70119104'                                              │
+│ twitter               │ 'null'                                                  │
+│ website               │ 'null'                                                  │
+│ telegram              │ 'null'                                                  │
+│ progress              │ '91.37'                                                 │
+│ protocol              │ '2001'                                                  │
+│ holders               │ '174'                                                   │
+│ liquidity             │ '21791.49'                                              │
+│ volume                │ '12525.71'                                              │
+│ marketCap             │ '46675.4'                                               │
+│ count                 │ '363'                                                   │
+│ countBuy              │ '319'                                                   │
+│ countSell             │ '44'                                                    │
+│ holdersTop10Percent   │ '45'                                                    │
+│ holdersDevPercent     │ 'null'                                                  │
+│ holdersSniperPercent  │ '72'                                                    │
+│ holdersInsiderPercent │ 'null'                                                  │
+│ devSellPercent        │ 'null'                                                  │
+│ migrateStatus         │ 'false'                                                 │
+│ migrateTime           │ '0'                                                     │
+│ paidOnDexScreener     │ 'false'                                                 │
+│ devMigrateCount       │ '1'                                                     │
+│ decimal               │ '18'                                                    │
+│ sensitiveToken        │ 'false'                                                 │
+│ exclusive             │ 'false'                                                 │
+└───────────────────────┴─────────────────────────────────────────────────────────┘
+
+👀 [PREVIEW] (前 3 个数据)
+   - 2026     | Prog: 91.37% | Status: N/A | Time: 1764590830000
+   - 感谢抬举     | Prog: 91.36% | Status: N/A | Time: 1764247769000
+   - SRNX     | Prog: 90.97% | Status: N/A | Time: 1764630018000
+
+===============================================================
+📦 [LIST #4] source: Props.Value -> currentTokens | Count: 40
+===============================================================
+📊 [SORTING TRENDS] (这决定了谁在队列最上面)
+   Time:     Random/Mixed
+   Progress: Descending (⬇️)
+   MktCap:   Random/Mixed
+
+🔍 [OBJECT INSPECTION] (第一个币的所有字段 - 寻找 status/migrated 标志)
+┌───────────────────────┬─────────────────────────────────────────────────────────┐
+│ (index)               │ Values                                                  │
+├───────────────────────┼─────────────────────────────────────────────────────────┤
+│ firstSeen             │ '1764648938751'                                         │
+│ chainId               │ '56'                                                    │
+│ contractAddress       │ '0xd4e0e063e1e7b90afec8668f6b8785066db94444'            │
+│ symbol                │ '2026'                                                  │
+│ name                  │ '2026'                                                  │
+│ icon                  │ 'https://static.four.meme/market/6bea4c8c-4d91-416c...' │
+│ caIcon                │ 'null'                                                  │
+│ iconStatus            │ '1'                                                     │
+│ caIconStatus          │ '1'                                                     │
+│ createTime            │ '1764590830000'                                         │
+│ height                │ '70119104'                                              │
+│ twitter               │ 'null'                                                  │
+│ website               │ 'null'                                                  │
+│ telegram              │ 'null'                                                  │
+│ progress              │ '91.37'                                                 │
+│ protocol              │ '2001'                                                  │
+│ holders               │ '174'                                                   │
+│ liquidity             │ '21791.49'                                              │
+│ volume                │ '12525.71'                                              │
+│ marketCap             │ '46675.4'                                               │
+│ count                 │ '363'                                                   │
+│ countBuy              │ '319'                                                   │
+│ countSell             │ '44'                                                    │
+│ holdersTop10Percent   │ '45'                                                    │
+│ holdersDevPercent     │ 'null'                                                  │
+│ holdersSniperPercent  │ '72'                                                    │
+│ holdersInsiderPercent │ 'null'                                                  │
+│ devSellPercent        │ 'null'                                                  │
+│ migrateStatus         │ 'false'                                                 │
+│ migrateTime           │ '0'                                                     │
+│ paidOnDexScreener     │ 'false'                                                 │
+│ devMigrateCount       │ '1'                                                     │
+│ decimal               │ '18'                                                    │
+│ sensitiveToken        │ 'false'                                                 │
+│ exclusive             │ 'false'                                                 │
+└───────────────────────┴─────────────────────────────────────────────────────────┘
+
+👀 [PREVIEW] (前 3 个数据)
+   - 2026     | Prog: 91.37% | Status: N/A | Time: 1764590830000
+   - 感谢抬举     | Prog: 91.36% | Status: N/A | Time: 1764247769000
+   - SRNX     | Prog: 90.97% | Status: N/A | Time: 1764630018000
+
+===============================================================
+📦 [LIST #5] source: Props.Value -> allTokens | Count: 40
+===============================================================
+📊 [SORTING TRENDS] (这决定了谁在队列最上面)
+   Time:     Descending (⬇️)
+   Progress: Random/Mixed
+   MktCap:   Random/Mixed
+
+🔍 [OBJECT INSPECTION] (第一个币的所有字段 - 寻找 status/migrated 标志)
+┌───────────────────────┬─────────────────────────────────────────────────────────┐
+│ (index)               │ Values                                                  │
+├───────────────────────┼─────────────────────────────────────────────────────────┤
+│ firstSeen             │ '1764648937915'                                         │
+│ chainId               │ '56'                                                    │
+│ contractAddress       │ '0xe81b40e01169b4c39bb823b5f965bf72e5c74444'            │
+│ symbol                │ 'BSC'                                                   │
+│ name                  │ 'BinanceChristmasHat'                                   │
+│ icon                  │ 'https://static.four.meme/market/7afa7454-f2d0-475e...' │
+│ caIcon                │ 'null'                                                  │
+│ iconStatus            │ '1'                                                     │
+│ caIconStatus          │ '1'                                                     │
+│ createTime            │ '1764648293000'                                         │
+│ height                │ '70195712'                                              │
+│ twitter               │ 'https://x.com/BNBChristmasHat'                         │
+│ website               │ 'https://x.com/BNBChristmasHat/status/1995694770027...' │
+│ telegram              │ 'null'                                                  │
+│ progress              │ '100'                                                   │
+│ protocol              │ '2001'                                                  │
+│ holders               │ '103'                                                   │
+│ liquidity             │ '14124.41'                                              │
+│ volume                │ '144908.07'                                             │
+│ marketCap             │ '14369.74'                                              │
+│ count                 │ '557'                                                   │
+│ countBuy              │ '334'                                                   │
+│ countSell             │ '223'                                                   │
+│ holdersTop10Percent   │ '35'                                                    │
+│ holdersDevPercent     │ '0'                                                     │
+│ holdersSniperPercent  │ '0'                                                     │
+│ holdersInsiderPercent │ '0'                                                     │
+│ devSellPercent        │ '99'                                                    │
+│ migrateStatus         │ 'true'                                                  │
+│ migrateTime           │ '1764648780000'                                         │
+│ paidOnDexScreener     │ 'false'                                                 │
+│ devMigrateCount       │ '0'                                                     │
+│ decimal               │ '18'                                                    │
+│ sensitiveToken        │ 'false'                                                 │
+│ exclusive             │ 'false'                                                 │
+└───────────────────────┴─────────────────────────────────────────────────────────┘
+
+👀 [PREVIEW] (前 3 个数据)
+   - BSC      | Prog: 100% | Status: N/A | Time: 1764648293000
+   - 马到功成     | Prog: 100% | Status: N/A | Time: 1764644688000
+   - 王小二人生    | Prog: 100% | Status: N/A | Time: 1764642726000
+
+===============================================================
+📦 [LIST #6] source: Props.Value -> currentTokens | Count: 40
+===============================================================
+📊 [SORTING TRENDS] (这决定了谁在队列最上面)
+   Time:     Descending (⬇️)
+   Progress: Random/Mixed
+   MktCap:   Random/Mixed
+
+🔍 [OBJECT INSPECTION] (第一个币的所有字段 - 寻找 status/migrated 标志)
+┌───────────────────────┬─────────────────────────────────────────────────────────┐
+│ (index)               │ Values                                                  │
+├───────────────────────┼─────────────────────────────────────────────────────────┤
+│ firstSeen             │ '1764648937915'                                         │
+│ chainId               │ '56'                                                    │
+│ contractAddress       │ '0xe81b40e01169b4c39bb823b5f965bf72e5c74444'            │
+│ symbol                │ 'BSC'                                                   │
+│ name                  │ 'BinanceChristmasHat'                                   │
+│ icon                  │ 'https://static.four.meme/market/7afa7454-f2d0-475e...' │
+│ caIcon                │ 'null'                                                  │
+│ iconStatus            │ '1'                                                     │
+│ caIconStatus          │ '1'                                                     │
+│ createTime            │ '1764648293000'                                         │
+│ height                │ '70195712'                                              │
+│ twitter               │ 'https://x.com/BNBChristmasHat'                         │
+│ website               │ 'https://x.com/BNBChristmasHat/status/1995694770027...' │
+│ telegram              │ 'null'                                                  │
+│ progress              │ '100'                                                   │
+│ protocol              │ '2001'                                                  │
+│ holders               │ '103'                                                   │
+│ liquidity             │ '14124.41'                                              │
+│ volume                │ '144908.07'                                             │
+│ marketCap             │ '14369.74'                                              │
+│ count                 │ '557'                                                   │
+│ countBuy              │ '334'                                                   │
+│ countSell             │ '223'                                                   │
+│ holdersTop10Percent   │ '35'                                                    │
+│ holdersDevPercent     │ '0'                                                     │
+│ holdersSniperPercent  │ '0'                                                     │
+│ holdersInsiderPercent │ '0'                                                     │
+│ devSellPercent        │ '99'                                                    │
+│ migrateStatus         │ 'true'                                                  │
+│ migrateTime           │ '1764648780000'                                         │
+│ paidOnDexScreener     │ 'false'                                                 │
+│ devMigrateCount       │ '0'                                                     │
+│ decimal               │ '18'                                                    │
+│ sensitiveToken        │ 'false'                                                 │
+│ exclusive             │ 'false'                                                 │
+└───────────────────────┴─────────────────────────────────────────────────────────┘
+
+👀 [PREVIEW] (前 3 个数据)
+   - BSC      | Prog: 100% | Status: N/A | Time: 1764648293000
+   - 马到功成     | Prog: 100% | Status: N/A | Time: 1764644688000
+   - 王小二人生    | Prog: 100% | Status: N/A | Time: 1764642726000
+
+💡 [分析建议]
+1. 查看 "OBJECT INSPECTION" 表格。
+2. 寻找类似 'listingStatus', 'state', 'phase', 'isDex' 这样的字段。
+3. 比较 [LIST #1] 和 [LIST #2] (如果有)，通常一个是 'New' 一个是 'Migrated'。
+4. 确认 'Time' 的排序趋势：如果 Time 是 Descending (⬇️)，则数组第 0 个就是最新的。
+[Logger] 日志文件流已关闭。
+————————————————————————————————————————————————————————————————————————
+根据日志修改，，参考packages\extractor\src\meme-scanner.ts来修改
+`packages\extractor\src\meme-extractor.ts`
+目标是发送已迁移的品种到后端，并且为了调试，打印出品种的所有字段

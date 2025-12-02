@@ -1,188 +1,242 @@
 // packages/extractor/src/meme-scanner.ts
 import { chromium } from 'playwright-extra';
+import type { Browser, Page } from 'playwright';
 import stealth from 'puppeteer-extra-plugin-stealth';
 import * as logger from './logger';
-
 
 chromium.use(stealth());
 
 const MEME_RUSH_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
 
-const DEEP_DUMP_SCRIPT = `
+/**
+ * 🕵️ V10 深度侦探脚本
+ * 目标：
+ * 1. 找到含有 token 列表的数据源
+ * 2. 打印出该数据源中单个对象的所有字段（寻找 status/migrated 标志）
+ * 3. 分析该列表的排序规则（时间倒序？进度倒序？）
+ */
+const DEEP_DETECTIVE_SCRIPT = `
 (() => {
-console.log('🕵️ [Scanner V9] 启动全链路爬升扫描...');
+    console.log('🕵️ [Scanner V10] 启动深度结构分析...');
 
-const results = new Map(); // Key: 第一条数据的合约地址 (去重用)
-const visitedFibers = new WeakSet(); // 性能优化：避免重复扫描同一个父组件
+    const results = new Map();
+    const visitedFibers = new WeakSet();
 
-// --- 辅助函数 ---
-const getReactFiber = (el) => {
-    const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
-    return key ? el[key] : null;
-};
+    // --- 辅助：获取 React Fiber ---
+    const getReactFiber = (el) => {
+        const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
+        return key ? el[key] : null;
+    };
 
-const isValidTokenList = (list) => {
-    if (!Array.isArray(list) || list.length < 2) return false;
-    const first = list[0];
-    // 宽松匹配：只要有 symbol 且有某种 address 字段
-    return first && typeof first === 'object' && 
-           (first.symbol || first.name) && 
-           (Object.keys(first).some(k => k.toLowerCase().includes('address') || k === 'contract'));
-};
+    // --- 辅助：判断是否为 Token 列表 ---
+    const isValidTokenList = (list) => {
+        if (!Array.isArray(list) || list.length < 2) return false;
+        const first = list[0];
+        // 必须是对象
+        if (!first || typeof first !== 'object') return false;
+        
+        // 必须包含关键特征字段
+        const keys = Object.keys(first).join(',').toLowerCase();
+        const hasIdentity = (first.symbol || first.name);
+        const hasAddress = keys.includes('address') || keys.includes('contract');
+        
+        return hasIdentity && hasAddress;
+    };
 
-// --- 主逻辑 ---
-// 1. 获取所有可能包含数据的 DOM 节点
-const allElements = document.querySelectorAll('div, span, section, main');
+    // --- 辅助：分析排序趋势 ---
+    const analyzeTrend = (list, field) => {
+        if (list.length < 2) return 'N/A';
+        const sample = list.slice(0, 10);
+        let ascending = true;
+        let descending = true;
 
-console.log(\`Found \${allElements.length} DOM elements. Climbing trees...\`);
+        for (let i = 0; i < sample.length - 1; i++) {
+            const a = sample[i][field] || 0;
+            const b = sample[i+1][field] || 0;
+            if (a > b) ascending = false;
+            if (a < b) descending = false;
+        }
 
-allElements.forEach(el => {
-    let fiber = getReactFiber(el);
-    let depth = 0;
-    const MAX_CLIMB = 80; // 爬高点
+        if (ascending && !descending) return 'Ascending (⬆️)';
+        if (descending && !ascending) return 'Descending (⬇️)';
+        return 'Random/Mixed';
+    };
 
-    while (fiber && depth < MAX_CLIMB) {
-        // 优化：如果这个组件已经被扫描过，就不用再扫了
-        // 因为同一个组件是许多子元素的共同父级
-        if (visitedFibers.has(fiber)) {
+    // --- 辅助：提取所有字段结构 ---
+    const inspectObjectStructure = (obj) => {
+        const info = {};
+        Object.keys(obj).forEach(k => {
+            const v = obj[k];
+            if (typeof v === 'object' && v !== null) {
+                info[k] = Array.isArray(v) ? \`Array(\${v.length})\` : 'Object';
+            } else {
+                // 截断过长的字符串
+                let strVal = String(v);
+                if (strVal.length > 50) strVal = strVal.substring(0, 50) + '...';
+                info[k] = strVal;
+            }
+        });
+        return info;
+    };
+
+    // --- 主扫描循环 ---
+    const allElements = document.querySelectorAll('div, span, section, main, ul, li');
+    console.log(\`[Scanner] Scanning \${allElements.length} elements...\`);
+
+    allElements.forEach(el => {
+        let fiber = getReactFiber(el);
+        let depth = 0;
+        const MAX_CLIMB = 50; 
+
+        while (fiber && depth < MAX_CLIMB) {
+            if (visitedFibers.has(fiber)) {
+                fiber = fiber.return;
+                depth++;
+                continue;
+            }
+            visitedFibers.add(fiber);
+
+            const sources = [
+                { name: 'Props', data: fiber.memoizedProps },
+                { name: 'Props.Value', data: fiber.memoizedProps?.value }, // Context
+                { name: 'State', data: fiber.memoizedState },
+            ];
+
+            sources.forEach(src => {
+                if (!src.data || typeof src.data !== 'object') return;
+
+                Object.keys(src.data).forEach(propKey => {
+                    const val = src.data[propKey];
+                    
+                    if (isValidTokenList(val)) {
+                        // 生成唯一指纹：Symbol_Length_PropKey
+                        const first = val[0];
+                        const fingerprint = \`\${first.symbol}_\${val.length}_\${propKey}\`;
+
+                        if (!results.has(fingerprint)) {
+                            // 🚀 核心：深度分析
+                            results.set(fingerprint, {
+                                location: \`\${src.name} -> \${propKey}\`,
+                                count: val.length,
+                                // 1. 结构透视：拿第一个数据看所有字段
+                                structure: inspectObjectStructure(first),
+                                // 2. 趋势分析
+                                trends: {
+                                    time: analyzeTrend(val, 'createTime') !== 'N/A' ? analyzeTrend(val, 'createTime') : analyzeTrend(val, 'startTime'),
+                                    progress: analyzeTrend(val, 'progress'),
+                                    marketCap: analyzeTrend(val, 'marketCap')
+                                },
+                                // 3. 预览数据
+                                preview: val.slice(0, 3).map(i => ({
+                                    symbol: i.symbol,
+                                    progress: i.progress,
+                                    status: i.status || i.state || 'N/A', // 尝试猜测 status 字段
+                                    time: i.createTime || i.startTime || 0
+                                }))
+                            });
+                        }
+                    }
+                });
+            });
+
             fiber = fiber.return;
             depth++;
-            continue;
         }
-        visitedFibers.add(fiber);
+    });
 
-        // 检查 props 和 state
-        const candidates = [
-            fiber.memoizedProps,
-            fiber.memoizedProps?.value, // Context Provider value
-            fiber.memoizedState,
-            fiber.memoizedState?.memoizedState // Hooks
-        ];
-
-        candidates.forEach(source => {
-            if (!source || typeof source !== 'object') return;
-
-            // 遍历所有 key
-            Object.keys(source).forEach(key => {
-                const val = source[key];
-                
-                if (isValidTokenList(val)) {
-                    const firstItem = val[0];
-                    // 生成指纹：Symbol + Address + ListLength
-                    // 加入 Length 是为了区分“全部列表”和“当前页列表”
-                    const fingerprint = \`\${firstItem.symbol}_\${firstItem.contractAddress || 'NA'}_\${val.length}\`;
-                    
-                    if (!results.has(fingerprint)) {
-                        results.set(fingerprint, {
-                            location: key, // 属性名 (allTokens, currentTokens 等)
-                            length: val.length,
-                            // 提取前 5 个用于人工核对
-                            preview: val.slice(0, 5).map(item => ({
-                                name: item.name,
-                                symbol: item.symbol,
-                                progress: item.progress,
-                                status: item.status,
-                                // 格式化时间
-                                time: item.startTime ? new Date(item.startTime).toLocaleString() : 
-                                      (item.createTime ? new Date(item.createTime).toLocaleString() : 'N/A')
-                            }))
-                        });
-                    }
-                }
-            });
-        });
-
-        fiber = fiber.return; // 继续向上爬
-        depth++;
-    }
-});
-
-// 转换 Map 为数组返回
-window.__V9_RESULTS__ = Array.from(results.values());
-
+    return Array.from(results.values());
 })();
 `;
 
 async function scanMemePage() {
     logger.init();
-    // 注意：原代码此处缺少引号，已修复为反引号字符串
-    logger.log(`🕵️ [MemeScanner V9] 启动全链路爬升扫描: ${MEME_RUSH_URL}`, logger.LOG_LEVELS.INFO);
+    logger.log(`🕵️ [MemeScanner V10] 启动全字段深度扫描`, logger.LOG_LEVELS.INFO);
 
-    const browser = await chromium.launch({
-        headless: false,
+    // 显式指定类型 Browser
+    const browser: Browser = await chromium.launch({
+        headless: false, // 必须开启 UI 以便 React 加载
         args: ['--start-maximized'],
-        // ✨ 代理配置
-        proxy: { server: 'socks5://127.0.0.1:1080' } 
+        proxy: { server: 'socks5://127.0.0.1:1080' } // 保持代理
     });
 
     try {
         const context = await browser.newContext({ viewport: null });
-        const page = await context.newPage();
-        
-        await page.addInitScript({
-            content: `window.originalConsoleLog = console.log; console.log = (...args) => window.originalConsoleLog(...args);`
+        // 显式指定类型 Page
+        const page: Page = await context.newPage();
+
+        // 劫持 console 以便调试
+        await page.addInitScript(() => {
+            (window as any).__logs = [];
+            const originalLog = console.log;
+            console.log = (...args) => {
+                (window as any).__logs.push(args.join(' '));
+                originalLog.apply(console, args);
+            };
         });
 
-        logger.log(`[Navi] 访问页面...`, logger.LOG_LEVELS.INFO);
+        logger.log(`[Navi] 前往目标页面: ${MEME_RUSH_URL}`, logger.LOG_LEVELS.INFO);
         await page.goto(MEME_RUSH_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        logger.log(`[Wait] 等待加载 (10s)...`, logger.LOG_LEVELS.INFO);
-        await page.waitForTimeout(10000); 
+        logger.log(`[Wait] 等待数据流加载 (10秒)...`, logger.LOG_LEVELS.INFO);
+        // 稍微乱动一下鼠标，触发一些 hover 状态可能加载的数据
+        await page.mouse.move(100, 100);
+        await page.mouse.move(500, 500);
+        await page.waitForTimeout(10000);
 
-        // 强力滚动
-        logger.log(`[Scroll] 滚动加载所有板块...`, logger.LOG_LEVELS.INFO);
+        // 滚动到底部再回来，触发 lazy load
+        logger.log(`[Scroll] 触发页面滚动...`, logger.LOG_LEVELS.INFO);
         await page.evaluate(async () => {
-            window.scrollTo(0, 1000);
-            await new Promise(r => setTimeout(r, 1000));
-            window.scrollTo(0, 2000); 
-            await new Promise(r => setTimeout(r, 1000));
-            window.scrollTo(0, 3000); // 确保已迁移到底部
-            await new Promise(r => setTimeout(r, 1000));
-            window.scrollTo(0, 0);
+            const steps = [1000, 2000, 3000, 0];
+            for (const y of steps) {
+                window.scrollTo(0, y);
+                await new Promise(r => setTimeout(r, 800));
+            }
         });
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(2000);
 
-        logger.log(`[Inject] 执行 V9 扫描...`, logger.LOG_LEVELS.INFO);
-        await page.evaluate(DEEP_DUMP_SCRIPT);
-
-        const results: any[] = await page.evaluate(() => (window as any).__V9_RESULTS__);
+        // 执行注入脚本
+        logger.log(`[Inject] 执行 V10 分析脚本...`, logger.LOG_LEVELS.INFO);
+        const results: any[] = await page.evaluate(DEEP_DETECTIVE_SCRIPT);
 
         if (!results || results.length === 0) {
-            logger.log(`❌ 依然未找到。这极不正常，请检查页面是否为空白。`, logger.LOG_LEVELS.ERROR);
+            logger.log(`❌ 未发现任何列表数据。可能页面结构已变或反爬。`, logger.LOG_LEVELS.ERROR);
         } else {
-            logger.log(`\n🎉 扫描完成! 发现了 ${results.length} 个不同的数据列表。\n`, logger.LOG_LEVELS.INFO);
-            
-            console.log('===============================================================');
-            console.log('                 MemeScanner V9 - DATA INSPECTION              ');
-            console.log('===============================================================');
-            
-            // 按长度排序，长列表通常更有价值
-            results.sort((a, b) => b.length - a.length);
+            logger.log(`\n🎉 扫描成功! 发现了 ${results.length} 个候选列表。\n`, logger.LOG_LEVELS.INFO);
 
-            results.forEach((res, index) => {
-                console.log(`\n📦 [List #${index + 1}] Found key: "${res.location}" | Count: ${res.length}`);
-                console.log(`----------------------------------------------------------------------------------`);
-                // 使用 console.table 在终端可能显示不全，手动格式化打印
-                console.log(`| Symbol       | Name            | Prog   | Status   | Time`);
-                console.log(`|--------------|-----------------|--------|----------|-----------------------`);
+            // 按列表长度排序（通常主列表最长）
+            results.sort((a, b) => b.count - a.count);
+
+            results.forEach((res, idx) => {
+                console.log(`\n===============================================================`);
+                console.log(`📦 [LIST #${idx + 1}] source: ${res.location} | Count: ${res.count}`);
+                console.log(`===============================================================`);
+                
+                console.log(`📊 [SORTING TRENDS] (这决定了谁在队列最上面)`);
+                console.log(`   Time:     ${res.trends.time}`);
+                console.log(`   Progress: ${res.trends.progress}`);
+                console.log(`   MktCap:   ${res.trends.marketCap}`);
+
+                console.log(`\n🔍 [OBJECT INSPECTION] (第一个币的所有字段 - 寻找 status/migrated 标志)`);
+                console.table(res.structure);
+
+                console.log(`\n👀 [PREVIEW] (前 3 个数据)`);
                 res.preview.forEach((p: any) => {
-                    const name = (p.name || '').substring(0, 15).padEnd(15);
-                    const sym = (p.symbol || '').substring(0, 12).padEnd(12);
-                    const prog = (p.progress !== undefined ? p.progress + '%' : 'N/A').padEnd(6);
-                    const stat = (p.status || 'N/A').padEnd(8);
-                    const time = p.time;
-                    console.log(`| ${sym} | ${name} | ${prog} | ${stat} | ${time}`);
+                    console.log(`   - ${p.symbol.padEnd(8)} | Prog: ${p.progress}% | Status: ${p.status} | Time: ${p.time}`);
                 });
             });
 
-            console.log('\n===============================================================');
-            console.log('💡 决策时刻:');
-            console.log('   请截图告诉我，哪个列表是【即将发行】（看 Time 是未来的），哪个是【已迁移】（看 Prog 是 100%）。');
+            console.log(`\n💡 [分析建议]`);
+            console.log(`1. 查看 "OBJECT INSPECTION" 表格。`);
+            console.log(`2. 寻找类似 'listingStatus', 'state', 'phase', 'isDex' 这样的字段。`);
+            console.log(`3. 比较 [LIST #1] 和 [LIST #2] (如果有)，通常一个是 'New' 一个是 'Migrated'。`);
+            console.log(`4. 确认 'Time' 的排序趋势：如果 Time 是 Descending (⬇️)，则数组第 0 个就是最新的。`);
         }
 
     } catch (e: any) {
         logger.log(`❌ Error: ${e.message}`, logger.LOG_LEVELS.ERROR);
     } finally {
+        // 保持浏览器开启一会以便人工检查，如果需要关闭请取消注释
+        // await browser.close();
         logger.close();
     }
 }
