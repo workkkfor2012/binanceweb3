@@ -18,7 +18,7 @@
     background: #fff;
     padding: 8px 15px;
     border-radius: 6px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -50,7 +50,8 @@
     background-color: #eaeff2;
     border-radius: 6px;
     min-width: 320px;
-    max-width: 33.33%;
+    /* ✨ 修改: 改为 100% 以适应单列全屏模式 */
+    max-width: 100%;
 }
 
 .column-header {
@@ -72,44 +73,55 @@
     flex: 1;
     overflow-y: auto;
     padding: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px; /* 卡片垂直间距 */
+
+    /* ✨ 核心修改: 使用 Grid 布局替代 Flex-Column，实现自动多列卡片 */
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    grid-auto-rows: max-content;
+    /* 确保卡片高度根据内容自适应 */
+    gap: 12px;
+    align-content: start;
+    /* 内容不满时不拉伸 */
 }
 
 /* --- 卡片核心样式 --- */
 .meme-card {
-    /* ✨ 核心修复：防止卡片在 Flex 容器中被挤压 */
-    flex-shrink: 0; 
-    
+    flex-shrink: 0;
+
     background-color: #fff;
-    border-radius: 8px; /* 圆角稍微大一点 */
+    border-radius: 8px;
     padding: 10px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     border: 1px solid #e1e4e8;
     display: flex;
     flex-direction: column;
-    gap: 10px; /* 内部元素间距，防止挤在一起 */
+    gap: 10px;
     cursor: pointer;
     position: relative;
     transition: all 0.1s;
     overflow: hidden;
+
+    /* ✨ 确保在 Grid 中高度一致（可选，根据需求） */
+    height: 100%;
+    box-sizing: border-box;
 }
 
 .meme-card:hover {
     border-color: #007bff;
-    box-shadow: 0 4px 12px rgba(0,123,255,0.1);
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.1);
     transform: translateY(-1px);
+    z-index: 1;
+    /* 悬浮时置顶 */
 }
 
 /* 1. 头部布局：左图右文 */
 .card-header-layout {
     display: flex;
     gap: 10px;
-    align-items: center; /* 垂直居中 */
+    align-items: center;
 }
 
-/* 图标：固定大小，撑起卡片高度 */
+/* 图标：固定大小 */
 .card-icon {
     width: 42px;
     height: 42px;
@@ -120,13 +132,13 @@
     background-color: #f8f9fa;
 }
 
-/* 右侧信息区：垂直排列 */
+/* 右侧信息区 */
 .card-info-col {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px; /* 上下行间距 */
+    gap: 2px;
 }
 
 /* 第一行：Symbol + Time */
@@ -143,6 +155,8 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 180px;
+    /* 防止 Symbol 过长撑破 */
 }
 
 .card-time {
@@ -157,7 +171,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap; /* 允许换行，防止挤压 */
+    flex-wrap: wrap;
 }
 
 .stat-badge {
@@ -197,7 +211,7 @@
     color: #333;
     line-height: 1.5;
     word-break: break-word;
-    margin-top: -2px; /* 微调间距 */
+    margin-top: -2px;
 }
 
 /* 3. 推特 Embed 容器 */
@@ -229,5 +243,12 @@
 }
 
 /* 滚动条 */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 3px;
+}
