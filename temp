@@ -1,3 +1,1078 @@
+你首先通读rust代码，然后评价下面的重构方案,需要你的严苛
+该方案是否可以严丝合缝的应用于现在的代码，，是否还有需要更加完备的地方
+
+——————————————————————————————————
+
+
+
+这是最终的完整重构执行方案。此方案已严丝合缝地集成了所有需求，特别是你强调的 Lazy Cancel (延迟取消订阅) 机制，以完美解决用户刷新页面或网络抖动导致的连接震荡问题。📊 一、重构目标连接聚合 (Connection Aggregation)目标：将原先成百上千个 WebSocket 连接聚合为 2 个全局连接（GlobalKlineManager + GlobalTickManager）。效果：无论用户量多少，服务器与 Binance 的连接数恒定为 2，彻底消除文件句柄耗尽风险。高性能路由 (O(1) Routing)目标：引入 RoomIndex 反向索引。效果：收到 Binance 的 Tick 数据时，通过 Hash 查找直接定位所有相关的房间（1m, 15m, 1h...），替代原先的         O(N)O(N)O(N)
+       遍历，CPU 占用大幅降低。智能订阅与防抖 (Reference Counting + Lazy Unsub)目标：实现“引用计数”和“延迟退订”。效果：进场：第一个用户订阅某币种时，立即建立上游连接。退场：最后一个用户离开时，等待 60 秒。如果期间无人重连，才发送退订指令。完美覆盖用户 F5 刷新场景。🗝️ 二、重构关键点状态架构升级：RoomIndex: DashMap<Address, HashSet<RoomKey>>，核心路由表。BinanceChannels: 全局 mpsc 通道，用于前端 Handler 向后台 Manager 发送指令。生命周期管理：Subscribe：更新索引 -> 若为首个订阅 -> 发送 SUBSCRIBE。Unsubscribe/Disconnect：更新索引 -> 若计数归零 -> 启动异步延迟任务 -> 60s 后二次检查 -> 确认归零则发送 UNSUBSCRIBE。代码清理：移除 Room 中的 task_handle，房间不再持有任务，只持有数据。💻 三、完整重构代码请按顺序覆盖以下文件。代码已包含所有未变动的部分，可直接复制。1. packages/backend/src/types.rs变更：移除了 task_handle，数据结构纯净化。 code Rustdownloadcontent_copyexpand_less    // packages/backend/src/types.rs
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use socketioxide::socket::Sid;
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+// ==============================================================================
+// 1. 定义独立的数据项结构体
+// ==============================================================================
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HotlistItem {
+    pub chain: String,
+    pub contract_address: String,
+    pub symbol: String,
+    pub icon: Option<String>,
+    pub price: Option<f64>,
+    pub market_cap: Option<f64>,
+    pub volume1h: Option<f64>,
+    pub volume24h: Option<f64>,
+    pub price_change1h: Option<f64>,
+    pub price_change24h: Option<f64>,
+    pub volume5m: Option<f64>,
+    pub price_change5m: Option<f64>,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MemeItem {
+    pub chain: String,
+    pub contract_address: String,
+    pub symbol: String,
+    pub icon: Option<String>,
+    pub name: String,
+    pub progress: f64,
+    pub holders: i64,
+    pub dev_migrate_count: Option<i64>,
+    pub create_time: i64,
+    pub status: Option<String>,
+    pub update_time: Option<i64>,
+    pub twitter: Option<String>,
+    pub telegram: Option<String>,
+    pub website: Option<String>,
+    pub liquidity: Option<f64>,
+    pub market_cap: Option<f64>,
+    pub narrative: Option<String>,
+    pub source: Option<String>,
+}
+
+// ==============================================================================
+// 2. Payload 定义
+// ==============================================================================
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+pub enum DataAction {
+    #[serde(rename = "snapshot")]
+    Snapshot,
+    #[serde(rename = "update")]
+    Update,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "category")]
+pub enum DataPayload {
+    #[serde(rename = "hotlist")]
+    Hotlist {
+        r#type: DataAction,
+        data: Vec<HotlistItem>,
+    },
+    #[serde(rename = "meme_new")]
+    MemeNew {
+        r#type: DataAction,
+        data: Vec<MemeItem>,
+    },
+    #[serde(rename = "meme_migrated")]
+    MemeMigrated {
+        r#type: DataAction,
+        data: Vec<MemeItem>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+// ==============================================================================
+// 3. Binance / Kline / Room 结构
+// ==============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct NarrativeResponse {
+    pub code: String,
+    pub data: Option<NarrativeData>,
+    pub success: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NarrativeData {
+    pub text: Option<NarrativeText>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NarrativeText {
+    pub en: Option<String>,
+    pub cn: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KlineSubscribePayload {
+    pub address: String,
+    pub chain: String,
+    pub interval: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceStreamWrapper<T> {
+    pub stream: String,
+    pub data: T,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceKlineDataWrapper {
+    #[serde(rename = "d")]
+    pub kline_data: BinanceKlineDetail,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+pub struct BinanceKlineDetail {
+    #[serde(rename = "u")]
+    pub values: (String, String, String, String, String, String),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BinanceTickDataWrapper {
+    #[serde(rename = "d")]
+    pub tick_data: BinanceTickDetail,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+pub struct BinanceTickDetail {
+    pub t0a: String,
+    pub t1a: String,
+    pub t0pu: f64,
+    pub t1pu: f64,
+    pub v: f64,
+    pub a0: f64,
+    pub a1: f64,
+    pub tp: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct KlineBroadcastData {
+    pub room: String,
+    pub data: KlineTick,
+}
+
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KlineTick {
+    #[serde(with = "chrono::serde::ts_seconds")]
+    pub time: DateTime<Utc>,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KlineHistoryResponse {
+    pub address: String,
+    pub chain: String,
+    pub interval: String,
+    pub data: Vec<KlineTick>,
+}
+
+// ✨ 修改：Room 不再持有 task_handle，因为它不再管理连接
+pub struct Room {
+    pub clients: HashSet<Sid>,
+    pub symbol: String,
+    pub current_kline: Arc<Mutex<Option<KlineTick>>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImageProxyQuery {
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct CacheMeta {
+    pub content_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HistoricalDataWrapper {
+    pub data: Vec<Vec<serde_json::Value>>,
+}
+  2. packages/backend/src/state.rs变更：新增 RoomIndex 和全局指令通道。 code Rustdownloadcontent_copyexpand_less    // packages/backend/src/state.rs
+use super::types::Room;
+use dashmap::DashMap;
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
+
+// 1. 房间状态：Key=RoomName (kl@...) -> Value=Room
+pub type AppState = Arc<DashMap<String, Room>>;
+
+// 2. ✨ 反向索引 (路由核心)
+// Key: Contract Address (小写) -> Value: 该币种涉及的所有 RoomKey 集合
+// 作用：收到 Tick 数据时，O(1) 找到所有需要更新的房间 (1m, 15m, 1h...)
+pub type RoomIndex = Arc<DashMap<String, HashSet<String>>>;
+
+// 3. 描述缓存
+pub type NarrativeCache = Arc<DashMap<String, String>>;
+
+// 4. ✨ 订阅指令：用于前端 Handler 通知后台 Manager
+#[derive(Debug, Clone)]
+pub enum SubscriptionCommand {
+    Subscribe(String),   // 参数: stream name (e.g. kl@... or tx@...)
+    Unsubscribe(String),
+}
+
+// 5. ✨ 全局通道持有者
+#[derive(Clone)]
+pub struct BinanceChannels {
+    pub kline_tx: UnboundedSender<SubscriptionCommand>,
+    pub tick_tx: UnboundedSender<SubscriptionCommand>,
+}
+
+pub fn new_app_state() -> AppState {
+    Arc::new(DashMap::new())
+}
+
+pub fn new_room_index() -> RoomIndex {
+    Arc::new(DashMap::new())
+}
+
+pub fn new_narrative_cache() -> NarrativeCache {
+    Arc::new(DashMap::new())
+}
+  3. packages/backend/src/binance_task.rs变更：完全重写的全局任务管理器，负责单连接多路复用。 code Rustdownloadcontent_copyexpand_less    // packages/backend/src/binance_task.rs
+use super::{
+    config::Config,
+    state::{AppState, RoomIndex, SubscriptionCommand},
+    types::{
+        BinanceKlineDataWrapper, BinanceStreamWrapper, BinanceTickDataWrapper, KlineBroadcastData,
+        KlineTick,
+    },
+};
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
+use socketioxide::SocketIo;
+use std::{collections::HashSet, sync::Arc, time::SystemTime};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::mpsc::UnboundedReceiver,
+    time::{interval, sleep, Duration},
+};
+use tokio_native_tls::TlsConnector as TokioTlsConnector;
+use tokio_tungstenite::{
+    client_async_with_config,
+    tungstenite::{client::IntoClientRequest, Message},
+    WebSocketStream,
+};
+use tracing::{error, info, warn};
+use url::Url;
+
+type WsWrite = SplitSink<WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>, Message>;
+
+const LOW_VOLUME_PRICE_DEVIATION_THRESHOLD: f64 = 2.0;
+const LOW_VOLUME_THRESHOLD: f64 = 10.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TaskType {
+    Kline, // 负责所有 kl@...
+    Tick,  // 负责所有 tx@...
+}
+
+impl std::fmt::Display for TaskType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskType::Kline => write!(f, "KLINE_MGR"),
+            TaskType::Tick => write!(f, "TICK_MGR"),
+        }
+    }
+}
+
+/// ✨ 启动全局管理任务 (Long Running Background Task)
+pub async fn start_global_manager(
+    task_type: TaskType,
+    io: SocketIo,
+    config: Arc<Config>,
+    app_state: AppState,
+    room_index: Option<RoomIndex>, // 仅 Tick 任务需要索引
+    mut cmd_rx: UnboundedReceiver<SubscriptionCommand>,
+) {
+    info!("🚀 [STARTUP] Starting Global {}...", task_type);
+    
+    // 维护当前活跃的流，用于断线重连时自动恢复订阅
+    let mut active_streams: HashSet<String> = HashSet::new();
+
+    loop {
+        // 无限重连循环
+        let result = connect_and_serve(
+            task_type,
+            &io,
+            &config,
+            &app_state,
+            &room_index,
+            &mut cmd_rx,
+            &mut active_streams,
+        )
+        .await;
+
+        match result {
+            Ok(_) => warn!(
+                "🔁 [MANAGER {}] Disconnected gracefully. Reconnecting in 3s...",
+                task_type
+            ),
+            Err(e) => error!(
+                "🔁 [MANAGER {}] Connection crash: {:#?}. Retrying in 5s...",
+                task_type, e
+            ),
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
+}
+
+async fn connect_and_serve(
+    task_type: TaskType,
+    io: &SocketIo,
+    config: &Config,
+    app_state: &AppState,
+    room_index: &Option<RoomIndex>,
+    cmd_rx: &mut UnboundedReceiver<SubscriptionCommand>,
+    active_streams: &mut HashSet<String>,
+) -> Result<()> {
+    // 1. 建立 TCP/TLS 连接 (支持代理)
+    let stream = establish_http_tunnel(task_type, config).await?;
+    let host = Url::parse(&config.binance_wss_url)?
+        .host_str()
+        .unwrap_or_default()
+        .to_string();
+    let tls_stream = wrap_stream_with_tls(stream, &host).await?;
+
+    // 2. WebSocket 握手
+    let mut request = config.binance_wss_url.as_str().into_client_request()?;
+    let headers = request.headers_mut();
+    headers.insert("User-Agent", "Mozilla/5.0 (Rust/Backend) GlobalManager".parse()?);
+
+    let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
+        .await
+        .context("WebSocket handshake failed")?;
+
+    info!("✅ [MANAGER {}] Connected! Status: {}", task_type, response.status());
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // 3. 状态恢复 (Resubscribe after reconnect)
+    if !active_streams.is_empty() {
+        info!("🔄 [MANAGER {}] Resubscribing {} streams...", task_type, active_streams.len());
+        let params: Vec<&str> = active_streams.iter().map(|s| s.as_str()).collect();
+        // Binance 建议每次订阅不超过 50-100 个流
+        for chunk in params.chunks(50) {
+            let msg = serde_json::json!({
+                "method": "SUBSCRIBE",
+                "params": chunk,
+                "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
+            });
+            write.send(Message::Text(msg.to_string().into())).await?;
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    // 4. 事件主循环 (Select Loop)
+    let mut heartbeat = interval(config.heartbeat_interval);
+
+    loop {
+        tokio::select! {
+            // A. 心跳保活
+            _ = heartbeat.tick() => {
+                write.send(Message::Ping(vec![].into())).await?;
+            }
+
+            // B. 处理来自其他模块的指令 (Subscribe/Unsubscribe)
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(SubscriptionCommand::Subscribe(stream)) => {
+                        // 防重入：只有本地未记录的流才发送网络请求
+                        if !active_streams.contains(&stream) {
+                            info!("📥 [CMD {}] Subscribing: {}", task_type, stream);
+                            let msg = serde_json::json!({
+                                "method": "SUBSCRIBE",
+                                "params": [stream],
+                                "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
+                            });
+                            write.send(Message::Text(msg.to_string().into())).await?;
+                            active_streams.insert(stream);
+                        }
+                    },
+                    Some(SubscriptionCommand::Unsubscribe(stream)) => {
+                        if active_streams.contains(&stream) {
+                            info!("📤 [CMD {}] Unsubscribing: {}", task_type, stream);
+                            let msg = serde_json::json!({
+                                "method": "UNSUBSCRIBE",
+                                "params": [stream],
+                                "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
+                            });
+                            write.send(Message::Text(msg.to_string().into())).await?;
+                            active_streams.remove(&stream);
+                        }
+                    },
+                    None => return Err(anyhow!("Command channel closed")),
+                }
+            }
+
+            // C. 处理 WebSocket 消息 (Payload)
+            msg_result = read.next() => {
+                match msg_result {
+                    Some(Ok(msg)) => {
+                        match msg {
+                            Message::Text(text) => handle_payload(task_type, &text, io, app_state, room_index).await,
+                            Message::Ping(p) => { write.send(Message::Pong(p)).await?; }
+                            Message::Close(_) => return Ok(()),
+                            _ => {}
+                        }
+                    },
+                    Some(Err(e)) => return Err(e.into()),
+                    None => return Ok(()),
+                }
+            }
+        }
+    }
+}
+
+async fn handle_payload(
+    task_type: TaskType,
+    text: &str,
+    io: &SocketIo,
+    app_state: &AppState,
+    room_index: &Option<RoomIndex>,
+) {
+    if text.contains("\"result\":null") { return; }
+
+    match task_type {
+        TaskType::Kline => {
+            if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(text) {
+                // Stream Name: kl@pool_addr_interval
+                let stream_parts: Vec<&str> = wrapper.stream.split('@').collect();
+                if stream_parts.len() == 2 {
+                    let params: Vec<&str> = stream_parts[1].split('_').collect();
+                    if params.len() == 3 {
+                        let pool_id = params[0];
+                        let address = params[1];
+                        let interval = params[2];
+                        let room_key = format!("kl@{}@{}@{}", pool_id, address, interval);
+                        
+                        let kline = parse_kline(&wrapper.data.kline_data.values);
+                        // Kline 是权威数据，is_authoritative = true (更新内存)
+                        update_room(io, app_state, &room_key, kline, true).await;
+                    }
+                }
+            }
+        }
+        TaskType::Tick => {
+            if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(text) {
+                let tick = &wrapper.data.tick_data;
+                let stream_parts: Vec<&str> = wrapper.stream.split('@').collect();
+                if stream_parts.len() == 2 {
+                    let params: Vec<&str> = stream_parts[1].split('_').collect();
+                    if params.len() >= 2 {
+                        let tracked_address = params[1]; // Stream 中的地址通常是小写
+
+                        // 价格匹配 (A0 or A1)
+                        let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) {
+                            tick.t0pu
+                        } else if tick.t1a.eq_ignore_ascii_case(tracked_address) {
+                            tick.t1pu
+                        } else {
+                            return;
+                        };
+                        let usd_volume = tick.v;
+
+                        // ✨ 核心优化：使用索引进行 O(1) 路由
+                        if let Some(index) = room_index {
+                            // 查找订阅了该地址的所有房间 (1m, 15m, 1h 等)
+                            if let Some(room_keys) = index.get(&tracked_address.to_lowercase()) {
+                                for room_key in room_keys.iter() {
+                                    if let Some(entry) = app_state.get(room_key) {
+                                        let mut kline_guard = entry.value().current_kline.lock().await;
+                                        if let Some(kline) = kline_guard.as_mut() {
+                                            // 价格异常过滤 (防止插针干扰图表)
+                                            if kline.close > 0.0 {
+                                                let ratio = if price > kline.close { price / kline.close } else { kline.close / price };
+                                                if ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && usd_volume < LOW_VOLUME_THRESHOLD {
+                                                    continue;
+                                                }
+                                            }
+                                            // 只更新价格，保留原有权威 Volume (防止 Tick 聚合导致 Volume 虚高)
+                                            kline.high = kline.high.max(price);
+                                            kline.low = kline.low.min(price);
+                                            kline.close = price;
+                                            
+                                            // 广播到对应房间
+                                            broadcast_update(io, room_key, kline.clone()).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn parse_kline(values: &(String, String, String, String, String, String)) -> KlineTick {
+    KlineTick {
+        time: DateTime::from_timestamp(values.5.parse::<i64>().unwrap_or_default() / 1000, 0)
+            .unwrap_or_default()
+            .with_timezone(&Utc),
+        open: values.0.parse().unwrap_or_default(),
+        high: values.1.parse().unwrap_or_default(),
+        low: values.2.parse().unwrap_or_default(),
+        close: values.3.parse().unwrap_or_default(),
+        volume: values.4.parse().unwrap_or_default(),
+    }
+}
+
+async fn update_room(io: &SocketIo, app_state: &AppState, room_key: &str, new_kline: KlineTick, is_authoritative: bool) {
+    if let Some(room) = app_state.get(room_key) {
+        if is_authoritative {
+            *room.current_kline.lock().await = Some(new_kline.clone());
+        }
+        broadcast_update(io, room_key, new_kline).await;
+    }
+}
+
+async fn broadcast_update(io: &SocketIo, room_name: &str, kline: KlineTick) {
+    let broadcast_data = KlineBroadcastData {
+        room: room_name.to_string(),
+        data: kline,
+    };
+    if let Err(e) = io.to(room_name.to_string()).emit("kline_update", &broadcast_data).await {
+        if !e.to_string().contains("closed") {
+            error!("❌ [BROADCAST FAIL {}] {:?}", room_name, e);
+        }
+    }
+}
+
+async fn establish_http_tunnel(task_type: TaskType, config: &Config) -> Result<TcpStream> {
+    let url_obj = Url::parse(&config.binance_wss_url)?;
+    let host = url_obj.host_str().unwrap_or_default();
+    let port = url_obj.port_or_known_default().unwrap_or(443);
+    let target_addr = format!("{}:{}", host, port);
+
+    if config.proxy_addr.is_empty() || config.proxy_addr == "none" {
+         return TcpStream::connect(target_addr).await.context("Direct connection failed");
+    }
+
+    let mut stream = TcpStream::connect(&config.proxy_addr).await.context("HTTP proxy connection failed")?;
+    let connect_req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", target_addr, target_addr);
+    stream.write_all(connect_req.as_bytes()).await.context("Failed to send CONNECT request")?;
+    
+    let mut buf = vec![0; 1024];
+    let n = stream.read(&mut buf).await.context("Failed to read proxy response")?;
+    let response = String::from_utf8_lossy(&buf[..n]);
+    if !response.starts_with("HTTP/1.1 200") {
+        return Err(anyhow!("❌ [MANAGER {}] Proxy CONNECT failed: {}", task_type, response.trim()));
+    }
+    Ok(stream)
+}
+
+async fn wrap_stream_with_tls(stream: TcpStream, host: &str) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
+    let tls_connector = native_tls::TlsConnector::builder().build()?;
+    let tokio_tls_connector = TokioTlsConnector::from(tls_connector);
+    tokio_tls_connector.connect(host, stream).await.context("TLS Handshake failed")
+}
+  4. packages/backend/src/main.rs变更：初始化索引，启动 Channels，启动两个全局协程，注入 State。 code Rustdownloadcontent_copyexpand_less    // packages/backend/src/main.rs
+
+mod binance_task;
+mod cache;
+mod cache_manager;
+mod client_pool;
+mod config;
+mod error;
+mod http_handlers;
+mod kline_handler;
+mod socket_handlers;
+mod state;
+mod types;
+
+use axum::{routing::get, Router};
+use client_pool::ClientPool;
+use config::Config;
+use dashmap::DashMap;
+use http::HeaderValue;
+use socketioxide::{extract::SocketRef, SocketIo};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tower_http::cors::{Any, CorsLayer};
+use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+// ✨ 引入新类型
+use crate::state::{BinanceChannels, SubscriptionCommand};
+
+#[derive(Clone)]
+pub struct ServerState {
+    pub app_state: state::AppState,
+    // ✨ 新增：房间反向索引
+    pub room_index: state::RoomIndex,
+    pub config: Arc<Config>,
+    pub io: SocketIo,
+    pub token_symbols: Arc<DashMap<String, String>>,
+    pub narrative_cache: state::NarrativeCache,
+    pub db_pool: SqlitePool,
+    pub client_pool: ClientPool,
+    // ✨ 新增: Binance 通道
+    pub binance_channels: BinanceChannels,
+}
+
+#[tokio::main]
+async fn main() {
+    init_tracing();
+
+    let (layer, io) = SocketIo::builder().max_buffer_size(40960).build_layer();
+    let config = Arc::new(Config::new());
+
+    // Database Setup
+    if let Some(parent) = std::path::Path::new(&config.database_url.replace("sqlite:", "")).parent() {
+        if !parent.exists() { std::fs::create_dir_all(parent).expect("Failed to create database directory"); }
+    }
+    let db_pool = SqlitePoolOptions::new().max_connections(10).connect(&config.database_url).await.expect("Failed to connect to SQLite database");
+    info!("🗃️ Database connection pool established.");
+    kline_handler::init_db(&db_pool).await.expect("Failed to initialize database schema");
+
+    info!("🚀 Initializing Client Pool in DIRECT mode (No Proxy)...");
+    let client_pool = ClientPool::new(20, None).await;
+
+    // ✨ 1. 创建全局 Channels (HTTP/WS -> Manager)
+    let (kline_tx, kline_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
+    let (tick_tx, tick_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
+
+    let app_state = state::new_app_state();
+    // ✨ 初始化索引
+    let room_index = state::new_room_index();
+
+    // ✨ 2. 启动全局 Binance 任务
+    // Task A: Kline Manager
+    let config_clone1 = config.clone();
+    let io_clone1 = io.clone();
+    let state_clone1 = app_state.clone();
+    tokio::spawn(async move {
+        binance_task::start_global_manager(
+            binance_task::TaskType::Kline,
+            io_clone1,
+            config_clone1,
+            state_clone1,
+            None, // Kline 不需要索引
+            kline_rx,
+        ).await;
+    });
+
+    // Task B: Tick Manager (需要 Index)
+    let config_clone2 = config.clone();
+    let io_clone2 = io.clone();
+    let state_clone2 = app_state.clone();
+    let index_clone2 = room_index.clone();
+    tokio::spawn(async move {
+        binance_task::start_global_manager(
+            binance_task::TaskType::Tick,
+            io_clone2,
+            config_clone2,
+            state_clone2,
+            Some(index_clone2),
+            tick_rx,
+        ).await;
+    });
+
+    let server_state = ServerState {
+        app_state,
+        room_index, // ✨ 注入
+        config: config.clone(),
+        io: io.clone(),
+        token_symbols: Arc::new(DashMap::new()),
+        narrative_cache: state::new_narrative_cache(),
+        db_pool,
+        client_pool,
+        binance_channels: BinanceChannels { kline_tx, tick_tx },
+    };
+
+    let socket_state = server_state.clone();
+    io.ns("/", move |s: SocketRef| {
+        let state = socket_state.clone();
+        async move { socket_handlers::on_socket_connect(s, state).await; }
+    });
+
+    tokio::spawn(cache_manager::cache_manager_task(config));
+
+    let app = Router::new()
+        .route("/desired-fields", get(http_handlers::desired_fields_handler))
+        .route("/image-proxy", get(http_handlers::image_proxy_handler))
+        .with_state(server_state)
+        .layer(CorsLayer::new()
+            .allow_origin("http://localhost:15173".parse::<HeaderValue>().expect("Invalid CORS origin"))
+            .allow_methods(Any)
+            .allow_headers(Any))
+        .layer(layer);
+
+    info!("🚀 Rust server is running at http://0.0.0.0:3001");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.expect("Failed to bind to port 3001");
+    axum::serve(listener, app).await.expect("Server failed to start");
+}
+
+fn init_tracing() {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "backend=info,tower_http=info,sqlx=warn".into()))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
+  5. packages/backend/src/socket_handlers.rs变更：这是最复杂的部分。实现了智能订阅逻辑，并新增了 Lazy Unsubscribe 的异步调度器。 code Rustdownloadcontent_copyexpand_less    // packages/backend/src/socket_handlers.rs
+
+use super::{
+    kline_handler,
+    state::SubscriptionCommand,
+    types::{DataPayload, KlineSubscribePayload, KlineTick, MemeItem, NarrativeResponse, Room},
+    ServerState,
+};
+use socketioxide::extract::{Data, SocketRef};
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::time::Duration; // ✨ 引入 Duration
+use tracing::{error, info, warn};
+
+const MIN_HOTLIST_AMOUNT: f64 = 1.0;
+const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
+const PROXY_URL: &str = "http://127.0.0.1:1080";
+// ✨ 定义延迟取消时间：60秒
+// 用户刷新页面或短时间断线重连时，连接不会断开，防止 Binance 封禁
+const LAZY_UNSUBSCRIBE_DELAY: u64 = 60; 
+
+pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
+    info!("🔌 [Socket.IO] Client connected: {}", s.id);
+    register_data_update_handler(&s, state.clone());
+    register_kline_subscribe_handler(&s, state.clone());
+    register_kline_unsubscribe_handler(&s, state.clone());
+    register_disconnect_handler(&s, state.clone());
+    register_kline_history_handler(&s, state);
+}
+
+// 辅助：处理索引增加 (返回是否是第一次订阅该地址)
+fn handle_index_subscription(state: &ServerState, address: &str, room_key: &str) -> bool {
+    let address_lower = address.to_lowercase();
+    let mut entry = state.room_index.entry(address_lower).or_default();
+    let is_first = entry.is_empty();
+    entry.insert(room_key.to_string());
+    is_first
+}
+
+// 辅助：处理索引减少 (返回该地址是否已经归零)
+fn handle_index_unsubscription(state: &ServerState, address: &str, room_key: &str) -> bool {
+    let address_lower = address.to_lowercase();
+    if let Some(mut entry) = state.room_index.get_mut(&address_lower) {
+        entry.remove(room_key);
+        return entry.is_empty();
+    }
+    false
+}
+
+// ✨✨✨ 核心新增：Lazy Unsubscribe 调度器 ✨✨✨
+fn schedule_lazy_tick_unsubscribe(state: ServerState, address: String, pool_id: i64) {
+    // 启动一个分离的异步任务
+    tokio::spawn(async move {
+        let address_lower = address.to_lowercase();
+        // info!("⏳ [LAZY UNSUB] Starting {}s timer for {}...", LAZY_UNSUBSCRIBE_DELAY, address);
+
+        // 1. 等待缓冲期 (覆盖用户刷新页面的时间)
+        tokio::time::sleep(Duration::from_secs(LAZY_UNSUBSCRIBE_DELAY)).await;
+
+        // 2. 再次检查索引状态 (Double Check)
+        let should_really_unsub = if let Some(entry) = state.room_index.get(&address_lower) {
+            // 如果集合为空，说明这 60s 内没人重新订阅
+            entry.is_empty()
+        } else {
+            // 如果 key 都不存在了，肯定没人订阅
+            true
+        };
+
+        // 3. 执行真正的退订
+        if should_really_unsub {
+            info!("📤 [LAZY EXEC] Timer ended. No subscribers for {}. Unsubscribing Tick.", address);
+            let tx_stream = format!("tx@{}_{}", pool_id, address);
+            // 忽略发送错误（通道可能已关闭）
+            let _ = state.binance_channels.tick_tx.send(SubscriptionCommand::Unsubscribe(tx_stream));
+            
+            // 可选：清理空的 Index Key 以节省内存
+            // state.room_index.remove(&address_lower); 
+        } else {
+            info!("♻️ [LAZY ABORT] Timer ended. User rejoined {}. Keeping connection alive.", address);
+        }
+    });
+}
+
+fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
+    socket.on("subscribe_kline", move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
+        let state = state.clone();
+        async move {
+            let chain_lower = payload.chain.to_lowercase();
+            let address_lower = payload.address.to_lowercase();
+            // ... (Symbol 获取逻辑不变)
+            let symbol = state.token_symbols.get(&address_lower).map_or_else(
+                || format!("{}...", &payload.address[0..6]),
+                |s| s.value().clone(),
+            );
+
+            let pool_id = match chain_lower.as_str() {
+                "bsc" => 14, "sol" | "solana" => 16, "base" => 199,
+                _ => { warn!("⚠️ [SUB FAIL] Unsupported chain for {}", s.id); return; }
+            };
+
+            let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+            let log_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
+
+            info!("🔔 [SUB] Client {} -> {}", s.id, log_name);
+            s.join(room_name.clone());
+
+            let is_new_room = !state.app_state.contains_key(&room_name);
+
+            // 1. AppState 更新
+            state.app_state.entry(room_name.clone())
+                .or_insert_with(|| Room {
+                    clients: HashSet::new(),
+                    symbol: symbol.clone(),
+                    current_kline: Arc::new(Mutex::new(None)),
+                })
+                .value_mut().clients.insert(s.id);
+
+            // 2. 索引更新
+            let need_sub_tick = handle_index_subscription(&state, &payload.address, &room_name);
+
+            if is_new_room {
+                // K线流：立即订阅 (K线通常不需要防抖，因为它按 Interval 隔离，流量可控)
+                let kl_stream = format!("kl@{}_{}_{}", pool_id, payload.address, payload.interval);
+                let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Subscribe(kl_stream));
+
+                // Tick流：如果这是第一个人，立即订阅 (保证用户进场立马有数据)
+                // 即使之前 Lazy Unsub 还在倒计时，重复发送 Subscribe 也没问题，Binance 会处理
+                if need_sub_tick {
+                    info!("📤 [SUB TICK] First sub for {}, sending Global CMD.", payload.address);
+                    let tx_stream = format!("tx@{}_{}", pool_id, payload.address);
+                    let _ = state.binance_channels.tick_tx.send(SubscriptionCommand::Subscribe(tx_stream));
+                }
+            }
+        }
+    });
+}
+
+fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
+    socket.on("unsubscribe_kline", move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
+        let state = state.clone();
+        async move {
+            let pool_id = match payload.chain.to_lowercase().as_str() {
+                "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => return,
+            };
+            let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+            s.leave(room_name.clone());
+
+            let mut room_empty = false;
+            if let Some(mut room) = state.app_state.get_mut(&room_name) {
+                room.clients.remove(&s.id);
+                room_empty = room.clients.is_empty();
+            }
+
+            if room_empty {
+                state.app_state.remove(&room_name);
+                
+                // 1. K线流：立即退订 (低频流，直接退订即可)
+                let kl_stream = format!("kl@{}_{}_{}", pool_id, payload.address, payload.interval);
+                let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Unsubscribe(kl_stream));
+
+                // 2. Tick流：检查是否需要退订
+                if handle_index_unsubscription(&state, &payload.address, &room_name) {
+                    // ✨ 触发 Lazy Unsubscribe
+                    info!("⏳ [LAZY START] No subscribers for {}. Scheduling unsub in {}s...", payload.address, LAZY_UNSUBSCRIBE_DELAY);
+                    schedule_lazy_tick_unsubscribe(state.clone(), payload.address.clone(), pool_id);
+                }
+            }
+        }
+    });
+}
+
+fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
+    socket.on_disconnect(move |s: SocketRef| {
+        let state = state.clone();
+        async move {
+            let mut empty_rooms = Vec::new();
+            for mut entry in state.app_state.iter_mut() {
+                if entry.value_mut().clients.remove(&s.id) && entry.value().clients.is_empty() {
+                    empty_rooms.push(entry.key().clone());
+                }
+            }
+
+            for room_name in empty_rooms {
+                if let Some(_) = state.app_state.remove(&room_name) {
+                    let parts: Vec<&str> = room_name.split('@').collect();
+                    if parts.len() == 4 {
+                        let pool_id = parts[1].parse::<i64>().unwrap_or(0);
+                        let address = parts[2].to_string();
+                        let interval = parts[3];
+
+                        // 1. K线流：立即退订
+                        let kl_stream = format!("kl@{}_{}_{}", pool_id, address, interval);
+                        let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Unsubscribe(kl_stream));
+
+                        // 2. Tick流：触发 Lazy Unsubscribe
+                        if handle_index_unsubscription(&state, &address, &room_name) {
+                            info!("⏳ [LAZY START] Disconnect trigger. Scheduling unsub for {}...", address);
+                            schedule_lazy_tick_unsubscribe(state.clone(), address, pool_id);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+// ... 下面是 handler 的剩余部分，保持不变 ...
+
+fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
+    socket.on("request_historical_kline", move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
+        let state = state.clone();
+        async move { kline_handler::handle_kline_request(s, payload, state).await; }
+    });
+}
+
+fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
+    socket.on("data-update", move |s: SocketRef, payload: Data<serde_json::Value>| {
+        let state = state.clone();
+        async move {
+            match serde_json::from_value::<DataPayload>(payload.0) {
+                Ok(mut parsed_payload) => {
+                    let mut should_broadcast = false;
+                    let mut log_summary = String::new();
+
+                    match &mut parsed_payload {
+                        DataPayload::Hotlist { r#type, data } => {
+                            let original = data.len();
+                            data.retain(|item| (item.volume1h.unwrap_or(0.0) * item.price.unwrap_or(0.0)) >= MIN_HOTLIST_AMOUNT);
+                            should_broadcast = !data.is_empty();
+                            log_summary = format!("🔥 [HOTLIST] {:?} | {} -> {}", r#type, original, data.len());
+                            for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
+                        }
+                        DataPayload::MemeNew { r#type, data } => {
+                            data.retain(|i| !i.symbol.is_empty());
+                            enrich_meme_data(data, &state).await;
+                            should_broadcast = !data.is_empty();
+                            log_summary = format!("🐶 [MEME NEW] {:?} | {}", r#type, data.len());
+                            for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
+                        }
+                        DataPayload::MemeMigrated { r#type, data } => {
+                            data.retain(|i| !i.symbol.is_empty());
+                            enrich_meme_data(data, &state).await;
+                            should_broadcast = !data.is_empty();
+                            log_summary = format!("🚀 [MEME MIG] {:?} | {}", r#type, data.len());
+                            for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
+                        }
+                        _ => {}
+                    }
+
+                    if should_broadcast {
+                        info!("{}", log_summary);
+                        let _ = s.broadcast().emit("data-broadcast", &parsed_payload).await;
+                    }
+                }
+                Err(e) => warn!("❌ Parse Error: {}", e),
+            }
+        }
+    });
+}
+
+async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
+    let mut to_fetch = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if !state.narrative_cache.contains_key(&item.contract_address) {
+            state.narrative_cache.insert(item.contract_address.clone(), "__PENDING__".to_string());
+            to_fetch.push(i);
+        }
+    }
+
+    if !to_fetch.is_empty() { info!("🔍 Queuing fetch for {} items.", to_fetch.len()); }
+
+    for (q_idx, &idx) in to_fetch.iter().enumerate() {
+        let addr = items[idx].contract_address.clone();
+        let chain = items[idx].chain.clone();
+        let cache = state.narrative_cache.clone();
+        let delay = std::time::Duration::from_millis(q_idx as u64 * 200);
+
+        if let Some(cid) = get_chain_id(&chain) {
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                match fetch_narrative(&addr, cid).await {
+                    Ok(Some(t)) => { info!("✅ Fetched {}: {:.10}...", addr, t); cache.insert(addr, t); },
+                    Ok(None) => { cache.insert(addr, "".into()); },
+                    Err(_) => { cache.remove(&addr); }
+                }
+            });
+        } else { cache.insert(addr, "".into()); }
+    }
+
+    for item in items.iter_mut() {
+        if let Some(t) = state.narrative_cache.get(&item.contract_address) {
+            if !t.is_empty() && t.as_str() != "__PENDING__" { item.narrative = Some(t.clone()); }
+        }
+    }
+}
+
+async fn fetch_narrative(address: &str, chain_id: u64) -> anyhow::Result<Option<String>> {
+    let url = format!("{}?contractAddress={}&chainId={}", NARRATIVE_API_URL, address, chain_id);
+    let proxy = reqwest::Proxy::all(PROXY_URL)?;
+    // 这里保持创建新Client的逻辑，确保每个请求独立，避免全局Pool污染 (Meme请求量不大，且有Delay)
+    let client = reqwest::Client::builder().proxy(proxy).timeout(std::time::Duration::from_secs(10)).build()?;
+    let resp = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+        .header("ClientType", "web").header("Origin", "https://web3.binance.com")
+        .send().await?;
+    
+    if !resp.status().is_success() { return Ok(None); }
+    let body: NarrativeResponse = resp.json().await?;
+    if let Some(d) = body.data {
+        if let Some(t) = d.text {
+            if let Some(cn) = t.cn { if !cn.is_empty() { return Ok(Some(cn)); } }
+            if let Some(en) = t.en { if !en.is_empty() { return Ok(Some(en)); } }
+        }
+    }
+    Ok(None)
+}
+
+fn get_chain_id(chain: &str) -> Option<u64> {
+    match chain.to_lowercase().as_str() {
+        "bsc" => Some(56), "eth" | "ethereum" => Some(1), "base" => Some(8453),
+        "arb" | "arbitrum" => Some(42161), "matic" | "polygon" => Some(137),
+        "op" | "optimism" => Some(10), "avax" | "avalanche" => Some(43114),
+        _ => None,
+    }
+}
+  
+  
+
+
+
+
+
+
 `packages\extractor\src\meme-scanner.ts`输出的日志如下
  F:\work\github\binanceweb3> pnpm scan:meme 
 

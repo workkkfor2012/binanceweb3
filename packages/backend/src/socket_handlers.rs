@@ -1,7 +1,8 @@
 // packages/backend/src/socket_handlers.rs
-
+use crate::binance_task;
 use super::{
-    binance_task, kline_handler,
+    kline_handler,
+    state::SubscriptionCommand,
     types::{DataPayload, KlineSubscribePayload, KlineTick, MemeItem, NarrativeResponse, Room},
     ServerState,
 };
@@ -9,18 +10,13 @@ use socketioxide::extract::{Data, SocketRef};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
+use tokio::time::Duration;
 use tracing::{error, info, warn};
 
-// ✨ 定义过滤阈值：1000 USD (成交量 * 价格)
-// 仅用于 Hotlist，Meme 币不使用此阈值
 const MIN_HOTLIST_AMOUNT: f64 = 1.0;
-
-// ✨ Binance Narrative API URL
-const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
-
-// ✨ 本地代理地址 (解决 API 连接被阻断问题)
-const PROXY_URL: &str = "http://127.0.0.1:1080";
+const NARRATIVE_API_URL: &str =
+    "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
+const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
@@ -50,36 +46,26 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
         move |s: SocketRef, payload: Data<serde_json::Value>| {
             let state = state.clone();
             async move {
-                // 1. 尝试反序列化为 types.rs 中定义的 DataPayload 枚举
                 match serde_json::from_value::<DataPayload>(payload.0) {
                     Ok(mut parsed_payload) => {
                         let mut should_broadcast = false;
                         let mut log_summary = String::new();
 
-                        // 2. 核心分流逻辑：根据枚举类型分别处理
                         match &mut parsed_payload {
-                            // ==========================================================
-                            // 🟢 场景 A: 处理 Hotlist (常规热门币)
-                            // ==========================================================
                             DataPayload::Hotlist { r#type, data } => {
                                 let original_count = data.len();
-
-                                // ✨ Hotlist 专用逻辑: 执行金额过滤
                                 data.retain(|item| {
                                     let volume = item.volume1h.unwrap_or(0.0);
                                     let price = item.price.unwrap_or(0.0);
                                     let amount = volume * price;
                                     amount >= MIN_HOTLIST_AMOUNT
                                 });
-
                                 let filtered_count = data.len();
                                 should_broadcast = !data.is_empty();
                                 log_summary = format!(
                                     "🔥 [HOTLIST] Act: {:?} | Filter: {} -> {} (Criteria: 1H Amount >= ${})",
                                     r#type, original_count, filtered_count, MIN_HOTLIST_AMOUNT
                                 );
-
-                                // 更新 Symbol Map
                                 for item in data.iter() {
                                     state.token_symbols.insert(
                                         item.contract_address.to_lowercase(),
@@ -87,25 +73,15 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     );
                                 }
                             }
-
-                            // ==========================================================
-                            // 🔵 场景 B: 处理 MemeNew (新币/土狗)
-                            // ==========================================================
                             DataPayload::MemeNew { r#type, data } => {
-                                // ✨ Meme 专用逻辑:
                                 data.retain(|item| !item.symbol.is_empty());
-
-                                // ✨✨✨ 核心逻辑：获取项目描述 (Narrative) ✨✨✨
                                 enrich_meme_data(data, &state).await;
-
                                 let filtered_count = data.len();
                                 should_broadcast = !data.is_empty();
                                 log_summary = format!(
                                     "🐶 [MEME RUSH] Act: {:?} | Items: {} | Narrative Check Done",
                                     r#type, filtered_count
                                 );
-
-                                // 更新 Symbol Map
                                 for item in data.iter() {
                                     state.token_symbols.insert(
                                         item.contract_address.to_lowercase(),
@@ -113,26 +89,15 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     );
                                 }
                             }
-
-                            // ==========================================================
-                            // 🟣 场景 C: 处理 MemeMigrated (发射成功的金狗)
-                            // ==========================================================
                             DataPayload::MemeMigrated { r#type, data } => {
-                                // 逻辑与 MemeNew 类似，但可以独立统计日志
                                 data.retain(|item| !item.symbol.is_empty());
-
-                                // 发射成功的币种也需要 Narrative
                                 enrich_meme_data(data, &state).await;
-
                                 let filtered_count = data.len();
                                 should_broadcast = !data.is_empty();
                                 log_summary = format!(
                                     "🚀 [MEME MIGRATED] Act: {:?} | Items: {} | Narrative Check Done",
-                                    r#type,
-                                    filtered_count
+                                    r#type, filtered_count
                                 );
-
-                                // 更新 Symbol Map
                                 for item in data.iter() {
                                     state.token_symbols.insert(
                                         item.contract_address.to_lowercase(),
@@ -140,18 +105,13 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     );
                                 }
                             }
-
-                            // ⚪ 其他/未知
                             DataPayload::Unknown => {
-                                // 现在 MemeMigrated 已经被处理，这里应该很少触发了
                                 warn!("⚠️ [DATA] Received unknown category payload.");
                             }
                         }
 
-                        // 3. 广播数据 (如果还有剩余数据)
                         if should_broadcast {
                             info!("{}", log_summary);
-                            // socketioxide 会自动序列化 DataPayload 枚举
                             if let Err(e) = s.broadcast().emit("data-broadcast", &parsed_payload).await
                             {
                                 error!("❌ [BROADCAST FAIL] {:?}", e);
@@ -167,140 +127,118 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
     );
 }
 
-// ✨✨✨ 辅助函数：批量填充 Meme 数据的描述信息 ✨✨✨
+// ✨✨✨ 修复点：使用 narrative_proxy_pool 并且正确传递 Client ✨✨✨
 async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
-    let mut indices_to_fetch = Vec::new();
-
-    // 1. 快速检查缓存，找出需要请求的项
+    let mut to_fetch = Vec::new();
+    
     for (i, item) in items.iter().enumerate() {
-        // 如果缓存里有 key（无论是真正的内容，还是 "__PENDING__"），都跳过请求
-        if state.narrative_cache.contains_key(&item.contract_address) {
-            continue;
+        if !state.narrative_cache.contains_key(&item.contract_address) {
+            state
+                .narrative_cache
+                .insert(item.contract_address.clone(), "__PENDING__".to_string());
+            to_fetch.push(i);
         }
-
-        // 关键点：立即占位！防止后续的高频 Update 再次触发请求
-        state
-            .narrative_cache
-            .insert(item.contract_address.clone(), "__PENDING__".to_string());
-        indices_to_fetch.push(i);
     }
 
-    if !indices_to_fetch.is_empty() {
-        info!(
-            "🔍 [NARRATIVE] Queuing fetch for {} NEW items (staggered with proxy).",
-            indices_to_fetch.len()
-        );
+    if !to_fetch.is_empty() {
+        info!("🔍 [NARRATIVE] Queuing fetch for {} items.", to_fetch.len());
     }
 
-    // 2. 执行请求 (异步 Spawn，不阻塞 Socket 广播)
-    // 错峰请求：每隔 200ms 发一个，防止瞬间把代理打挂或被目标 API 封锁
-    for (queue_idx, &item_idx) in indices_to_fetch.iter().enumerate() {
-        let address = items[item_idx].contract_address.clone();
-        let chain = items[item_idx].chain.clone();
-        // let client_pool = state.client_pool.clone(); // 🔴 不使用全局池，改用独立的代理 Client
+    for (q_idx, &idx) in to_fetch.iter().enumerate() {
+        let addr = items[idx].contract_address.clone();
+        let chain = items[idx].chain.clone();
         let cache = state.narrative_cache.clone();
+        
+        // 1. 获取代理池引用
+        let proxy_pool = state.narrative_proxy_pool.clone();
 
-        // 延迟递增
-        let delay = std::time::Duration::from_millis(queue_idx as u64 * 200);
+        // 错峰请求
+        let delay = std::time::Duration::from_millis(q_idx as u64 * 250);
 
-        if let Some(chain_id) = get_chain_id(&chain) {
+        if let Some(cid) = get_chain_id(&chain) {
             tokio::spawn(async move {
-                // 等待轮到自己
                 tokio::time::sleep(delay).await;
 
-                // 开始请求 (传入 None 表示不使用 Pool，而是内部新建代理连接)
-                match fetch_narrative(&address, chain_id).await {
-                    Ok(Some(text)) => {
-                        info!("✅ [FETCH SUCCESS] For {}: {:.20}...", address, text);
-                        cache.insert(address, text);
+                // 2. 从池中获取 Client 句柄
+                let (client_idx, client) = proxy_pool.get_client().await;
+
+                // 3. ⚠️ 关键修正：将 pool 中的 client 引用传递给 fetch 函数
+                match fetch_narrative(&client, &addr, cid).await {
+                    Ok(Some(t)) => {
+                        info!("✅ [Fetch OK] {}: {:.15}...", addr, t);
+                        cache.insert(addr, t);
                     }
                     Ok(None) => {
-                        // info!("📭 [FETCH EMPTY] For {}.", address);
-                        cache.insert(address, "".to_string()); // 标记为空，防止重复请求
+                        cache.insert(addr, "".into());
                     }
                     Err(e) => {
-                        warn!("❌ [FETCH ERROR] For {}: {}", address, e);
-                        // 出错后移除 PENDING 状态，允许未来重试
-                        cache.remove(&address);
+                        // 4. 触发熔断：请求失败，销毁并重建该 Client
+                        warn!("❌ [Fetch ERR] Client #{} failed for {}: {}. Triggering Recycle...", client_idx, addr, e);
+                        proxy_pool.recycle_client(client_idx).await;
+                        cache.remove(&addr);
                     }
                 }
             });
         } else {
-            // 不支持的链，标记为空，不再尝试
-            cache.insert(address, "".to_string());
+            cache.insert(addr, "".into());
         }
     }
 
-    // 3. 统一填充 (从缓存读取内容给前端)
+    // 填充数据回 item
     for item in items.iter_mut() {
-        if let Some(text) = state.narrative_cache.get(&item.contract_address) {
-            if !text.is_empty() && text.as_str() != "__PENDING__" {
-                item.narrative = Some(text.clone());
+        if let Some(t) = state.narrative_cache.get(&item.contract_address) {
+            if !t.is_empty() && t.as_str() != "__PENDING__" {
+                item.narrative = Some(t.clone());
             }
         }
     }
 }
 
-// ✨ 修改：不再依赖全局 ClientPool，而是创建一个带 Proxy 的专用 Client
-async fn fetch_narrative(address: &str, chain_id: u64) -> anyhow::Result<Option<String>> {
+// ⚠️ 关键修正：移除任何内部 Client 构建逻辑，完全依赖外部注入
+async fn fetch_narrative(
+    client: &reqwest::Client,
+    address: &str,
+    chain_id: u64,
+) -> anyhow::Result<Option<String>> {
     let url = format!(
         "{}?contractAddress={}&chainId={}",
         NARRATIVE_API_URL, address, chain_id
     );
 
-    // 1. 配置代理
-    let proxy = reqwest::Proxy::all(PROXY_URL)?;
-
-    // 2. 构建专用 Client (ClientBuilder 没有 .header 方法，需在 Request 中设置)
-    let client = reqwest::Client::builder()
-        .proxy(proxy)
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-
-    // 3. 发起请求 (在这里伪装成真实浏览器 Headers)
+    // 使用传入的 client 发送请求
+    // 注意：Pool 中的 Client 已经配置了 Proxy, Timeout 和 User-Agent
     let resp = client.get(&url)
-.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-.header("Accept", "application/json, text/plain, */*")
-.header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-.header("Accept-Encoding", "gzip, deflate, br")
-.header("ClientType", "web")
-.header("ClientVersion", "1.0.0")
-.header("Cache-Control", "no-cache")
-.header("Pragma", "no-cache")
-.header("Origin", "https://web3.binance.com")
-.header("Referer", "https://web3.binance.com/zh-CN/meme-rush")
-.header("Sec-Ch-Ua", "\"Google Chrome\";v=\"125\", \"Chromium\";v=\"125\", \"Not.A/Brand\";v=\"24\"")
-.header("Sec-Ch-Ua-Mobile", "?0")
-.header("Sec-Ch-Ua-Platform", "\"Windows\"")
-.header("Sec-Fetch-Dest", "empty")
-.header("Sec-Fetch-Mode", "cors")
-.header("Sec-Fetch-Site", "same-origin")
-.send()
-.await?;
+        .header("ClientType", "web")
+        .header("Origin", "https://web3.binance.com")
+        .header("Referer", "https://web3.binance.com/zh-CN/meme-rush")
+        // 模拟真实浏览器指纹
+        .header("Sec-Ch-Ua", "\"Google Chrome\";v=\"125\", \"Chromium\";v=\"125\", \"Not.A/Brand\";v=\"24\"")
+        .header("Sec-Ch-Ua-Mobile", "?0")
+        .header("Sec-Ch-Ua-Platform", "\"Windows\"")
+        .header("Sec-Fetch-Dest", "empty")
+        .header("Sec-Fetch-Mode", "cors")
+        .header("Sec-Fetch-Site", "same-origin")
+        .header("Cache-Control", "no-cache")
+        .header("Pragma", "no-cache")
+        .send()
+        .await?;
 
     if !resp.status().is_success() {
-        warn!("❌ [API FAIL] Status: {} | URL: {}", resp.status(), url);
-        return Ok(None);
+        return Err(anyhow::anyhow!("HTTP Status {}", resp.status()));
     }
 
     let body: NarrativeResponse = resp.json().await?;
 
-    if let Some(data) = body.data {
-        if let Some(text_obj) = data.text {
-            // 优先使用中文，其次英文
-            if let Some(cn) = text_obj.cn {
-                if !cn.is_empty() {
-                    return Ok(Some(cn));
-                }
+    if let Some(d) = body.data {
+        if let Some(t) = d.text {
+            if let Some(cn) = t.cn {
+                if !cn.is_empty() { return Ok(Some(cn)); }
             }
-            if let Some(en) = text_obj.en {
-                if !en.is_empty() {
-                    return Ok(Some(en));
-                }
+            if let Some(en) = t.en {
+                if !en.is_empty() { return Ok(Some(en)); }
             }
         }
     }
-
     Ok(None)
 }
 
@@ -313,8 +251,8 @@ fn get_chain_id(chain: &str) -> Option<u64> {
         "matic" | "polygon" => Some(137),
         "op" | "optimism" => Some(10),
         "avax" | "avalanche" => Some(43114),
-        "sol" | "solana" => None, // Binance 暂不支持 Solana Narrative
-        _ => None,                // 不支持的链跳过 fetch
+        "sol" | "solana" => None,
+        _ => None,
     }
 }
 
@@ -327,7 +265,6 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 let chain_lower = payload.chain.to_lowercase();
                 let address_lowercase = payload.address.to_lowercase();
 
-                // 尝试从缓存中获取 Symbol，如果没有则截断地址显示
                 let symbol = state.token_symbols.get(&address_lowercase).map_or_else(
                     || format!("{}...", &payload.address[0..6]),
                     |s| s.value().clone(),
@@ -349,7 +286,6 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 info!("🔔 [SUB] Client {} -> Room: {}", s.id, log_display_name);
                 s.join(room_name.clone());
 
-                // 初始化房间逻辑 (启动 Binance 任务)
                 state
                     .app_state
                     .entry(room_name.clone())
@@ -390,7 +326,6 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
             let state = state.clone();
             async move {
                 let chain_lower = payload.chain.to_lowercase();
-                // let address_lowercase = payload.address.to_lowercase(); // 未使用
 
                 let symbol = state
                     .token_symbols
@@ -417,7 +352,6 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
                 );
                 s.leave(room_name.clone());
 
-                // 检查房间是否为空，为空则清理任务
                 if let Some(mut room) = state.app_state.get_mut(&room_name) {
                     room.clients.remove(&s.id);
                     if room.clients.is_empty() {
@@ -440,7 +374,6 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
     socket.on_disconnect(move |s: SocketRef| {
         let state = state.clone();
         async move {
-            // info!("🔌 [Socket.IO] Client disconnected: {}", s.id);
             let mut empty_rooms: Vec<(String, String)> = Vec::new();
 
             for mut entry in state.app_state.iter_mut() {

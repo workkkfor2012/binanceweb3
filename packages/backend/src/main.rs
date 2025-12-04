@@ -20,20 +20,30 @@ use http::HeaderValue;
 use socketioxide::{extract::SocketRef, SocketIo};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+// 引入类型
+use crate::state::{BinanceChannels, SubscriptionCommand};
+
 #[derive(Clone)]
 pub struct ServerState {
     pub app_state: state::AppState,
+    pub room_index: state::RoomIndex,
     pub config: Arc<Config>,
     pub io: SocketIo,
     pub token_symbols: Arc<DashMap<String, String>>,
-    // ✨ 新增: 描述缓存 (Key: Address, Value: Text)
     pub narrative_cache: state::NarrativeCache,
     pub db_pool: SqlitePool,
+    
+    // ✨ 1. 直连池 (给 K-line 历史数据、图片代理用)
     pub client_pool: ClientPool,
+    // ✨ 2. 代理池 (给 Narrative/Meme 抓取用，具备故障轮换能力)
+    pub narrative_proxy_pool: ClientPool,
+    
+    pub binance_channels: BinanceChannels,
 }
 
 #[tokio::main]
@@ -41,43 +51,83 @@ async fn main() {
     init_tracing();
 
     let (layer, io) = SocketIo::builder().max_buffer_size(40960).build_layer();
-
     let config = Arc::new(Config::new());
 
-    if let Some(parent) = std::path::Path::new(&config.database_url.replace("sqlite:", "")).parent()
-    {
+    // Database Setup
+    if let Some(parent) = std::path::Path::new(&config.database_url.replace("sqlite:", "")).parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent).expect("Failed to create database directory");
         }
     }
-
     let db_pool = SqlitePoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
         .await
         .expect("Failed to connect to SQLite database");
     info!("🗃️ Database connection pool established.");
-
     kline_handler::init_db(&db_pool)
         .await
         .expect("Failed to initialize database schema");
 
-    // ✨ 修改：不再传入代理 URL，使用 None 启用直连模式
-    // 因为用户确认 dquery.sintral.io 可以直连
-    // 注意：binance_task 仍然会读取 config.proxy_addr 来连接 WebSocket (如果需要的话)
+    // Pool A: 直连池 (20并发, 直连)
+    info!("🚀 Initializing Direct Client Pool...");
+    // None 表示不使用代理
+    let client_pool = ClientPool::new(20, None, "DIRECT".to_string()).await;
 
-    info!("🚀 Initializing Client Pool in DIRECT mode (No Proxy)...");
-    let client_pool = ClientPool::new(20, None).await;
+    // Pool B: 代理池 (8并发, 走代理)
+    // 数量无需太多，关键是每个连接要能自动维护
+    info!("🌐 Initializing Proxy Client Pool (Robust Mode)...");
+    let proxy_url = format!("http://{}", config.proxy_addr);
+    let narrative_proxy_pool = ClientPool::new(8, Some(proxy_url), "PROXY".to_string()).await;
+
+    // Create Channels
+    let (kline_tx, kline_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
+    let (tick_tx, tick_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
+
+    let app_state = state::new_app_state();
+    let room_index = state::new_room_index();
+
+    // Start Binance Tasks
+    let config_clone1 = config.clone();
+    let io_clone1 = io.clone();
+    let state_clone1 = app_state.clone();
+    tokio::spawn(async move {
+        binance_task::start_global_manager(
+            binance_task::TaskType::Kline,
+            io_clone1,
+            config_clone1,
+            state_clone1,
+            None,
+            kline_rx,
+        ).await;
+    });
+
+    let config_clone2 = config.clone();
+    let io_clone2 = io.clone();
+    let state_clone2 = app_state.clone();
+    let index_clone2 = room_index.clone();
+    tokio::spawn(async move {
+        binance_task::start_global_manager(
+            binance_task::TaskType::Tick,
+            io_clone2,
+            config_clone2,
+            state_clone2,
+            Some(index_clone2),
+            tick_rx,
+        ).await;
+    });
 
     let server_state = ServerState {
-        app_state: state::new_app_state(),
+        app_state,
+        room_index,
         config: config.clone(),
         io: io.clone(),
         token_symbols: Arc::new(DashMap::new()),
-        // ✨ 初始化 Narrative Cache
         narrative_cache: state::new_narrative_cache(),
         db_pool,
         client_pool,
+        narrative_proxy_pool, // 注入新的代理池
+        binance_channels: BinanceChannels { kline_tx, tick_tx },
     };
 
     let socket_state = server_state.clone();
