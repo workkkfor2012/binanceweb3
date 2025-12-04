@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 
 const MIN_HOTLIST_AMOUNT: f64 = 1.0;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
-const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
+const LAZY_UNSUBSCRIBE_DELAY: u64 = 3600;
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
