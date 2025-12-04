@@ -1,5 +1,4 @@
 // packages/backend/src/main.rs
-
 mod binance_task;
 mod cache;
 mod cache_manager;
@@ -39,6 +38,7 @@ pub struct ServerState {
     pub db_pool: SqlitePool,
     pub client_pool: ClientPool,
     pub narrative_proxy_pool: ClientPool,
+    pub image_proxy_pool: ClientPool, // ✨ 新增：专门用于图片的代理池
     pub binance_channels: BinanceChannels, // ✨ 通道
 }
 
@@ -66,9 +66,15 @@ async fn main() {
     info!("🚀 Initializing Direct Client Pool...");
     let client_pool = ClientPool::new(20, None, "DIRECT".to_string()).await;
 
-    info!("🌐 Initializing Proxy Client Pool (Robust Mode)...");
+    info!("🌐 Initializing Proxy Client Pools...");
     let proxy_url = format!("http://{}", config.proxy_addr);
-    let narrative_proxy_pool = ClientPool::new(8, Some(proxy_url), "PROXY".to_string()).await;
+
+    // 叙事抓取池 (API 请求，较低并发)
+    let narrative_proxy_pool = ClientPool::new(8, Some(proxy_url.clone()), "PROXY_API".to_string()).await;
+
+    // ✨ 图片代理池 (高并发，大流量)
+    // 增加连接数以应对并发加载图片的场景，使用独立的池避免阻塞 API 请求
+    let image_proxy_pool = ClientPool::new(30, Some(proxy_url), "PROXY_IMG".to_string()).await;
 
     // ✨ 1. 创建全局 Channels
     let (kline_tx, kline_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
@@ -118,7 +124,8 @@ async fn main() {
         narrative_cache: state::new_narrative_cache(),
         db_pool,
         client_pool,
-        narrative_proxy_pool, 
+        narrative_proxy_pool,
+        image_proxy_pool, // 注入图片池
         binance_channels: BinanceChannels { kline_tx, tick_tx },
     };
 

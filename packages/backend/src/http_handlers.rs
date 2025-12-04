@@ -1,5 +1,5 @@
 // packages/backend/src/http_handlers.rs
-use super::{cache, config::Config, error::AppError, types::ImageProxyQuery, ServerState};
+use super::{cache, error::AppError, types::ImageProxyQuery, ServerState};
 use axum::{
     extract::{Query, State},
     http::HeaderMap,
@@ -7,7 +7,7 @@ use axum::{
 };
 use http::HeaderValue;
 use reqwest;
-use tracing::warn; // 修正：移除了未使用的 `info`
+use tracing::{warn, error};
 use url::Url;
 
 /// 处理监控字段配置的请求。
@@ -16,6 +16,9 @@ pub async fn desired_fields_handler(State(state): State<ServerState>) -> AxumJso
 }
 
 /// 处理图片代理请求，包含缓存逻辑。
+/// 
+/// 优化：使用了连接池 (Connection Pool) 和重试机制，
+/// 避免了频繁建立 TCP/TLS 连接的开销，并能自动剔除失效的代理节点。
 pub async fn image_proxy_handler(
     State(state): State<ServerState>,
     Query(query): Query<ImageProxyQuery>,
@@ -31,60 +34,84 @@ pub async fn image_proxy_handler(
         return Ok(cached_response);
     }
 
-    // 3. 如果缓存未命中，则从源站抓取
-    let client = build_proxy_client(&config)?;
-    let res = client.get(&image_url).send().await?;
+    // 3. 如果缓存未命中，则从源站抓取 (使用连接池 + 重试逻辑)
+    // 最多重试 2 次
+    let mut response_bytes = None;
+    let mut response_content_type = HeaderValue::from_static("application/octet-stream");
+    let mut last_error_status = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
 
-    if res.status() != reqwest::StatusCode::OK {
-        return Err(AppError::UpstreamError(res.status()));
+    for attempt in 1..=2 {
+        // 从连接池获取 Client 和 索引
+        let (client_idx, client) = state.image_proxy_pool.get_client().await;
+        
+        match client.get(&image_url).send().await {
+            Ok(res) => {
+                if res.status().is_success() {
+                    response_content_type = res
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .cloned()
+                        .unwrap_or_else(|| HeaderValue::from_static("application/octet-stream"));
+                    
+                    match res.bytes().await {
+                        Ok(bytes) => {
+                            response_bytes = Some(bytes);
+                            break; // 成功获取，退出重试循环
+                        },
+                        Err(e) => {
+                            warn!("❌ [IMG PROXY] Read body failed: {}. Retrying...", e);
+                             // 读取 body 失败，连接可能断了，回收连接
+                            state.image_proxy_pool.recycle_client(client_idx).await;
+                        }
+                    }
+                } else {
+                    last_error_status = res.status();
+                    // 策略：5xx 错误可能是代理节点问题，需要回收；404 可能是源站问题，不回收但记录警告
+                    if res.status().as_u16() >= 500 {
+                        state.image_proxy_pool.recycle_client(client_idx).await;
+                    }
+                    warn!("⚠️ [IMG PROXY] Upstream {}: {}. Attempt {}/2", res.status(), image_url, attempt);
+                }
+            },
+            Err(e) => {
+                // 连接层面的错误（如超时、握手失败），必须回收连接
+                warn!("❌ [IMG PROXY] Request failed: {}. Recycling client #{}. Attempt {}/2", e, client_idx, attempt);
+                state.image_proxy_pool.recycle_client(client_idx).await;
+            }
+        }
     }
 
-    let content_type = res
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .cloned()
-        .unwrap_or_else(|| HeaderValue::from_static("application/octet-stream"));
+    // 4. 处理结果
+    match response_bytes {
+        Some(image_buffer) => {
+            // 异步保存到缓存，避免阻塞响应
+            let cache_config = config.clone();
+            let cache_image_url = image_url.clone();
+            let cache_content_type = response_content_type.clone();
+            let cache_image_buffer = image_buffer.clone();
+            
+            tokio::spawn(async move {
+                if let Err(e) =
+                    cache::save_to_cache(&cache_image_url, &cache_content_type, &cache_image_buffer, &cache_config).await
+                {
+                    warn!("[CACHE ASYNC] Failed to save to cache: {}", e);
+                }
+            });
 
-    let image_buffer = res
-        .bytes()
-        .await
-        .map_err(|e| AppError::BodyReadError(e.to_string()))?;
+            // 返回响应
+            let mut headers = HeaderMap::new();
+            headers.insert(http::header::CONTENT_TYPE, response_content_type);
+            headers.insert(
+                http::header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=86400"),
+            );
+            headers.insert(http::header::CONTENT_LENGTH, image_buffer.len().into());
 
-    // 4. 异步保存到缓存
-    let cache_config = config.clone();
-    let cache_image_url = image_url.clone();
-    let cache_content_type = content_type.clone();
-    let cache_image_buffer = image_buffer.clone();
-    tokio::spawn(async move {
-        if let Err(e) =
-            cache::save_to_cache(&cache_image_url, &cache_content_type, &cache_image_buffer, &cache_config).await
-        {
-            warn!("[CACHE ASYNC] Failed to save to cache: {}", e);
+            Ok((headers, image_buffer).into_response())
+        },
+        None => {
+            error!("🔥 [IMG PROXY] Failed to fetch image after retries: {}. Last Status: {}", image_url, last_error_status);
+            Err(AppError::UpstreamError(last_error_status))
         }
-    });
-
-    // 5. 返回响应给客户端
-    let mut headers = HeaderMap::new();
-    headers.insert(http::header::CONTENT_TYPE, content_type);
-    headers.insert(
-        http::header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
-    );
-    headers.insert(http::header::CONTENT_LENGTH, image_buffer.len().into());
-
-    Ok((headers, image_buffer).into_response())
-}
-
-// --- 辅助函数 ---
-
-fn build_proxy_client(config: &Config) -> Result<reqwest::Client, AppError> {
-    let proxy_url = format!("http://{}", config.proxy_addr);
-    let proxy = reqwest::Proxy::all(&proxy_url)
-        .map_err(|e| AppError::ProxyClientBuild(e.to_string()))?;
-
-    reqwest::Client::builder()
-        .proxy(proxy)
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5.37.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/5.37.36")
-        .build()
-        .map_err(|e| AppError::ProxyClientBuild(e.to_string()))
+    }
 }
