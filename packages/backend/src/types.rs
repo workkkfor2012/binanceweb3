@@ -6,77 +6,54 @@ use socketioxide::socket::Sid;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
 // ==============================================================================
-// 1. 定义独立的数据项结构体 (对应 shared-types)
+// 1. 定义独立的数据项结构体
 // ==============================================================================
 
-// 🟢 1.1 Hotlist 专用结构体 (对应 TypeScript 的 HotlistItem)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HotlistItem {
-    // --- BaseItem 字段 (重复定义以解耦) ---
     pub chain: String,
     pub contract_address: String,
     pub symbol: String,
     pub icon: Option<String>,
-
-    // --- Hotlist 核心字段 ---
     pub price: Option<f64>,
     pub market_cap: Option<f64>,
     pub volume1h: Option<f64>,
     pub volume24h: Option<f64>,
     pub price_change1h: Option<f64>,
     pub price_change24h: Option<f64>,
-
-    // --- 额外 K线 字段 ---
     pub volume5m: Option<f64>,
     pub price_change5m: Option<f64>,
-
-    // 来源标记
     pub source: Option<String>,
 }
 
-// 🔵 1.2 Meme Rush 专用结构体 (对应 TypeScript 的 MemeItem)
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MemeItem {
-    // --- BaseItem 字段 ---
     pub chain: String,
     pub contract_address: String,
     pub symbol: String,
     pub icon: Option<String>,
-
-    // --- Meme 核心字段 ---
     pub name: String,
-    pub progress: f64,                  // 绑定曲线进度 (0-100)
+    pub progress: f64,
     pub holders: i64,
-    pub dev_migrate_count: Option<i64>, // 可能为null
+    pub dev_migrate_count: Option<i64>,
     pub create_time: i64,
-
-    // ✨ 新增: 兼容 migrated 数据中的字段
-    pub status: Option<String>, // e.g. "dex"
+    pub status: Option<String>,
     pub update_time: Option<i64>,
-
-    // 社交
     pub twitter: Option<String>,
     pub telegram: Option<String>,
     pub website: Option<String>,
-
-    // Meme 交易属性
     pub liquidity: Option<f64>,
     pub market_cap: Option<f64>,
-
-    // ✨ 新增: 项目描述 (从 Binance Narrative API 获取)
     pub narrative: Option<String>,
-
-    // 来源标记
     pub source: Option<String>,
 }
 
 // ==============================================================================
-// 2. 定义严格分流的 Payload (核心解耦点)
+// 2. Payload 定义
 // ==============================================================================
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
@@ -86,12 +63,9 @@ pub enum DataAction {
     #[serde(rename = "update")]
     Update,
     #[serde(other)]
-    Unknown, // 处理 "full" 或其他未预期的 action
+    Unknown,
 }
 
-// ✨ 利用 serde(tag = "category") 实现自动分流
-// 当 category="hotlist" 时，data 被解析为 Vec<HotlistItem>
-// 当 category="meme_new" 时，data 被解析为 Vec<MemeItem>
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "category")]
 pub enum DataPayload {
@@ -100,30 +74,24 @@ pub enum DataPayload {
         r#type: DataAction,
         data: Vec<HotlistItem>,
     },
-
     #[serde(rename = "meme_new")]
     MemeNew {
         r#type: DataAction,
         data: Vec<MemeItem>,
     },
-
-    // ✨ 新增: 处理已发射(Migrated)的 Meme 代币
     #[serde(rename = "meme_migrated")]
     MemeMigrated {
         r#type: DataAction,
-        data: Vec<MemeItem>, // 复用 MemeItem 结构
+        data: Vec<MemeItem>,
     },
-
-    // 处理未知的分类，防止报错崩溃
     #[serde(other)]
     Unknown,
 }
 
 // ==============================================================================
-// 3. 其他辅助结构 (Binance/KLine/Socket/API)
+// 3. 辅助结构
 // ==============================================================================
 
-// ✨ 新增: Binance Narrative API 响应结构
 #[derive(Debug, Deserialize)]
 pub struct NarrativeResponse {
     pub code: String,
@@ -214,9 +182,9 @@ pub struct KlineHistoryResponse {
     pub data: Vec<KlineTick>,
 }
 
+// ✨ 修改核心：Room 不再持有 task_handle
 pub struct Room {
     pub clients: HashSet<Sid>,
-    pub task_handle: JoinHandle<()>,
     pub symbol: String,
     pub current_kline: Arc<Mutex<Option<KlineTick>>>,
 }

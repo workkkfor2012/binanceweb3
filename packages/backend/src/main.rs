@@ -25,25 +25,21 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-// 引入类型
+// ✨ 引入新类型
 use crate::state::{BinanceChannels, SubscriptionCommand};
 
 #[derive(Clone)]
 pub struct ServerState {
     pub app_state: state::AppState,
-    pub room_index: state::RoomIndex,
+    pub room_index: state::RoomIndex, // ✨ 索引
     pub config: Arc<Config>,
     pub io: SocketIo,
     pub token_symbols: Arc<DashMap<String, String>>,
     pub narrative_cache: state::NarrativeCache,
     pub db_pool: SqlitePool,
-    
-    // ✨ 1. 直连池 (给 K-line 历史数据、图片代理用)
     pub client_pool: ClientPool,
-    // ✨ 2. 代理池 (给 Narrative/Meme 抓取用，具备故障轮换能力)
     pub narrative_proxy_pool: ClientPool,
-    
-    pub binance_channels: BinanceChannels,
+    pub binance_channels: BinanceChannels, // ✨ 通道
 }
 
 #[tokio::main]
@@ -64,30 +60,25 @@ async fn main() {
         .connect(&config.database_url)
         .await
         .expect("Failed to connect to SQLite database");
-    info!("🗃️ Database connection pool established.");
-    kline_handler::init_db(&db_pool)
-        .await
-        .expect("Failed to initialize database schema");
+    kline_handler::init_db(&db_pool).await.expect("Failed to initialize database schema");
 
-    // Pool A: 直连池 (20并发, 直连)
+    // Pools
     info!("🚀 Initializing Direct Client Pool...");
-    // None 表示不使用代理
     let client_pool = ClientPool::new(20, None, "DIRECT".to_string()).await;
 
-    // Pool B: 代理池 (8并发, 走代理)
-    // 数量无需太多，关键是每个连接要能自动维护
     info!("🌐 Initializing Proxy Client Pool (Robust Mode)...");
     let proxy_url = format!("http://{}", config.proxy_addr);
     let narrative_proxy_pool = ClientPool::new(8, Some(proxy_url), "PROXY".to_string()).await;
 
-    // Create Channels
+    // ✨ 1. 创建全局 Channels
     let (kline_tx, kline_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
     let (tick_tx, tick_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
 
     let app_state = state::new_app_state();
     let room_index = state::new_room_index();
 
-    // Start Binance Tasks
+    // ✨ 2. 启动全局 Binance 任务
+    // Task A: Kline Manager (不需要索引)
     let config_clone1 = config.clone();
     let io_clone1 = io.clone();
     let state_clone1 = app_state.clone();
@@ -97,11 +88,12 @@ async fn main() {
             io_clone1,
             config_clone1,
             state_clone1,
-            None,
+            None, 
             kline_rx,
         ).await;
     });
 
+    // Task B: Tick Manager (需要索引)
     let config_clone2 = config.clone();
     let io_clone2 = io.clone();
     let state_clone2 = app_state.clone();
@@ -126,7 +118,7 @@ async fn main() {
         narrative_cache: state::new_narrative_cache(),
         db_pool,
         client_pool,
-        narrative_proxy_pool, // 注入新的代理池
+        narrative_proxy_pool, 
         binance_channels: BinanceChannels { kline_tx, tick_tx },
     };
 
@@ -141,39 +133,25 @@ async fn main() {
     tokio::spawn(cache_manager::cache_manager_task(config));
 
     let app = Router::new()
-        .route(
-            "/desired-fields",
-            get(http_handlers::desired_fields_handler),
-        )
+        .route("/desired-fields", get(http_handlers::desired_fields_handler))
         .route("/image-proxy", get(http_handlers::image_proxy_handler))
         .with_state(server_state)
         .layer(
             CorsLayer::new()
-                .allow_origin(
-                    "http://localhost:15173"
-                        .parse::<HeaderValue>()
-                        .expect("Invalid CORS origin"),
-                )
+                .allow_origin("http://localhost:15173".parse::<HeaderValue>().unwrap())
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
         .layer(layer);
 
     info!("🚀 Rust server is running at http://0.0.0.0:3001");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001")
-        .await
-        .expect("Failed to bind to port 3001");
-    axum::serve(listener, app)
-        .await
-        .expect("Server failed to start");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
 fn init_tracing() {
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "backend=info,tower_http=info,sqlx=warn".into()),
-        )
+        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "backend=info,tower_http=info,sqlx=warn".into()))
         .with(tracing_subscriber::fmt::layer())
         .init();
 }

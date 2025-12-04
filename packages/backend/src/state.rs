@@ -6,22 +6,17 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub type AppState = Arc<DashMap<String, Room>>;
-
-// ✨ Narrative Cache: ContractAddress -> Narrative Text
 pub type NarrativeCache = Arc<DashMap<String, String>>;
 
-// ✨ 反向索引: Token Address -> Set<RoomName>
-// 用于 Tick 数据更新时，快速找到需要推送的房间
+// ✨ 反向索引: Token Address (Lower) -> Set<RoomName>
 pub type RoomIndex = Arc<DashMap<String, HashSet<String>>>;
 
-// ✨ 订阅命令枚举 (用于 Channel)
 #[derive(Debug, Clone)]
 pub enum SubscriptionCommand {
     Subscribe(String),
     Unsubscribe(String),
 }
 
-// ✨ 全局通道结构体
 #[derive(Clone)]
 pub struct BinanceChannels {
     pub kline_tx: UnboundedSender<SubscriptionCommand>,
