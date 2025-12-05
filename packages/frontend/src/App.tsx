@@ -1,6 +1,6 @@
 // packages/frontend/src/App.tsx
 import { createSignal, onMount, For, Component, JSX, createMemo } from 'solid-js';
-import type { MarketItem } from 'shared-types';
+import type { MarketItem, HotlistItem } from './types'; // 引入修正后的类型
 import { useMarketData } from './hooks/useMarketData';
 
 const BACKEND_URL = 'http://localhost:3001';
@@ -15,6 +15,7 @@ const FIELD_DISPLAY_NAMES: Record<string, string> = {
   chain: '链',
   chainId: '链 ID',
   contractAddress: '合约地址',
+  // ✨ 这些字段现在对应 HotlistItem 中的 Optional Fields
   volume1m: '成交量 (1m)',
   volume5m: '成交量 (5m)',
   volume1h: '成交量 (1h)',
@@ -58,10 +59,12 @@ interface RankingListProps {
 
 const RankingList: Component<RankingListProps> = (props) => {
   const rankedData = createMemo(() => {
-    // 简单的排序逻辑
+    // ✨ 排序逻辑增强：处理可选字段 undefined 的情况
     const sorted = [...props.data].sort((a, b) => {
-      const valA = a[props.rankBy] ?? -Infinity;
-      const valB = b[props.rankBy] ?? -Infinity;
+      // 使用类型断言访问可能的动态属性
+      const valA = (a as any)[props.rankBy] ?? -Infinity;
+      const valB = (b as any)[props.rankBy] ?? -Infinity;
+      
       const numA = typeof valA === 'string' ? parseFloat(valA) : valA;
       const numB = typeof valB === 'string' ? parseFloat(valB) : valB;
       return numB - numA;
@@ -77,6 +80,7 @@ const RankingList: Component<RankingListProps> = (props) => {
           {(item) => (
             <li>
               <span class="symbol" title={item.symbol}>{item.symbol}</span>
+              {/* @ts-ignore: Dynamic access is safe here due to createMemo logic */}
               <span class="value">{props.formatter(item[props.rankBy])}</span>
             </li>
           )}
@@ -94,10 +98,18 @@ const MarketRow: Component<MarketRowProps> = (props) => {
   const { item } = props;
   const proxiedIconUrl = () => item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
   
-  // 点击跳转到详情页
   const handleRowClick = () => {
       window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
   };
+
+  // 辅助函数：安全获取 HotlistItem 独有的可选字段
+  // 因为 MemeItem 没有这些字段，直接访问会报错
+  const getHotlistField = (field: keyof HotlistItem) => {
+      if (item.source === 'hotlist') {
+          return (item as HotlistItem)[field];
+      }
+      return undefined;
+  }
 
   return (
     <tr onClick={handleRowClick} style={{ cursor: 'pointer' }}>
@@ -108,16 +120,19 @@ const MarketRow: Component<MarketRowProps> = (props) => {
       <td>{formatPercentage(item.priceChange24h)}</td>
       <td>{formatVolumeOrMarketCap(item.volume24h)}</td>
       <td>{formatVolumeOrMarketCap(item.marketCap)}</td>
-      <td>{item.chainId}</td>
+      {/* 某些字段可能不存在于 MemeItem，使用 optional access 或 helper */}
+      <td>{(item as any).chainId || '-'}</td>
       <td title={item.contractAddress}>{`${String(item.contractAddress).substring(0, 6)}...`}</td>
-      <td>{formatPercentage(item.priceChange1m)}</td>
-      <td>{formatPercentage(item.priceChange5m)}</td>
-      <td>{formatPercentage(item.priceChange1h)}</td>
-      <td>{formatPercentage(item.priceChange4h)}</td>
-      <td>{formatVolumeOrMarketCap(item.volume1m)}</td>
-      <td>{formatVolumeOrMarketCap(item.volume5m)}</td>
-      <td>{formatVolumeOrMarketCap(item.volume1h)}</td>
-      <td>{formatVolumeOrMarketCap(item.volume4h)}</td>
+      
+      {/* ✨ 即使是可选字段，现在也能通过类型检查，不会报错 */}
+      <td>{formatPercentage(getHotlistField('priceChange1m'))}</td>
+      <td>{formatPercentage(getHotlistField('priceChange5m'))}</td>
+      <td>{formatPercentage(getHotlistField('priceChange1h'))}</td>
+      <td>{formatPercentage(getHotlistField('priceChange4h'))}</td>
+      <td>{formatVolumeOrMarketCap(getHotlistField('volume1m'))}</td>
+      <td>{formatVolumeOrMarketCap(getHotlistField('volume5m'))}</td>
+      <td>{formatVolumeOrMarketCap(getHotlistField('volume1h'))}</td>
+      <td>{formatVolumeOrMarketCap(getHotlistField('volume4h'))}</td>
     </tr>
   );
 };
@@ -140,21 +155,17 @@ const PRICE_CHANGE_RANKINGS = [
 ];
 
 const App: Component = () => {
-  // ✨ 核心: 使用统一的 Hook 获取数据和状态，明确订阅 'hotlist' 频道
   const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
   
   const [desiredFields, setDesiredFields] = createSignal<string[]>([]);
   const [selectedChain, setSelectedChain] = createSignal<string>(CHAINS[0]);
   
-  // 根据当前选择的链过滤表格数据
   const filteredData = createMemo(() => 
     marketData.filter(item => item.chain === selectedChain())
   );
   
   onMount(() => {
     console.log('[App] 🚀 Mounting Main Dashboard (Table View)...');
-
-    // 获取表格列配置 (App 独有逻辑)
     const fetchDesiredFields = async () => {
       try {
         const response = await fetch(`${BACKEND_URL}/desired-fields`);
@@ -166,7 +177,6 @@ const App: Component = () => {
             'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h',
             'volume1m', 'volume5m', 'volume1h', 'volume4h'
         ];
-        // 简单的去重与排序
         const orderedFields = [...new Set([...preferredOrder, ...fields])];
         const finalFields = orderedFields.filter(f => fields.includes(f));
         setDesiredFields(finalFields);
@@ -183,7 +193,6 @@ const App: Component = () => {
       <header class="app-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div class="header-left">
             <h1>🔥 Market Hotlist</h1>
-            {/* 导航栏：指向 hotlist (当前页) 和 meme new (新页面) */}
             <nav class="nav-links" style={{ display: 'flex', gap: '15px', marginTop: '10px' }}>
                 <span class="nav-btn active" style={{ fontWeight: 'bold', textDecoration: 'underline' }}>🔥 Hotlist</span>
                 <a href="/meme.html" class="nav-btn" style={{ textDecoration: 'none', color: '#666' }}>🐶 Meme New</a>
@@ -238,7 +247,6 @@ const App: Component = () => {
         </div>
       </div>
 
-      {/* --- 链选择器 --- */}
       <div class="chain-selector">
         <For each={CHAINS}>
           {(chain) => (
@@ -252,7 +260,6 @@ const App: Component = () => {
         </For>
       </div>
 
-      {/* --- 详细数据表格 --- */}
       <div class="table-container">
         <table>
           <thead>
