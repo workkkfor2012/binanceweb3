@@ -2,7 +2,8 @@
 use super::{
     kline_handler,
     state::SubscriptionCommand,
-    types::{DataPayload, KlineSubscribePayload, KlineTick, MemeItem, NarrativeResponse, Room},
+    // ✨ 引入新的 Struct 和 Trait
+    types::{DataPayload, KlineSubscribePayload, KlineTick, NarrativeEntity, NarrativeResponse, Room},
     ServerState,
 };
 use socketioxide::extract::{Data, SocketRef};
@@ -25,7 +26,9 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     register_kline_history_handler(&s, state);
 }
 
-// ✨ 辅助：处理索引增加 (返回是否是第一次订阅该地址)
+// ... (handle_index_subscription, handle_index_unsubscription, schedule_lazy_tick_unsubscribe 保持不变) ...
+// ⚠️ 请保留原文件中的这些辅助函数，此处省略以节省空间
+
 fn handle_index_subscription(state: &ServerState, address: &str, room_key: &str) -> bool {
     let address_lower = address.to_lowercase();
     let mut entry = state.room_index.entry(address_lower).or_default();
@@ -34,38 +37,30 @@ fn handle_index_subscription(state: &ServerState, address: &str, room_key: &str)
     is_first
 }
 
-// ✨ 辅助：处理索引减少 (返回该地址是否已经没有订阅者)
 fn handle_index_unsubscription(state: &ServerState, address: &str, room_key: &str) -> bool {
     let address_lower = address.to_lowercase();
     if let Some(mut entry) = state.room_index.get_mut(&address_lower) {
         entry.remove(room_key);
         return entry.is_empty();
     }
-    // 如果 key 不存在（应该不会发生），也视为无人订阅
     true
 }
 
-// ✨✨✨ 核心：Lazy Unsubscribe 调度器 ✨✨✨
 fn schedule_lazy_tick_unsubscribe(state: ServerState, address: String, pool_id: i64) {
     tokio::spawn(async move {
         let address_lower = address.to_lowercase();
-        // 1. 等待缓冲期
         tokio::time::sleep(Duration::from_secs(LAZY_UNSUBSCRIBE_DELAY)).await;
 
-        // 2. 再次检查索引状态 (Double Check)
         let should_really_unsub = if let Some(entry) = state.room_index.get(&address_lower) {
-            entry.is_empty() // 只有集合为空，才说明期间无人加入
+            entry.is_empty()
         } else {
-            true // Key 都不在了
+            true
         };
 
-        // 3. 执行真正的退订
         if should_really_unsub {
             info!("📤 [LAZY EXEC] Timer ended. No subscribers for {}. Unsubscribing Tick.", address);
             let tx_stream = format!("tx@{}_{}", pool_id, address);
             let _ = state.binance_channels.tick_tx.send(SubscriptionCommand::Unsubscribe(tx_stream));
-            
-            // ✨ 修复：清理空的 Index Key 防止内存泄漏
             state.room_index.remove(&address_lower);
         } else {
             info!("♻️ [LAZY ABORT] Timer ended. User rejoined {}. Keeping connection alive.", address);
@@ -80,17 +75,13 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
             let chain_lower = payload.chain.to_lowercase();
             let address_lower = payload.address.to_lowercase();
             
-            // 简单获取 Symbol 作为日志显示
             let symbol = state.token_symbols.get(&address_lower).map_or_else(
                 || format!("{}...", &payload.address[0..6]),
                 |s| s.value().clone(),
             );
 
             let pool_id = match chain_lower.as_str() {
-                "bsc" => 14,
-                "sol" | "solana" => 16,
-                "base" => 199,
-                _ => return,
+                "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => return,
             };
 
             let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
@@ -101,7 +92,6 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
 
             let is_new_room = !state.app_state.contains_key(&room_name);
 
-            // 1. AppState 更新
             state.app_state.entry(room_name.clone())
                 .or_insert_with(|| Room {
                     clients: HashSet::new(),
@@ -110,17 +100,12 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 })
                 .value_mut().clients.insert(s.id);
 
-            // 2. 索引更新
             let need_sub_tick = handle_index_subscription(&state, &payload.address, &room_name);
 
             if is_new_room {
-                // K线流：立即订阅
                 let kl_stream = format!("kl@{}_{}_{}", pool_id, payload.address, payload.interval);
                 let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Subscribe(kl_stream));
-
-                // Tick流：如果是该 Token 的第一个订阅者，立即订阅
                 if need_sub_tick {
-                    info!("📤 [SUB TICK] First sub for {}, sending Global CMD.", payload.address);
                     let tx_stream = format!("tx@{}_{}", pool_id, payload.address);
                     let _ = state.binance_channels.tick_tx.send(SubscriptionCommand::Subscribe(tx_stream));
                 }
@@ -148,11 +133,9 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
 
             if room_empty {
                 state.app_state.remove(&room_name);
-                // 1. K线流：立即退订
                 let kl_stream = format!("kl@{}_{}_{}", pool_id, payload.address, payload.interval);
                 let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Unsubscribe(kl_stream));
 
-                // 2. Tick流：触发 Lazy Unsubscribe
                 if handle_index_unsubscription(&state, &payload.address, &room_name) {
                     info!("⏳ [LAZY START] No subscribers for {}. Scheduling unsub in {}s...", payload.address, LAZY_UNSUBSCRIBE_DELAY);
                     schedule_lazy_tick_unsubscribe(state.clone(), payload.address.clone(), pool_id);
@@ -201,6 +184,7 @@ fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
     });
 }
 
+// ✨✨✨ 核心更新：匹配新的 DataPayload 枚举 ✨✨✨
 fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
     socket.on("data-update", move |s: SocketRef, payload: Data<serde_json::Value>| {
         let state = state.clone();
@@ -211,22 +195,39 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                     let mut log_summary = String::new();
 
                     match &mut parsed_payload {
+                        // 1. 处理 Hotlist (HotlistItem 结构体)
                         DataPayload::Hotlist { r#type, data } => {
+                            // 过滤逻辑
                             data.retain(|item| (item.volume1h.unwrap_or(0.0) * item.price.unwrap_or(0.0)) >= MIN_HOTLIST_AMOUNT);
                             should_broadcast = !data.is_empty();
                             log_summary = format!("🔥 [HOTLIST] Act: {:?} | Count: {}", r#type, data.len());
+                            
+                            // 记录 Symbol 映射
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
+                            
+                            // 🔥 调用泛型 Enrich 函数 (HotlistItem 实现了 NarrativeEntity)
+                            enrich_any_data(data, &state).await; 
                         }
+                        
+                        // 2. 处理 New Meme (MemeScanItem 结构体)
                         DataPayload::MemeNew { r#type, data } => {
                             data.retain(|item| !item.symbol.is_empty());
-                            enrich_meme_data(data, &state).await;
+                            
+                            // 🔥 调用泛型 Enrich 函数 (MemeScanItem 实现了 NarrativeEntity)
+                            enrich_any_data(data, &state).await;
+                            
                             should_broadcast = !data.is_empty();
                             log_summary = format!("🐶 [MEME RUSH] Act: {:?} | Count: {}", r#type, data.len());
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                         }
+                        
+                        // 3. 处理 Migrated Meme (MemeScanItem 结构体)
                         DataPayload::MemeMigrated { r#type, data } => {
                             data.retain(|item| !item.symbol.is_empty());
-                            enrich_meme_data(data, &state).await;
+                            
+                            // 🔥 调用泛型 Enrich 函数
+                            enrich_any_data(data, &state).await;
+                            
                             should_broadcast = !data.is_empty();
                             log_summary = format!("🚀 [MEME MIGRATED] Act: {:?} | Count: {}", r#type, data.len());
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
@@ -239,27 +240,37 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         s.broadcast().emit("data-broadcast", &parsed_payload).await.ok();
                     }
                 }
-                Err(e) => warn!("❌ [JSON PARSE ERROR] {}", e),
+                Err(e) => warn!("❌ [JSON PARSE ERROR] Payload mismatch: {}", e),
             }
         }
     });
 }
 
-// ✨ 保留本地优秀的逻辑：使用 ClientPool 并传递 Client 引用
-async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
+// ✨✨✨ 泛型 Enrich 函数 ✨✨✨
+// 使用 trait bound: T 必须实现 NarrativeEntity 且支持并发 (Send + Sync)
+async fn enrich_any_data<T>(items: &mut Vec<T>, state: &ServerState) 
+where T: NarrativeEntity + Send + Sync 
+{
     let mut to_fetch = Vec::new();
+    
+    // 1. 扫描哪些需要抓取
     for (i, item) in items.iter().enumerate() {
-        if !state.narrative_cache.contains_key(&item.contract_address) {
-            state.narrative_cache.insert(item.contract_address.clone(), "__PENDING__".to_string());
+        let addr = item.get_address().to_lowercase();
+        // 如果缓存没有这个 key，标记为待抓取
+        if !state.narrative_cache.contains_key(&addr) {
+            state.narrative_cache.insert(addr, "__PENDING__".to_string());
             to_fetch.push(i);
         }
     }
 
+    // 2. 发起抓取任务
     for (q_idx, &idx) in to_fetch.iter().enumerate() {
-        let addr = items[idx].contract_address.clone();
-        let chain = items[idx].chain.clone();
+        let addr = items[idx].get_address().to_string(); // 复制一份 string 避免借用冲突
+        let chain = items[idx].get_chain().to_string();
         let cache = state.narrative_cache.clone();
         let proxy_pool = state.narrative_proxy_pool.clone();
+        
+        // 错峰延时，避免瞬间打爆 API
         let delay = std::time::Duration::from_millis(q_idx as u64 * 250);
 
         if let Some(cid) = get_chain_id(&chain) {
@@ -270,25 +281,31 @@ async fn enrich_meme_data(items: &mut Vec<MemeItem>, state: &ServerState) {
                 match fetch_narrative(&client, &addr, cid).await {
                     Ok(Some(t)) => {
                         info!("✅ [Fetch OK] {}: {:.15}...", addr, t);
-                        cache.insert(addr, t);
+                        cache.insert(addr.to_lowercase(), t);
                     }
-                    Ok(None) => { cache.insert(addr, "".into()); }
+                    Ok(None) => { 
+                        // 没数据也缓存空字符串，避免重复请求
+                        cache.insert(addr.to_lowercase(), "".into()); 
+                    }
                     Err(e) => {
                         warn!("❌ [Fetch ERR] Client #{} failed for {}: {}. Recycling...", client_idx, addr, e);
+                        // 只有网络错误才回收连接并删除缓存 key (允许重试)
                         proxy_pool.recycle_client(client_idx).await;
-                        cache.remove(&addr);
+                        cache.remove(&addr.to_lowercase());
                     }
                 }
             });
         } else {
-            cache.insert(addr, "".into());
+            cache.insert(addr.to_lowercase(), "".into());
         }
     }
 
+    // 3. 回填数据 (从缓存中读取)
     for item in items.iter_mut() {
-        if let Some(t) = state.narrative_cache.get(&item.contract_address) {
+        let addr = item.get_address().to_lowercase();
+        if let Some(t) = state.narrative_cache.get(&addr) {
             if !t.is_empty() && t.as_str() != "__PENDING__" {
-                item.narrative = Some(t.clone());
+                item.set_narrative(t.clone());
             }
         }
     }

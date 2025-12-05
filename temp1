@@ -1,0 +1,582 @@
+爬虫端已经传递了meme 已迁移所有的字段,一步到位，传输全部字段，，你觉得前端有哪些字段可以用起来，用于更好的捕捉热点，我有一个想法，migrateTime-createTime，也就是从发币到迁移花的时间越短，这个币就越热firstSeen: '1764648938751'chainId: '56'contractAddress: '0xd4e0e063e1e7b90afec8668f6b8785066db94444'symbol: '2026'name: '2026'icon: 'https://static.four.meme/market/6bea4c8c-4d91-416c...'caIcon: 'null'iconStatus: '1'caIconStatus: '1'createTime: '1764590830000'height: '70119104'twitter: 'null'website: 'null'telegram: 'null'progress: '91.37'protocol: '2001'holders: '174'liquidity: '21791.49'volume: '12525.71'marketCap: '46675.4'count: '363'countBuy: '319'countSell: '44'holdersTop10Percent: '45'holdersDevPercent: 'null'holdersSniperPercent: '72'holdersInsiderPercent: 'null'devSellPercent: 'null'migrateStatus: 'false'migrateTime: '0'paidOnDexScreener: 'false'devMigrateCount: '1'decimal: '18'sensitiveToken: 'false'exclusive: 'false'meme-extractor.ts已经将所有字段传递到rust后端了啊，后端转发所有的字段以下是其他的AI的修改意见，供你参考————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————这是一个非常棒的切入点！“从发币到迁移（发射）的时间越短，热度越高” 这个逻辑在 Meme 交易中是非常核心的“金狗”指标（Time to Bond）。这代表了社区的 FOMO（错失恐惧）程度和资金涌入的速度。除了你提到的 migrateTime - createTime，根据你提供的字段，我还强烈建议利用以下字段来捕捉热点和规避风险：paidOnDexScreener (是否付费推广):用途: 这是一个极强的看涨信号。如果 Dev 或社区愿意花钱在 DexScreener 上做广告或更新信息，说明他们有营销预算且想把盘子做大，而不是简单的“一波流” Rug。展示: 显示一个 "AD" 或 "Paid" 的金标。holdersSniperPercent (狙击手持仓占比):用途: 这是一个风险指标。如果这个数值过高（比如 > 60%），说明大量筹码集中在狙击机器人手中，开盘砸盘风险极高。展示: 如果 > 50%，显示红色警告 "🎯 Sniper: 72%"。countBuy vs countSell (买卖单数):用途: 情绪指标。比单纯的 Volume 更能反映散户参与度。如果买单数远大于卖单数（例如 10:1），说明情绪高涨。展示: 显示一个买卖力度的比例条或数值（如 "319 🟢 / 44 🔴"）。devMigrateCount (Dev 发射次数):用途: Dev 行为画像。如果这个数是 1，可能是新号；如果很大，要结合过往来看。展示: 已经在现有代码中，可以强化显示。下面我将分三步来实现这些功能：Extractor: 更新数据清洗逻辑，透传这些新字段。Frontend Types: 更新类型定义。Frontend Page: 更新卡片 UI，增加“极速发射时间”、“狙击手警告”、“付费推广金标”等视觉元素。1. 更新数据提取器 (Extractor)我们需要在 normalizeData 中把这些有价值的原始字段提取出来。<file path="packages/extractor/src/meme-extractor.ts"><![CDATA[// packages/extractor/src/meme-extractor.tsimport { chromium } from 'playwright-extra';import type { Browser, Page } from 'playwright';import stealth from 'puppeteer-extra-plugin-stealth';import { handleGuidePopup, checkAndClickCookieBanner } from './pageInitializer';import * as logger from './logger';import { io, Socket } from 'socket.io-client';import type { MemeItem } from 'shared-types';chromium.use(stealth());// ==============================================================================// --- ⚙️ 配置区域 ---// ==============================================================================const SERVER_URL = 'http://localhost:3001';const MY_CHROME_PATH = 'F:\Program Files\Google\Chrome\Application\chrome.exe';const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';const CAPTURE_CONFIG = {// 🎯 目标: 'migrated'targetCategory: 'migrated' as 'new' | 'migrated',interval: 1000,proxy: 'socks5://127.0.0.1:1080',maxRetries: 5};// ==============================================================================// --- 🧠 核心扫描脚本 ---// ==============================================================================const SCANNER_LOGIC_SCRIPT = `(() => {window.MemeScannerEngine = {fiberCache: null, code Codedownloadcontent_copyexpand_less    getReactFiber(el) {        const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));        return key ? el[key] : null;    },    isValidTokenList(list) {        if (!Array.isArray(list) || list.length < 2) return false;        const first = list[0];        if (!first || typeof first !== 'object') return false;        return !!first.symbol;    },    identifyType(list) {        const first = list[0];        const mStatus = String(first.migrateStatus);        const progress = parseFloat(first.progress || '0');        if (mStatus === 'true' || progress >= 99) return 'migrated';        return 'new';    },    scan() {        // 1. 缓存策略        if (this.fiberCache) {            try {                const data = this.fiberCache.memoizedProps?.value || this.fiberCache.memoizedProps;                let list = null;                if (data) {                    if (Array.isArray(data.allTokens)) list = data.allTokens;                    else if (Array.isArray(data.currentTokens)) list = data.currentTokens;                    else if (Array.isArray(data)) list = data;                    else {                         Object.values(data).forEach(v => {                            if (this.isValidTokenList(v)) list = v;                         });                    }                }                if (list && this.isValidTokenList(list)) {                    const type = this.identifyType(list);                    if (type === '${CAPTURE_CONFIG.targetCategory}') {                        // 优先取 migrateTime                        const time = type === 'migrated'                             ? parseInt(list[0].migrateTime || 0)                            : parseInt(list[0].createTime || list[0].startTime || 0);                        return [{                            source: 'cache',                            type: type,                            count: list.length,                            time: time,                            data: list                        }];                    }                }            } catch(e) {}            this.fiberCache = null;         }        // 2. 深度扫描 (MAX_CLIMB = 60)        const allElements = document.querySelectorAll('div, span, section, main, ul, li, a, img, h2, h3');        const visitedFibers = new WeakSet();        const foundLists = [];        for (const el of allElements) {            let fiber = this.getReactFiber(el);            let depth = 0;            const MAX_CLIMB = 60;             while (fiber && depth < MAX_CLIMB) {                if (visitedFibers.has(fiber)) {                    fiber = fiber.return;                    depth++;                    continue;                }                visitedFibers.add(fiber);                const sources = [                    fiber.memoizedProps?.value,                    fiber.memoizedProps,                    fiber.memoizedState                ];                for (const data of sources) {                    if (!data || typeof data !== 'object') continue;                    Object.keys(data).forEach(key => {                        const val = data[key];                        if (this.isValidTokenList(val)) {                            const type = this.identifyType(val);                                                        if (type === '${CAPTURE_CONFIG.targetCategory}' && !this.fiberCache) {                                this.fiberCache = fiber;                             }                            const time = type === 'migrated'                                 ? parseInt(val[0].migrateTime || 0)                                : parseInt(val[0].createTime || val[0].startTime || 0);                            foundLists.push({                                source: 'scan',                                type: type,                                count: val.length,                                time: time,                                keyName: key,                                data: val                            });                        }                    });                }                fiber = fiber.return;                depth++;            }        }        return foundLists;    }};  })();`;function safeFloat(val: any): number {if (val === 'null' || val === null || val === undefined) return 0;const num = parseFloat(val);return isNaN(num) ? 0 : num;}function safeInt(val: any): number {if (val === 'null' || val === null || val === undefined) return 0;const num = parseInt(val, 10);return isNaN(num) ? 0 : num;}// ✨ 更新归一化逻辑，映射所有关键的新字段function normalizeData(rawItems: any[]): MemeItem[] {if (!Array.isArray(rawItems)) return []; code Codedownloadcontent_copyexpand_less    return rawItems.map(raw => {    const isMigrated = String(raw.migrateStatus) === 'true';        const migrateTime = safeInt(raw.migrateTime);    const createTime = safeInt(raw.createTime);    // 如果是已迁移，显示时间优先使用迁移时间，否则使用创建时间    const displayTime = isMigrated && migrateTime > 0 ? migrateTime : createTime;    return {        chain: 'BSC',        contractAddress: raw.contractAddress || '',        symbol: raw.symbol || 'UNKNOWN',        name: raw.name || raw.symbol,        icon: raw.icon === 'null' ? undefined : raw.icon,                progress: safeFloat(raw.progress),        status: isMigrated ? 'dex' : 'trading',                holders: safeInt(raw.holders),        marketCap: safeFloat(raw.marketCap),        liquidity: safeFloat(raw.liquidity),        volume: safeFloat(raw.volume),                twitter: raw.twitter === 'null' ? null : raw.twitter,        telegram: raw.telegram === 'null' ? null : raw.telegram,        website: raw.website === 'null' ? null : raw.website,                // --- ✨ 新增透传字段 ---        devMigrateCount: safeInt(raw.devMigrateCount),        countBuy: safeInt(raw.countBuy),        countSell: safeInt(raw.countSell),        holdersSniperPercent: safeFloat(raw.holdersSniperPercent),        paidOnDexScreener: String(raw.paidOnDexScreener) === 'true',        migrateTime: migrateTime, // 保存原始迁移时间用于计算速度                // 基础时间字段        createTime: createTime,        updateTime: Date.now(), // 本地更新时间        source: 'meme-rush'    };});  }// ==============================================================================// --- 🚀 主流程 ---// ==============================================================================async function ensurePageReady(page: Page): Promise<boolean> {logger.log([Inject] 注入扫描引擎..., logger.LOG_LEVELS.INFO);await page.evaluate(SCANNER_LOGIC_SCRIPT);return true;}async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {const context = await browser.newContext({ viewport: null });const page = await context.newPage(); code Codedownloadcontent_copyexpand_less    page.on('console', msg => {    const text = msg.text();    if (text.includes('Content Security Policy') || text.includes('ERR_CONNECTION_CLOSED') || text.includes('Failed to load resource')) return;    if (msg.type() === 'error' && !text.includes('TypeError')) console.log(`[Browser Err] ${text}`);});try {    let attempts = 0;    let success = false;    while (attempts < CAPTURE_CONFIG.maxRetries && !success) {        try {            attempts++;            logger.log(`[Navi] (尝试 ${attempts}/${CAPTURE_CONFIG.maxRetries}) 前往: ${TARGET_URL}`, logger.LOG_LEVELS.INFO);            await page.goto(TARGET_URL, { waitUntil: 'commit', timeout: 45000 });            success = true;            logger.log(`[Navi] ✅ 页面加载成功`, logger.LOG_LEVELS.INFO);        } catch (err: any) {            logger.log(`[Navi] ⚠️ 连接失败: ${err.message.split('\n')[0]}`, logger.LOG_LEVELS.INFO);            if (attempts < CAPTURE_CONFIG.maxRetries) await new Promise(r => setTimeout(r, 3000));            else throw new Error(`达到最大重试次数`);        }    }    await ensurePageReady(page);    await handleGuidePopup(page);    await checkAndClickCookieBanner(page);        logger.log(`[Init] 🖱️ 激活右侧区域...`, logger.LOG_LEVELS.INFO);    const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));    await page.mouse.move(viewport.width / 2, viewport.height / 2);    await page.waitForTimeout(500);    await page.mouse.move(viewport.width * 0.8, viewport.height / 2);        await page.evaluate(async () => {        window.scrollTo(0, 500); await new Promise(r => setTimeout(r, 500));        window.scrollTo(0, 0);   await new Promise(r => setTimeout(r, 500));    });    logger.log(`[Loop] 🚀 开始监听 [${CAPTURE_CONFIG.targetCategory}] (Strict Sort: migrateTime Desc)...`, logger.LOG_LEVELS.INFO);    let lastTopSymbol = '';    let loopCount = 0;    let noDataCount = 0;    setInterval(async () => {        loopCount++;        try {            const scanResult: any = await page.evaluate(() => {                // @ts-ignore                if (!window.MemeScannerEngine) return null;                // @ts-ignore                return { lists: window.MemeScannerEngine.scan() };            }).catch(async (e) => {                if (e.message.includes('Execution context was destroyed')) {                    await page.evaluate(SCANNER_LOGIC_SCRIPT).catch(() => {});                }                return null;            });            if (scanResult && scanResult.lists && scanResult.lists.length > 0) {                noDataCount = 0;                const lists = scanResult.lists;                const targetLists = lists.filter((l:any) => l.type === CAPTURE_CONFIG.targetCategory);                                if (targetLists.length > 0) {                    targetLists.sort((a:any, b:any) => b.time - a.time);                    const bestList = targetLists[0];                    const topData = bestList.data;                    if (topData && topData.length > 0) {                        // 🔥 强制排序：按 migrateTime 倒序                        topData.sort((a: any, b: any) => {                            const tA = parseInt(a.migrateTime || '0');                            const tB = parseInt(b.migrateTime || '0');                            return tB - tA;                        });                        const firstRaw = topData[0];                        const currentSymbol = firstRaw.symbol;                        const showTime = parseInt(firstRaw.migrateTime || firstRaw.createTime);                        if (currentSymbol !== lastTopSymbol) {                            console.log('\n');                             logger.log(                                `🔥 [NEW MIGRATED] Symbol: ${currentSymbol} | Count: ${bestList.count} | MigratedTime: ${new Date(showTime).toLocaleTimeString()}`,                                logger.LOG_LEVELS.INFO                            );                                                        // 🔥 详细验证：打印前三名的时间，证明是排序过的                            console.log('--------------------------------------------------');                            console.log('✅ [Verify Sorting] Top 3 Latest Migrated Tokens:');                            topData.slice(0, 5).forEach((item: any, idx: number) => {                                const mt = parseInt(item.migrateTime || '0');                                console.log(`   #${idx+1} ${item.symbol.padEnd(8)} | Time: ${new Date(mt).toLocaleTimeString()} (${mt})`);                            });                            console.log('--------------------------------------------------');                            lastTopSymbol = currentSymbol;                        }                                                if (loopCount % 5 === 0) {                            process.stdout.write(`\r[Scan #${loopCount}] Migrated: ${topData.length} items [Top: ${currentSymbol}]      `);                        }                        const items = normalizeData(topData.slice(0, 40));                        socket.emit('data-update', {                             category: `meme_${CAPTURE_CONFIG.targetCategory}`,                             type: 'full',                             data: items                         });                    }                } else {                    if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ No migrated lists yet...`);                }            } else {                noDataCount++;                if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ 暂无数据...`);                                if (noDataCount > 30) {                    logger.log(`\n[Auto-Fix] 数据流中断，刷新页面...`, logger.LOG_LEVELS.INFO);                    noDataCount = 0;                    await page.reload({ waitUntil: 'commit' });                    await ensurePageReady(page);                }            }        } catch (err: any) {            if (!err.message.includes('Context was destroyed')) {                logger.log(`\n❌ Loop Error: ${err.message}`, logger.LOG_LEVELS.ERROR);            }        }    }, CAPTURE_CONFIG.interval);    await new Promise(() => {});} catch (error: any) {    logger.log(`❌ Setup Error: ${error.message}`, logger.LOG_LEVELS.ERROR);}  }async function main() {logger.init();const socket: Socket = io(SERVER_URL);let browser: Browser | undefined; code Codedownloadcontent_copyexpand_less    try {    browser = await chromium.launch({        executablePath: MY_CHROME_PATH,        headless: false,        args: [            '--start-maximized',            '--no-sandbox',            '--disable-blink-features=AutomationControlled',            `--proxy-server=${CAPTURE_CONFIG.proxy}`,            '--ignore-certificate-errors'        ],    });    await setupMemePage(browser, socket);} catch (e: any) {    logger.log(`❌ Main Error: ${e.stack}`, logger.LOG_LEVELS.ERROR);}  }main();]]></file>2. 更新 Types 定义在 frontend/src/types.ts 中添加这些新字段。<file path="packages/frontend/src/types.ts"><![CDATA[// packages/frontend/src/types.ts// --- K-Line Related Types ---export interface LightweightChartKline {time: number;open: number;high: number;low: number;close: number;volume: number;}export interface KlineData {primaryKey: string;address: string;chain: string;interval: string;timestamp: number;time: number;open: number;high: number;low: number;close: number;volume: number;}export interface KlineUpdatePayload {room: string;data: LightweightChartKline;}export interface KlineFetchErrorPayload {key: string;error: string;}// --- Meme / Market Data Types ---// ✨ MemeItem 接口扩展export interface MemeItem {chain: string;contractAddress: string;symbol: string;icon?: string; code Codedownloadcontent_copyexpand_less    name: string;progress: number;holders: number;devMigrateCount?: number;// 时间相关createTime: number; migrateTime?: number; // ✨ 新增：迁移时间status?: string;      updateTime?: number;  twitter?: string;telegram?: string;website?: string;twitterId?: string;   liquidity?: number;marketCap?: number;volume?: number;// ✨ 新增热度/风险字段countBuy?: number;            // 买单数countSell?: number;           // 卖单数holdersSniperPercent?: number; // 狙击手占比paidOnDexScreener?: boolean;   // 是否付费 DexScreenernarrative?: string;   source?: string;  }export type DataAction = 'snapshot' | 'update';export type LocalDataPayload<T> = {category: string;type: DataAction;data: T[];};]]></file>3. 更新前端卡片组件 (MemePage)这是重头戏。我会在 MemeCard 中添加以下视觉元素：Speed Badge: 显示从创建到发射的耗时。< 30min: 红色火焰 🔥 (极速)< 2h: 橙色 ⚡> 2h: 灰色 🐢Risk Badge: holdersSniperPercent > 50% 显示红色警告。Marketing Badge: paidOnDexScreener 为 true 时显示金色 ADS 标。Buy/Sell Ratio: 显示具体的买卖单数。<file path="packages/frontend/src/MemePage.tsx"><![CDATA[// packages/frontend/src/MemePage.tsximport { Component, createMemo, For, Show, onMount, createSignal } from 'solid-js';import { useMarketData } from './hooks/useMarketData';import type { MemeItem } from './types';const BACKEND_URL = 'http://localhost:3001';declare global {interface Window {twttr: any;}}interface MemeCardProps {item: MemeItem;}interface ColumnProps {title: string;items: MemeItem[];count: number;}// ID 提取const extractTweetId = (input: string | undefined | null): string | null => {if (!input) return null;const str = String(input).trim();if (/^\d+$/.test(str)) return str;const match = str.match(/status/(\d+)/);if (match && match[1]) return match[1];return null;};// 辅助：时间格式化const formatTime = (ts: number | undefined) => {if (!ts) return '';return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });};// ✨ 核心逻辑：计算“发射速度”const getBondingDuration = (item: MemeItem): { text: string; color: string; icon: string } | null => {if (!item.migrateTime || !item.createTime || item.migrateTime <= 0) return null; code Codedownloadcontent_copyexpand_less    const diffMs = item.migrateTime - item.createTime;const diffMins = Math.floor(diffMs / (1000 * 60));const diffHours = Math.floor(diffMins / 60);// 极速金狗：小于 30 分钟if (diffMins < 30) {    return { text: `${diffMins}m`, color: '#dc3545', icon: '🔥' }; // Red Fire}// 快速：小于 2 小时if (diffHours < 2) {    return { text: `${diffMins}m`, color: '#fd7e14', icon: '⚡' }; // Orange Bolt}// 普通if (diffHours < 24) {    return { text: `${diffHours}h`, color: '#6c757d', icon: '⏱' }; // Gray}return { text: '>1d', color: '#6c757d', icon: '🐢' };  };// --- 推特组件 (保持不变) ---const TweetEmbed: Component<{ tweetId: string; }> = (props) => {let containerRef: HTMLDivElement | undefined;const [isLoaded, setIsLoaded] = createSignal(false); code Codedownloadcontent_copyexpand_less    onMount(() => {    if (!props.tweetId) return;    if (!window.twttr) {        const script = document.createElement('script');        script.src = 'https://platform.twitter.com/widgets.js';        script.async = true;        document.head.appendChild(script);    }    const renderTweet = () => {        if (window.twttr && window.twttr.widgets && containerRef) {            containerRef.innerHTML = '';            window.twttr.widgets.createTweet(props.tweetId, containerRef, {                    theme: 'light', lang: 'zh-cn', dnt: true, conversation: 'none', cards: 'visible', width: 'auto', align: 'center'            }).then((el: any) => { if (el) setIsLoaded(true); else containerRef!.innerHTML = `<div style="color:#ccc; font-size:11px; padding:10px; text-align:center;">Tweet unavailable</div>`; });        } else { setTimeout(renderTweet, 200); }    };    renderTweet();});return (    <div class="tweet-embed-wrapper" style={{ "min-height": isLoaded() ? "auto" : "150px", "width": "100%", "background": isLoaded() ? "transparent" : "#f8f9fa", "border-radius": "8px", "display": "flex", "justify-content": "center", "align-items": "center", "margin-top": "8px", "border": isLoaded() ? "none" : "1px dashed #e1e4e8" }}>        <div ref={containerRef} style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>            <span style={{ color: '#aaa', fontSize: '11px' }}>Loading Tweet...</span>        </div>    </div>);  };// --- 卡片组件 ---const MemeCard: Component<MemeCardProps> = (props) => {const { item } = props;const cleanTwitterId = createMemo(() => extractTweetId(item.twitterId || item.twitter));const iconUrl = item.icon ? ${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)} : '';const speed = createMemo(() => getBondingDuration(item)); code Codedownloadcontent_copyexpand_less    const handleCardClick = () => {    window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');};const handleContentClick = (e: MouseEvent) => e.stopPropagation();const formattedCap = () => {    if (!item.marketCap) return '-';    if (item.marketCap >= 1000000) return (item.marketCap / 1000000).toFixed(1) + 'M';    if (item.marketCap >= 1000) return (item.marketCap / 1000).toFixed(1) + 'K';    return item.marketCap.toString();};return (    <div class="meme-card" onClick={handleCardClick}>        {/* Header */}        <div class="card-header-layout">            <Show when={item.icon} fallback={<div style={{ width: '42px', height: '42px', background: '#eee', borderRadius: '50%' }}></div>}>                <img src={iconUrl} class="card-icon" loading="lazy" onError={(e) => e.currentTarget.style.display = 'none'} />            </Show>            <div class="card-info-col">                <div class="info-row-top">                    <div style={{display:'flex', alignItems:'center', gap: '6px', maxWidth: '180px'}}>                        <span class="card-symbol" title={item.symbol}>{item.symbol}</span>                        {/* ✨ 1. 付费推广金标 */}                        <Show when={item.paidOnDexScreener}>                            <span title="Paid on DexScreener" style={{ fontSize: '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', borderRadius: '3px', border: '1px solid #ffeeba', fontWeight: 'bold' }}>                                AD                            </span>                        </Show>                    </div>                                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>                        {/* ✨ 2. 发射速度徽章 */}                        <Show when={speed()}>                            <span style={{                                 fontSize: '0.7em',                                 color: speed()!.color,                                 fontWeight: 'bold',                                 display: 'flex',                                 alignItems: 'center',                                background: `${speed()!.color}15`, // 10% opacity bg                                padding: '1px 5px',                                borderRadius: '4px'                            }}>                                {speed()!.icon} {speed()!.text}                            </span>                        </Show>                        <span class="card-time">{formatTime(item.migrateTime || item.createTime || Date.now())}</span>                    </div>                </div>                <div class="info-row-bottom">                    <span class="stat-badge badge-cap">${formattedCap()}</span>                                        {/* ✨ 3. 买卖力度 */}                    <Show when={item.countBuy !== undefined && item.countSell !== undefined}>                         <span class="stat-badge" title={`Buys: ${item.countBuy} / Sells: ${item.countSell}`}>                            <span style={{color: '#28a745'}}>{item.countBuy}</span>                            <span style={{opacity: 0.3, margin: '0 2px'}}>/</span>                            <span style={{color: '#dc3545'}}>{item.countSell}</span>                         </span>                    </Show>                    <span class="stat-badge">👥 {item.holders || '-'}</span>                    {/* ✨ 4. 狙击手警告 */}                    <Show when={(item.holdersSniperPercent || 0) > 50}>                         <span class="stat-badge" style={{ background: '#fff5f5', color: '#e03131', borderColor: '#ffc9c9' }} title={`Sniper Holdings: ${item.holdersSniperPercent}%`}>                            🎯 {Math.round(item.holdersSniperPercent!)}%                         </span>                    </Show>                    <Show when={(item.devMigrateCount || 0) > 0}>                        <span class="stat-badge badge-dev">Dev:{item.devMigrateCount}</span>                    </Show>                </div>            </div>        </div>        {/* Narrative */}        <Show when={item.narrative}>            <div class="card-narrative-box" onClick={handleContentClick}>                {item.narrative}            </div>        </Show>        {/* Tweet */}        <Show when={cleanTwitterId()}>            <div onClick={handleContentClick} style={{ width: '100%', overflow: 'hidden' }}>                <TweetEmbed tweetId={cleanTwitterId()!} />            </div>        </Show>        {/* Bonding Curve */}        <div class="card-bonding-line" title={`Bonding Curve: ${item.progress?.toFixed(1)}%`}>            <div                class="bonding-fill"                style={{                    width: `${Math.min(item.progress || 0, 100)}%`,                    "background-color": (item.progress || 0) > 90 ? '#28a745' : '#007bff'                }}            ></div>        </div>    </div>);  };// --- Column ---const MemeColumn: Component<ColumnProps> = (props) => {return (<div class="meme-column"><div class="column-header"><span>{props.title}</span><span class="column-badge" style={{ background: '#dce4ea', padding: '2px 8px', borderRadius: '10px', fontSize: '0.85em' }}>{props.count}</span></div><div class="column-content"><For each={props.items}>{(item) => <MemeCard item={item} />}</For><Show when={props.items.length === 0}><div style={{ textAlign: 'center', padding: '50px 0', color: '#999', fontSize: '0.9em', gridColumn: '1 / -1' }}>Waiting for data...</div></Show></div></div>);};// --- Page ---const MemePage: Component = () => {const {marketData: migratedMemeData,connectionStatus: migratedStatus,lastUpdate} = useMarketData<MemeItem>('meme_migrated'); code Codedownloadcontent_copyexpand_less    const migratedTokens = createMemo(() => {    // ✨ 按迁移时间倒序，最新的在上面    const sorted = migratedMemeData        .slice()        .sort((a, b) => (b.migrateTime || 0) - (a.migrateTime || 0));    if (sorted.length > 0) {        console.log(`[MemePage] 🦋 Top Token: ${sorted[0].symbol}, Migrated At: ${new Date(sorted[0].migrateTime!).toLocaleTimeString()}`);    }    return sorted;});onMount(() => console.log('[MemePage] 🚀 Migrated-Only Layout Mounted.'));return (    <div class="meme-board-container">        <header class="meme-header">            <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>                <h1>🐶 Meme Rush <span style={{ fontSize: '0.6em', color: '#999', fontWeight: 'normal' }}>KANBAN</span></h1>                <nav class="nav-links" style={{ display: 'flex', gap: '10px' }}>                    <a href="/" class="nav-btn" style={{ textDecoration: 'none', color: '#666', fontSize: '0.9rem' }}>🔥 Hotlist</a>                    <span class="nav-btn active" style={{ fontWeight: 'bold', color: '#007bff', background: '#e7f1ff', padding: '4px 10px', borderRadius: '4px', fontSize: '0.9rem' }}>已发射看板</span>                </nav>            </div>            <div style={{ display: 'flex', gap: '15px', alignItems: 'center', fontSize: '0.85em', color: '#666' }}>                <div>⏱ {lastUpdate()}</div>                <div class="status-indicator" title="Migrated Tokens Feed">                    <span style={{                        display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%',                        background: migratedStatus().includes('Connected') ? '#28a745' : '#dc3545',                        marginRight: '4px'                    }}></span>                    {migratedStatus()}                </div>            </div>        </header>        <div class="meme-board-grid">            <MemeColumn title="🦋 已发射/金狗 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />        </div>    </div>);  };export default MemePage;]]></file>
+
+
+
+
+
+爬虫端已经传递了meme 已迁移所有的字段,一步到位，传输全部字段，，你觉得前端有哪些字段可以用起来，用于更好的捕捉热点，我有一个想法，migrateTime-createTime，也就是从发币到迁移花的时间越短，这个币就越热
+firstSeen: '1764648938751'
+chainId: '56'
+contractAddress: '0xd4e0e063e1e7b90afec8668f6b8785066db94444'
+symbol: '2026'
+name: '2026'
+icon: 'https://static.four.meme/market/6bea4c8c-4d91-416c...'
+caIcon: 'null'
+iconStatus: '1'
+caIconStatus: '1'
+createTime: '1764590830000'
+height: '70119104'
+twitter: 'null'
+website: 'null'
+telegram: 'null'
+progress: '91.37'
+protocol: '2001'
+holders: '174'
+liquidity: '21791.49'
+volume: '12525.71'
+marketCap: '46675.4'
+count: '363'
+countBuy: '319'
+countSell: '44'
+holdersTop10Percent: '45'
+holdersDevPercent: 'null'
+holdersSniperPercent: '72'
+holdersInsiderPercent: 'null'
+devSellPercent: 'null'
+migrateStatus: 'false'
+migrateTime: '0'
+paidOnDexScreener: 'false'
+devMigrateCount: '1'
+decimal: '18'
+sensitiveToken: 'false'
+exclusive: 'false'
+meme-extractor.ts已经将所有字段传递到rust后端了啊，后端转发所有的字段
+以下是其他的AI的修改意见，供你参考
+————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————
+这是一个非常棒的切入点！“从发币到迁移（发射）的时间越短，热度越高” 这个逻辑在 Meme 交易中是非常核心的“金狗”指标（Time to Bond）。这代表了社区的 FOMO（错失恐惧）程度和资金涌入的速度。除了你提到的 migrateTime - createTime，根据你提供的字段，我还强烈建议利用以下字段来捕捉热点和规避风险：paidOnDexScreener (是否付费推广):用途: 这是一个极强的看涨信号。如果 Dev 或社区愿意花钱在 DexScreener 上做广告或更新信息，说明他们有营销预算且想把盘子做大，而不是简单的“一波流” Rug。展示: 显示一个 "AD" 或 "Paid" 的金标。holdersSniperPercent (狙击手持仓占比):用途: 这是一个风险指标。如果这个数值过高（比如 > 60%），说明大量筹码集中在狙击机器人手中，开盘砸盘风险极高。展示: 如果 > 50%，显示红色警告 "🎯 Sniper: 72%"。countBuy vs countSell (买卖单数):用途: 情绪指标。比单纯的 Volume 更能反映散户参与度。如果买单数远大于卖单数（例如 10:1），说明情绪高涨。展示: 显示一个买卖力度的比例条或数值（如 "319 🟢 / 44 🔴"）。devMigrateCount (Dev 发射次数):用途: Dev 行为画像。如果这个数是 1，可能是新号；如果很大，要结合过往来看。展示: 已经在现有代码中，可以强化显示。下面我将分三步来实现这些功能：Extractor: 更新数据清洗逻辑，透传这些新字段。Frontend Types: 更新类型定义。Frontend Page: 更新卡片 UI，增加“极速发射时间”、“狙击手警告”、“付费推广金标”等视觉元素。1. 更新数据提取器 (Extractor)我们需要在 normalizeData 中把这些有价值的原始字段提取出来。<file path="packages/extractor/src/meme-extractor.ts"><![CDATA[// packages/extractor/src/meme-extractor.tsimport { chromium } from 'playwright-extra';import type { Browser, Page } from 'playwright';import stealth from 'puppeteer-extra-plugin-stealth';import { handleGuidePopup, checkAndClickCookieBanner } from './pageInitializer';import * as logger from './logger';import { io, Socket } from 'socket.io-client';import type { MemeItem } from 'shared-types';chromium.use(stealth());// ==============================================================================// --- ⚙️ 配置区域 ---// ==============================================================================const SERVER_URL = 'http://localhost:3001';const MY_CHROME_PATH = 'F:\Program Files\Google\Chrome\Application\chrome.exe';const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';const CAPTURE_CONFIG = {// 🎯 目标: 'migrated'targetCategory: 'migrated' as 'new' | 'migrated',interval: 1000,proxy: 'socks5://127.0.0.1:1080',maxRetries: 5};// ==============================================================================// --- 🧠 核心扫描脚本 ---// ==============================================================================const SCANNER_LOGIC_SCRIPT = `(() => {window.MemeScannerEngine = {fiberCache: null, code Codedownloadcontent_copyexpand_less    getReactFiber(el) {
+        const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
+        return key ? el[key] : null;
+    },
+
+    isValidTokenList(list) {
+        if (!Array.isArray(list) || list.length < 2) return false;
+        const first = list[0];
+        if (!first || typeof first !== 'object') return false;
+        return !!first.symbol;
+    },
+
+    identifyType(list) {
+        const first = list[0];
+        const mStatus = String(first.migrateStatus);
+        const progress = parseFloat(first.progress || '0');
+        if (mStatus === 'true' || progress >= 99) return 'migrated';
+        return 'new';
+    },
+
+    scan() {
+        // 1. 缓存策略
+        if (this.fiberCache) {
+            try {
+                const data = this.fiberCache.memoizedProps?.value || this.fiberCache.memoizedProps;
+                let list = null;
+                if (data) {
+                    if (Array.isArray(data.allTokens)) list = data.allTokens;
+                    else if (Array.isArray(data.currentTokens)) list = data.currentTokens;
+                    else if (Array.isArray(data)) list = data;
+                    else {
+                         Object.values(data).forEach(v => {
+                            if (this.isValidTokenList(v)) list = v;
+                         });
+                    }
+                }
+
+                if (list && this.isValidTokenList(list)) {
+                    const type = this.identifyType(list);
+                    if (type === '${CAPTURE_CONFIG.targetCategory}') {
+                        // 优先取 migrateTime
+                        const time = type === 'migrated' 
+                            ? parseInt(list[0].migrateTime || 0)
+                            : parseInt(list[0].createTime || list[0].startTime || 0);
+
+                        return [{
+                            source: 'cache',
+                            type: type,
+                            count: list.length,
+                            time: time,
+                            data: list
+                        }];
+                    }
+                }
+            } catch(e) {}
+            this.fiberCache = null; 
+        }
+
+        // 2. 深度扫描 (MAX_CLIMB = 60)
+        const allElements = document.querySelectorAll('div, span, section, main, ul, li, a, img, h2, h3');
+        const visitedFibers = new WeakSet();
+        const foundLists = [];
+
+        for (const el of allElements) {
+            let fiber = this.getReactFiber(el);
+            let depth = 0;
+            const MAX_CLIMB = 60; 
+
+            while (fiber && depth < MAX_CLIMB) {
+                if (visitedFibers.has(fiber)) {
+                    fiber = fiber.return;
+                    depth++;
+                    continue;
+                }
+                visitedFibers.add(fiber);
+
+                const sources = [
+                    fiber.memoizedProps?.value,
+                    fiber.memoizedProps,
+                    fiber.memoizedState
+                ];
+
+                for (const data of sources) {
+                    if (!data || typeof data !== 'object') continue;
+
+                    Object.keys(data).forEach(key => {
+                        const val = data[key];
+                        if (this.isValidTokenList(val)) {
+                            const type = this.identifyType(val);
+                            
+                            if (type === '${CAPTURE_CONFIG.targetCategory}' && !this.fiberCache) {
+                                this.fiberCache = fiber; 
+                            }
+
+                            const time = type === 'migrated' 
+                                ? parseInt(val[0].migrateTime || 0)
+                                : parseInt(val[0].createTime || val[0].startTime || 0);
+
+                            foundLists.push({
+                                source: 'scan',
+                                type: type,
+                                count: val.length,
+                                time: time,
+                                keyName: key,
+                                data: val
+                            });
+                        }
+                    });
+                }
+                fiber = fiber.return;
+                depth++;
+            }
+        }
+        return foundLists;
+    }
+};
+  })();`;function safeFloat(val: any): number {if (val === 'null' || val === null || val === undefined) return 0;const num = parseFloat(val);return isNaN(num) ? 0 : num;}function safeInt(val: any): number {if (val === 'null' || val === null || val === undefined) return 0;const num = parseInt(val, 10);return isNaN(num) ? 0 : num;}// ✨ 更新归一化逻辑，映射所有关键的新字段function normalizeData(rawItems: any[]): MemeItem[] {if (!Array.isArray(rawItems)) return []; code Codedownloadcontent_copyexpand_less    return rawItems.map(raw => {
+    const isMigrated = String(raw.migrateStatus) === 'true';
+    
+    const migrateTime = safeInt(raw.migrateTime);
+    const createTime = safeInt(raw.createTime);
+
+    // 如果是已迁移，显示时间优先使用迁移时间，否则使用创建时间
+    const displayTime = isMigrated && migrateTime > 0 ? migrateTime : createTime;
+
+    return {
+        chain: 'BSC',
+        contractAddress: raw.contractAddress || '',
+        symbol: raw.symbol || 'UNKNOWN',
+        name: raw.name || raw.symbol,
+        icon: raw.icon === 'null' ? undefined : raw.icon,
+        
+        progress: safeFloat(raw.progress),
+        status: isMigrated ? 'dex' : 'trading',
+        
+        holders: safeInt(raw.holders),
+        marketCap: safeFloat(raw.marketCap),
+        liquidity: safeFloat(raw.liquidity),
+        volume: safeFloat(raw.volume),
+        
+        twitter: raw.twitter === 'null' ? null : raw.twitter,
+        telegram: raw.telegram === 'null' ? null : raw.telegram,
+        website: raw.website === 'null' ? null : raw.website,
+        
+        // --- ✨ 新增透传字段 ---
+        devMigrateCount: safeInt(raw.devMigrateCount),
+        countBuy: safeInt(raw.countBuy),
+        countSell: safeInt(raw.countSell),
+        holdersSniperPercent: safeFloat(raw.holdersSniperPercent),
+        paidOnDexScreener: String(raw.paidOnDexScreener) === 'true',
+        migrateTime: migrateTime, // 保存原始迁移时间用于计算速度
+        
+        // 基础时间字段
+        createTime: createTime,
+        updateTime: Date.now(), // 本地更新时间
+        source: 'meme-rush'
+    };
+});
+  }// ==============================================================================// --- 🚀 主流程 ---// ==============================================================================async function ensurePageReady(page: Page): Promise<boolean> {logger.log([Inject] 注入扫描引擎..., logger.LOG_LEVELS.INFO);await page.evaluate(SCANNER_LOGIC_SCRIPT);return true;}async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {const context = await browser.newContext({ viewport: null });const page = await context.newPage(); code Codedownloadcontent_copyexpand_less    page.on('console', msg => {
+    const text = msg.text();
+    if (text.includes('Content Security Policy') || text.includes('ERR_CONNECTION_CLOSED') || text.includes('Failed to load resource')) return;
+    if (msg.type() === 'error' && !text.includes('TypeError')) console.log(`[Browser Err] ${text}`);
+});
+
+try {
+    let attempts = 0;
+    let success = false;
+    while (attempts < CAPTURE_CONFIG.maxRetries && !success) {
+        try {
+            attempts++;
+            logger.log(`[Navi] (尝试 ${attempts}/${CAPTURE_CONFIG.maxRetries}) 前往: ${TARGET_URL}`, logger.LOG_LEVELS.INFO);
+            await page.goto(TARGET_URL, { waitUntil: 'commit', timeout: 45000 });
+            success = true;
+            logger.log(`[Navi] ✅ 页面加载成功`, logger.LOG_LEVELS.INFO);
+        } catch (err: any) {
+            logger.log(`[Navi] ⚠️ 连接失败: ${err.message.split('\n')[0]}`, logger.LOG_LEVELS.INFO);
+            if (attempts < CAPTURE_CONFIG.maxRetries) await new Promise(r => setTimeout(r, 3000));
+            else throw new Error(`达到最大重试次数`);
+        }
+    }
+
+    await ensurePageReady(page);
+    await handleGuidePopup(page);
+    await checkAndClickCookieBanner(page);
+    
+    logger.log(`[Init] 🖱️ 激活右侧区域...`, logger.LOG_LEVELS.INFO);
+    const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+    await page.mouse.move(viewport.width / 2, viewport.height / 2);
+    await page.waitForTimeout(500);
+    await page.mouse.move(viewport.width * 0.8, viewport.height / 2);
+    
+    await page.evaluate(async () => {
+        window.scrollTo(0, 500); await new Promise(r => setTimeout(r, 500));
+        window.scrollTo(0, 0);   await new Promise(r => setTimeout(r, 500));
+    });
+
+    logger.log(`[Loop] 🚀 开始监听 [${CAPTURE_CONFIG.targetCategory}] (Strict Sort: migrateTime Desc)...`, logger.LOG_LEVELS.INFO);
+
+    let lastTopSymbol = '';
+    let loopCount = 0;
+    let noDataCount = 0;
+
+    setInterval(async () => {
+        loopCount++;
+
+        try {
+            const scanResult: any = await page.evaluate(() => {
+                // @ts-ignore
+                if (!window.MemeScannerEngine) return null;
+                // @ts-ignore
+                return { lists: window.MemeScannerEngine.scan() };
+            }).catch(async (e) => {
+                if (e.message.includes('Execution context was destroyed')) {
+                    await page.evaluate(SCANNER_LOGIC_SCRIPT).catch(() => {});
+                }
+                return null;
+            });
+
+            if (scanResult && scanResult.lists && scanResult.lists.length > 0) {
+                noDataCount = 0;
+                const lists = scanResult.lists;
+                const targetLists = lists.filter((l:any) => l.type === CAPTURE_CONFIG.targetCategory);
+                
+                if (targetLists.length > 0) {
+                    targetLists.sort((a:any, b:any) => b.time - a.time);
+                    const bestList = targetLists[0];
+                    const topData = bestList.data;
+
+                    if (topData && topData.length > 0) {
+                        // 🔥 强制排序：按 migrateTime 倒序
+                        topData.sort((a: any, b: any) => {
+                            const tA = parseInt(a.migrateTime || '0');
+                            const tB = parseInt(b.migrateTime || '0');
+                            return tB - tA;
+                        });
+
+                        const firstRaw = topData[0];
+                        const currentSymbol = firstRaw.symbol;
+                        const showTime = parseInt(firstRaw.migrateTime || firstRaw.createTime);
+
+                        if (currentSymbol !== lastTopSymbol) {
+                            console.log('\n'); 
+                            logger.log(
+                                `🔥 [NEW MIGRATED] Symbol: ${currentSymbol} | Count: ${bestList.count} | MigratedTime: ${new Date(showTime).toLocaleTimeString()}`,
+                                logger.LOG_LEVELS.INFO
+                            );
+                            
+                            // 🔥 详细验证：打印前三名的时间，证明是排序过的
+                            console.log('--------------------------------------------------');
+                            console.log('✅ [Verify Sorting] Top 3 Latest Migrated Tokens:');
+                            topData.slice(0, 5).forEach((item: any, idx: number) => {
+                                const mt = parseInt(item.migrateTime || '0');
+                                console.log(`   #${idx+1} ${item.symbol.padEnd(8)} | Time: ${new Date(mt).toLocaleTimeString()} (${mt})`);
+                            });
+                            console.log('--------------------------------------------------');
+
+                            lastTopSymbol = currentSymbol;
+                        }
+                        
+                        if (loopCount % 5 === 0) {
+                            process.stdout.write(`\r[Scan #${loopCount}] Migrated: ${topData.length} items [Top: ${currentSymbol}]      `);
+                        }
+
+                        const items = normalizeData(topData.slice(0, 40));
+                        socket.emit('data-update', { 
+                            category: `meme_${CAPTURE_CONFIG.targetCategory}`, 
+                            type: 'full', 
+                            data: items 
+                        });
+                    }
+                } else {
+                    if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ No migrated lists yet...`);
+                }
+            } else {
+                noDataCount++;
+                if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ 暂无数据...`);
+                
+                if (noDataCount > 30) {
+                    logger.log(`\n[Auto-Fix] 数据流中断，刷新页面...`, logger.LOG_LEVELS.INFO);
+                    noDataCount = 0;
+                    await page.reload({ waitUntil: 'commit' });
+                    await ensurePageReady(page);
+                }
+            }
+
+        } catch (err: any) {
+            if (!err.message.includes('Context was destroyed')) {
+                logger.log(`\n❌ Loop Error: ${err.message}`, logger.LOG_LEVELS.ERROR);
+            }
+        }
+    }, CAPTURE_CONFIG.interval);
+
+    await new Promise(() => {});
+
+} catch (error: any) {
+    logger.log(`❌ Setup Error: ${error.message}`, logger.LOG_LEVELS.ERROR);
+}
+  }async function main() {logger.init();const socket: Socket = io(SERVER_URL);let browser: Browser | undefined; code Codedownloadcontent_copyexpand_less    try {
+    browser = await chromium.launch({
+        executablePath: MY_CHROME_PATH,
+        headless: false,
+        args: [
+            '--start-maximized',
+            '--no-sandbox',
+            '--disable-blink-features=AutomationControlled',
+            `--proxy-server=${CAPTURE_CONFIG.proxy}`,
+            '--ignore-certificate-errors'
+        ],
+    });
+
+    await setupMemePage(browser, socket);
+
+} catch (e: any) {
+    logger.log(`❌ Main Error: ${e.stack}`, logger.LOG_LEVELS.ERROR);
+}
+  }main();]]></file>2. 更新 Types 定义在 frontend/src/types.ts 中添加这些新字段。<file path="packages/frontend/src/types.ts"><![CDATA[// packages/frontend/src/types.ts// --- K-Line Related Types ---export interface LightweightChartKline {time: number;open: number;high: number;low: number;close: number;volume: number;}export interface KlineData {primaryKey: string;address: string;chain: string;interval: string;timestamp: number;time: number;open: number;high: number;low: number;close: number;volume: number;}export interface KlineUpdatePayload {room: string;data: LightweightChartKline;}export interface KlineFetchErrorPayload {key: string;error: string;}// --- Meme / Market Data Types ---// ✨ MemeItem 接口扩展export interface MemeItem {chain: string;contractAddress: string;symbol: string;icon?: string; code Codedownloadcontent_copyexpand_less    name: string;
+progress: number;
+holders: number;
+devMigrateCount?: number;
+
+// 时间相关
+createTime: number; 
+migrateTime?: number; // ✨ 新增：迁移时间
+
+status?: string;      
+updateTime?: number;  
+
+twitter?: string;
+telegram?: string;
+website?: string;
+twitterId?: string;   
+
+liquidity?: number;
+marketCap?: number;
+volume?: number;
+
+// ✨ 新增热度/风险字段
+countBuy?: number;            // 买单数
+countSell?: number;           // 卖单数
+holdersSniperPercent?: number; // 狙击手占比
+paidOnDexScreener?: boolean;   // 是否付费 DexScreener
+
+narrative?: string;   
+source?: string;
+  }export type DataAction = 'snapshot' | 'update';export type LocalDataPayload<T> = {category: string;type: DataAction;data: T[];};]]></file>3. 更新前端卡片组件 (MemePage)这是重头戏。我会在 MemeCard 中添加以下视觉元素：Speed Badge: 显示从创建到发射的耗时。< 30min: 红色火焰 🔥 (极速)< 2h: 橙色 ⚡> 2h: 灰色 🐢Risk Badge: holdersSniperPercent > 50% 显示红色警告。Marketing Badge: paidOnDexScreener 为 true 时显示金色 ADS 标。Buy/Sell Ratio: 显示具体的买卖单数。<file path="packages/frontend/src/MemePage.tsx"><![CDATA[// packages/frontend/src/MemePage.tsximport { Component, createMemo, For, Show, onMount, createSignal } from 'solid-js';import { useMarketData } from './hooks/useMarketData';import type { MemeItem } from './types';const BACKEND_URL = 'http://localhost:3001';declare global {interface Window {twttr: any;}}interface MemeCardProps {item: MemeItem;}interface ColumnProps {title: string;items: MemeItem[];count: number;}// ID 提取const extractTweetId = (input: string | undefined | null): string | null => {if (!input) return null;const str = String(input).trim();if (/^\d+$/.test(str)) return str;const match = str.match(/status/(\d+)/);if (match && match[1]) return match[1];return null;};// 辅助：时间格式化const formatTime = (ts: number | undefined) => {if (!ts) return '';return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });};// ✨ 核心逻辑：计算“发射速度”const getBondingDuration = (item: MemeItem): { text: string; color: string; icon: string } | null => {if (!item.migrateTime || !item.createTime || item.migrateTime <= 0) return null; code Codedownloadcontent_copyexpand_less    const diffMs = item.migrateTime - item.createTime;
+const diffMins = Math.floor(diffMs / (1000 * 60));
+const diffHours = Math.floor(diffMins / 60);
+
+// 极速金狗：小于 30 分钟
+if (diffMins < 30) {
+    return { text: `${diffMins}m`, color: '#dc3545', icon: '🔥' }; // Red Fire
+}
+// 快速：小于 2 小时
+if (diffHours < 2) {
+    return { text: `${diffMins}m`, color: '#fd7e14', icon: '⚡' }; // Orange Bolt
+}
+// 普通
+if (diffHours < 24) {
+    return { text: `${diffHours}h`, color: '#6c757d', icon: '⏱' }; // Gray
+}
+return { text: '>1d', color: '#6c757d', icon: '🐢' };
+  };// --- 推特组件 (保持不变) ---const TweetEmbed: Component<{ tweetId: string; }> = (props) => {let containerRef: HTMLDivElement | undefined;const [isLoaded, setIsLoaded] = createSignal(false); code Codedownloadcontent_copyexpand_less    onMount(() => {
+    if (!props.tweetId) return;
+    if (!window.twttr) {
+        const script = document.createElement('script');
+        script.src = 'https://platform.twitter.com/widgets.js';
+        script.async = true;
+        document.head.appendChild(script);
+    }
+    const renderTweet = () => {
+        if (window.twttr && window.twttr.widgets && containerRef) {
+            containerRef.innerHTML = '';
+            window.twttr.widgets.createTweet(props.tweetId, containerRef, {
+                    theme: 'light', lang: 'zh-cn', dnt: true, conversation: 'none', cards: 'visible', width: 'auto', align: 'center'
+            }).then((el: any) => { if (el) setIsLoaded(true); else containerRef!.innerHTML = `<div style="color:#ccc; font-size:11px; padding:10px; text-align:center;">Tweet unavailable</div>`; });
+        } else { setTimeout(renderTweet, 200); }
+    };
+    renderTweet();
+});
+
+return (
+    <div class="tweet-embed-wrapper" style={{ "min-height": isLoaded() ? "auto" : "150px", "width": "100%", "background": isLoaded() ? "transparent" : "#f8f9fa", "border-radius": "8px", "display": "flex", "justify-content": "center", "align-items": "center", "margin-top": "8px", "border": isLoaded() ? "none" : "1px dashed #e1e4e8" }}>
+        <div ref={containerRef} style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
+            <span style={{ color: '#aaa', fontSize: '11px' }}>Loading Tweet...</span>
+        </div>
+    </div>
+);
+  };// --- 卡片组件 ---const MemeCard: Component<MemeCardProps> = (props) => {const { item } = props;const cleanTwitterId = createMemo(() => extractTweetId(item.twitterId || item.twitter));const iconUrl = item.icon ? ${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)} : '';const speed = createMemo(() => getBondingDuration(item)); code Codedownloadcontent_copyexpand_less    const handleCardClick = () => {
+    window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
+};
+
+const handleContentClick = (e: MouseEvent) => e.stopPropagation();
+
+const formattedCap = () => {
+    if (!item.marketCap) return '-';
+    if (item.marketCap >= 1000000) return (item.marketCap / 1000000).toFixed(1) + 'M';
+    if (item.marketCap >= 1000) return (item.marketCap / 1000).toFixed(1) + 'K';
+    return item.marketCap.toString();
+};
+
+return (
+    <div class="meme-card" onClick={handleCardClick}>
+        {/* Header */}
+        <div class="card-header-layout">
+            <Show when={item.icon} fallback={<div style={{ width: '42px', height: '42px', background: '#eee', borderRadius: '50%' }}></div>}>
+                <img src={iconUrl} class="card-icon" loading="lazy" onError={(e) => e.currentTarget.style.display = 'none'} />
+            </Show>
+
+            <div class="card-info-col">
+                <div class="info-row-top">
+                    <div style={{display:'flex', alignItems:'center', gap: '6px', maxWidth: '180px'}}>
+                        <span class="card-symbol" title={item.symbol}>{item.symbol}</span>
+                        {/* ✨ 1. 付费推广金标 */}
+                        <Show when={item.paidOnDexScreener}>
+                            <span title="Paid on DexScreener" style={{ fontSize: '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', borderRadius: '3px', border: '1px solid #ffeeba', fontWeight: 'bold' }}>
+                                AD
+                            </span>
+                        </Show>
+                    </div>
+                    
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        {/* ✨ 2. 发射速度徽章 */}
+                        <Show when={speed()}>
+                            <span style={{ 
+                                fontSize: '0.7em', 
+                                color: speed()!.color, 
+                                fontWeight: 'bold', 
+                                display: 'flex', 
+                                alignItems: 'center',
+                                background: `${speed()!.color}15`, // 10% opacity bg
+                                padding: '1px 5px',
+                                borderRadius: '4px'
+                            }}>
+                                {speed()!.icon} {speed()!.text}
+                            </span>
+                        </Show>
+                        <span class="card-time">{formatTime(item.migrateTime || item.createTime || Date.now())}</span>
+                    </div>
+                </div>
+
+                <div class="info-row-bottom">
+                    <span class="stat-badge badge-cap">${formattedCap()}</span>
+                    
+                    {/* ✨ 3. 买卖力度 */}
+                    <Show when={item.countBuy !== undefined && item.countSell !== undefined}>
+                         <span class="stat-badge" title={`Buys: ${item.countBuy} / Sells: ${item.countSell}`}>
+                            <span style={{color: '#28a745'}}>{item.countBuy}</span>
+                            <span style={{opacity: 0.3, margin: '0 2px'}}>/</span>
+                            <span style={{color: '#dc3545'}}>{item.countSell}</span>
+                         </span>
+                    </Show>
+
+                    <span class="stat-badge">👥 {item.holders || '-'}</span>
+
+                    {/* ✨ 4. 狙击手警告 */}
+                    <Show when={(item.holdersSniperPercent || 0) > 50}>
+                         <span class="stat-badge" style={{ background: '#fff5f5', color: '#e03131', borderColor: '#ffc9c9' }} title={`Sniper Holdings: ${item.holdersSniperPercent}%`}>
+                            🎯 {Math.round(item.holdersSniperPercent!)}%
+                         </span>
+                    </Show>
+
+                    <Show when={(item.devMigrateCount || 0) > 0}>
+                        <span class="stat-badge badge-dev">Dev:{item.devMigrateCount}</span>
+                    </Show>
+                </div>
+            </div>
+        </div>
+
+        {/* Narrative */}
+        <Show when={item.narrative}>
+            <div class="card-narrative-box" onClick={handleContentClick}>
+                {item.narrative}
+            </div>
+        </Show>
+
+        {/* Tweet */}
+        <Show when={cleanTwitterId()}>
+            <div onClick={handleContentClick} style={{ width: '100%', overflow: 'hidden' }}>
+                <TweetEmbed tweetId={cleanTwitterId()!} />
+            </div>
+        </Show>
+
+        {/* Bonding Curve */}
+        <div class="card-bonding-line" title={`Bonding Curve: ${item.progress?.toFixed(1)}%`}>
+            <div
+                class="bonding-fill"
+                style={{
+                    width: `${Math.min(item.progress || 0, 100)}%`,
+                    "background-color": (item.progress || 0) > 90 ? '#28a745' : '#007bff'
+                }}
+            ></div>
+        </div>
+    </div>
+);
+  };// --- Column ---const MemeColumn: Component<ColumnProps> = (props) => {return (<div class="meme-column"><div class="column-header"><span>{props.title}</span><span class="column-badge" style={{ background: '#dce4ea', padding: '2px 8px', borderRadius: '10px', fontSize: '0.85em' }}>{props.count}</span></div><div class="column-content"><For each={props.items}>{(item) => <MemeCard item={item} />}</For><Show when={props.items.length === 0}><div style={{ textAlign: 'center', padding: '50px 0', color: '#999', fontSize: '0.9em', gridColumn: '1 / -1' }}>Waiting for data...</div></Show></div></div>);};// --- Page ---const MemePage: Component = () => {const {marketData: migratedMemeData,connectionStatus: migratedStatus,lastUpdate} = useMarketData<MemeItem>('meme_migrated'); code Codedownloadcontent_copyexpand_less    const migratedTokens = createMemo(() => {
+    // ✨ 按迁移时间倒序，最新的在上面
+    const sorted = migratedMemeData
+        .slice()
+        .sort((a, b) => (b.migrateTime || 0) - (a.migrateTime || 0));
+
+    if (sorted.length > 0) {
+        console.log(`[MemePage] 🦋 Top Token: ${sorted[0].symbol}, Migrated At: ${new Date(sorted[0].migrateTime!).toLocaleTimeString()}`);
+    }
+    return sorted;
+});
+
+onMount(() => console.log('[MemePage] 🚀 Migrated-Only Layout Mounted.'));
+
+return (
+    <div class="meme-board-container">
+        <header class="meme-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                <h1>🐶 Meme Rush <span style={{ fontSize: '0.6em', color: '#999', fontWeight: 'normal' }}>KANBAN</span></h1>
+                <nav class="nav-links" style={{ display: 'flex', gap: '10px' }}>
+                    <a href="/" class="nav-btn" style={{ textDecoration: 'none', color: '#666', fontSize: '0.9rem' }}>🔥 Hotlist</a>
+                    <span class="nav-btn active" style={{ fontWeight: 'bold', color: '#007bff', background: '#e7f1ff', padding: '4px 10px', borderRadius: '4px', fontSize: '0.9rem' }}>已发射看板</span>
+                </nav>
+            </div>
+            <div style={{ display: 'flex', gap: '15px', alignItems: 'center', fontSize: '0.85em', color: '#666' }}>
+                <div>⏱ {lastUpdate()}</div>
+                <div class="status-indicator" title="Migrated Tokens Feed">
+                    <span style={{
+                        display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%',
+                        background: migratedStatus().includes('Connected') ? '#28a745' : '#dc3545',
+                        marginRight: '4px'
+                    }}></span>
+                    {migratedStatus()}
+                </div>
+            </div>
+        </header>
+
+        <div class="meme-board-grid">
+            <MemeColumn title="🦋 已发射/金狗 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />
+        </div>
+    </div>
+);
+  };export default MemePage;]]></file>

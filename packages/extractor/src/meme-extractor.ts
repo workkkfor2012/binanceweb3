@@ -19,18 +19,18 @@ const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
 const CAPTURE_CONFIG = {
     // 🎯 目标: 'migrated'
     targetCategory: 'migrated' as 'new' | 'migrated',
-    interval: 1000, 
+    interval: 1000,
     proxy: 'socks5://127.0.0.1:1080',
     maxRetries: 5
 };
 
 // ==============================================================================
-// --- 🧠 核心扫描脚本 ---
+// --- 🧠 核心扫描脚本 (Browser Context) ---
 // ==============================================================================
 const SCANNER_LOGIC_SCRIPT = `
 (() => {
     window.MemeScannerEngine = {
-        fiberCache: null, 
+        fiberCache: null,
 
         getReactFiber(el) {
             const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
@@ -48,6 +48,7 @@ const SCANNER_LOGIC_SCRIPT = `
             const first = list[0];
             const mStatus = String(first.migrateStatus);
             const progress = parseFloat(first.progress || '0');
+            // 进度大于99或状态为true视为已迁移
             if (mStatus === 'true' || progress >= 99) return 'migrated';
             return 'new';
         },
@@ -72,7 +73,6 @@ const SCANNER_LOGIC_SCRIPT = `
                     if (list && this.isValidTokenList(list)) {
                         const type = this.identifyType(list);
                         if (type === '${CAPTURE_CONFIG.targetCategory}') {
-                            // 优先取 migrateTime
                             const time = type === 'migrated' 
                                 ? parseInt(list[0].migrateTime || 0)
                                 : parseInt(list[0].createTime || list[0].startTime || 0);
@@ -90,7 +90,7 @@ const SCANNER_LOGIC_SCRIPT = `
                 this.fiberCache = null; 
             }
 
-            // 2. 深度扫描 (MAX_CLIMB = 60)
+            // 2. 深度扫描
             const allElements = document.querySelectorAll('div, span, section, main, ul, li, a, img, h2, h3');
             const visitedFibers = new WeakSet();
             const foundLists = [];
@@ -151,53 +151,97 @@ const SCANNER_LOGIC_SCRIPT = `
 })();
 `;
 
+// ==============================================================================
+// --- 🛠️ 增强的数据清洗工具 (Robust Utilities) ---
+// ==============================================================================
+
 function safeFloat(val: any): number {
     if (val === 'null' || val === null || val === undefined) return 0;
     const num = parseFloat(val);
     return isNaN(num) ? 0 : num;
 }
+
 function safeInt(val: any): number {
     if (val === 'null' || val === null || val === undefined) return 0;
     const num = parseInt(val, 10);
     return isNaN(num) ? 0 : num;
 }
+
+function safeBool(val: any): boolean {
+    if (val === 'null' || val === null || val === undefined) return false;
+    if (typeof val === 'boolean') return val;
+    return String(val).toLowerCase() === 'true';
+}
+
+/**
+ * 核心清洗函数：将 Raw Data 映射为类型安全的 MemeItem
+ * 包含所有风险指标、交易计数、时间戳
+ */
 function normalizeData(rawItems: any[]): MemeItem[] {
     if (!Array.isArray(rawItems)) return [];
 
     return rawItems.map(raw => {
         const isMigrated = String(raw.migrateStatus) === 'true';
         
-        // 🔥 【脏操作】核心逻辑：
-        // 如果是已迁移品种，强制把 migrateTime 赋值给 createTime
-        // 这样前端排序时，就会自动把刚迁移的排在最前面，而不需要修改任何前端代码
-        const displayTime = isMigrated && raw.migrateTime 
-            ? safeInt(raw.migrateTime) 
-            : safeInt(raw.createTime);
+        // 原始时间戳
+        const migrateTime = safeInt(raw.migrateTime);
+        const createTime = safeInt(raw.createTime);
+        
+        // 排序用时间：如果已迁移，优先展示迁移时间(发射时间)
+        const displayTime = (isMigrated && migrateTime > 0) ? migrateTime : createTime;
+
+        // 计算买卖比
+        const countBuy = safeInt(raw.countBuy);
+        const countSell = safeInt(raw.countSell);
+        const buySellRatio = countSell > 0 
+            ? parseFloat((countBuy / countSell).toFixed(2)) 
+            : countBuy; // 防止除以0
 
         return {
-            chain: 'BSC',
+            // --- 基础 ---
+            chain: 'BSC', // 原始数据 chainId: "56"
             contractAddress: raw.contractAddress || '',
             symbol: raw.symbol || 'UNKNOWN',
             name: raw.name || raw.symbol,
             icon: raw.icon === 'null' ? undefined : raw.icon,
+            decimal: safeInt(raw.decimal),
             
-            progress: safeFloat(raw.progress),
+            // --- 状态与时间 ---
             status: isMigrated ? 'dex' : 'trading',
+            progress: safeFloat(raw.progress),
+            createTime: createTime,
+            migrateTime: migrateTime,
+            displayTime: displayTime,
+            updateTime: Date.now(),
             
-            holders: safeInt(raw.holders),
-            marketCap: safeFloat(raw.marketCap),
+            // --- 资金与交易 ---
             liquidity: safeFloat(raw.liquidity),
+            marketCap: safeFloat(raw.marketCap),
             volume: safeFloat(raw.volume),
-            
+            holders: safeInt(raw.holders),
+            count: safeInt(raw.count),
+            countBuy: countBuy,
+            countSell: countSell,
+            buySellRatio: buySellRatio,
+
+            // --- 🚩 风险/筹码分布 (重要!) ---
+            holdersSniperPercent: safeFloat(raw.holdersSniperPercent),
+            holdersTop10Percent: safeFloat(raw.holdersTop10Percent),
+            holdersDevPercent: safeFloat(raw.holdersDevPercent),
+            holdersInsiderPercent: safeFloat(raw.holdersInsiderPercent),
+            devSellPercent: safeFloat(raw.devSellPercent),
+            sensitiveToken: safeBool(raw.sensitiveToken),
+            exclusive: safeBool(raw.exclusive),
+
+            // --- 开发者历史 ---
+            devMigrateCount: safeInt(raw.devMigrateCount),
+
+            // --- 推广与社交 ---
+            paidOnDexScreener: safeBool(raw.paidOnDexScreener),
             twitter: raw.twitter === 'null' ? null : raw.twitter,
             telegram: raw.telegram === 'null' ? null : raw.telegram,
             website: raw.website === 'null' ? null : raw.website,
             
-            devMigrateCount: safeInt(raw.devMigrateCount),
-            
-            // 🔥 这里把处理好的时间塞进去
-            createTime: displayTime || Date.now(),
-            updateTime: Date.now(),
             source: 'meme-rush'
         };
     });
@@ -219,8 +263,8 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
 
     page.on('console', msg => {
         const text = msg.text();
-        if (text.includes('Content Security Policy') || text.includes('ERR_CONNECTION_CLOSED') || text.includes('Failed to load resource')) return;
-        if (msg.type() === 'error' && !text.includes('TypeError')) console.log(`[Browser Err] ${text}`);
+        if (text.includes('Content Security Policy') || text.includes('ERR_CONNECTION_CLOSED')) return;
+        if (msg.type() === 'error' && !text.includes('TypeError')) { /* quiet */ }
     });
 
     try {
@@ -244,18 +288,15 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
         await handleGuidePopup(page);
         await checkAndClickCookieBanner(page);
         
-        logger.log(`[Init] 🖱️ 激活右侧区域...`, logger.LOG_LEVELS.INFO);
+        // 模拟鼠标激活页面
         const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
         await page.mouse.move(viewport.width / 2, viewport.height / 2);
-        await page.waitForTimeout(500);
-        await page.mouse.move(viewport.width * 0.8, viewport.height / 2);
-        
         await page.evaluate(async () => {
             window.scrollTo(0, 500); await new Promise(r => setTimeout(r, 500));
             window.scrollTo(0, 0);   await new Promise(r => setTimeout(r, 500));
         });
 
-        logger.log(`[Loop] 🚀 开始监听 [${CAPTURE_CONFIG.targetCategory}] (Strict Sort: migrateTime Desc)...`, logger.LOG_LEVELS.INFO);
+        logger.log(`[Loop] 🚀 开始监听 [${CAPTURE_CONFIG.targetCategory}] (Full Data Mode)...`, logger.LOG_LEVELS.INFO);
 
         let lastTopSymbol = '';
         let loopCount = 0;
@@ -285,44 +326,43 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
                     if (targetLists.length > 0) {
                         targetLists.sort((a:any, b:any) => b.time - a.time);
                         const bestList = targetLists[0];
-                        const topData = bestList.data;
+                        const topData = bestList.data; // Raw Data Objects
 
                         if (topData && topData.length > 0) {
-                            // 🔥 强制排序：按 migrateTime 倒序
+                            // 1. 强制按时间倒序 (MigrateTime > CreateTime)
                             topData.sort((a: any, b: any) => {
-                                const tA = parseInt(a.migrateTime || '0');
-                                const tB = parseInt(b.migrateTime || '0');
+                                const tA = parseInt(a.migrateTime || a.createTime || '0');
+                                const tB = parseInt(b.migrateTime || b.createTime || '0');
                                 return tB - tA;
                             });
 
                             const firstRaw = topData[0];
                             const currentSymbol = firstRaw.symbol;
-                            const showTime = parseInt(firstRaw.migrateTime || firstRaw.createTime);
+                            const showTimeTs = parseInt(firstRaw.migrateTime || firstRaw.createTime);
 
+                            // 2. 发现新头部币种时，打印丰富的调试信息
                             if (currentSymbol !== lastTopSymbol) {
-                                console.log('\n'); 
-                                logger.log(
-                                    `🔥 [NEW MIGRATED] Symbol: ${currentSymbol} | Count: ${bestList.count} | MigratedTime: ${new Date(showTime).toLocaleTimeString()}`,
-                                    logger.LOG_LEVELS.INFO
-                                );
+                                logger.log(`\n🔥 [NEW TOP] ${currentSymbol} found! Count: ${bestList.count}`, logger.LOG_LEVELS.INFO);
                                 
-                                // 🔥 详细验证：打印前三名的时间，证明是排序过的
-                                console.log('--------------------------------------------------');
-                                console.log('✅ [Verify Sorting] Top 3 Latest Migrated Tokens:');
-                                topData.slice(0, 5).forEach((item: any, idx: number) => {
-                                    const mt = parseInt(item.migrateTime || '0');
-                                    console.log(`   #${idx+1} ${item.symbol.padEnd(8)} | Time: ${new Date(mt).toLocaleTimeString()} (${mt})`);
-                                });
-                                console.log('--------------------------------------------------');
+                                console.log('   --------------------------------------------------------');
+                                console.log(`   ⏰ Time:     ${new Date(showTimeTs).toLocaleTimeString()} (Ts: ${showTimeTs})`);
+                                console.log(`   📊 Buy/Sell: ${firstRaw.countBuy} / ${firstRaw.countSell}`);
+                                console.log(`   🔫 Sniper%:  ${firstRaw.holdersSniperPercent}%`);
+                                console.log(`   📢 Ads:      ${firstRaw.paidOnDexScreener}`);
+                                console.log(`   🏆 DevExp:   ${firstRaw.devMigrateCount} launches`);
+                                console.log('   --------------------------------------------------------');
 
                                 lastTopSymbol = currentSymbol;
                             }
                             
                             if (loopCount % 5 === 0) {
-                                process.stdout.write(`\r[Scan #${loopCount}] Migrated: ${topData.length} items [Top: ${currentSymbol}]      `);
+                                process.stdout.write(`\r[Scan #${loopCount}] Fetched ${topData.length} items. Top: ${currentSymbol.padEnd(6)} `);
                             }
 
-                            const items = normalizeData(topData.slice(0, 40));
+                            // 3. 核心步骤：清洗并全量推送
+                            // 即使资源充裕，通常只要前50-100个最热/最新的即可
+                            const items = normalizeData(topData.slice(0, 60));
+                            
                             socket.emit('data-update', { 
                                 category: `meme_${CAPTURE_CONFIG.targetCategory}`, 
                                 type: 'full', 
@@ -330,7 +370,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
                             });
                         }
                     } else {
-                        if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ No migrated lists yet...`);
+                        if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ No target lists...`);
                     }
                 } else {
                     noDataCount++;

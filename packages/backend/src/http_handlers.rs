@@ -40,7 +40,7 @@ pub async fn image_proxy_handler(
     let mut response_content_type = HeaderValue::from_static("application/octet-stream");
     let mut last_error_status = reqwest::StatusCode::INTERNAL_SERVER_ERROR;
 
-    for attempt in 1..=2 {
+    for attempt in 1..=10 {
         // 从连接池获取 Client 和 索引
         let (client_idx, client) = state.image_proxy_pool.get_client().await;
         
