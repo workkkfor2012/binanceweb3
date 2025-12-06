@@ -3,7 +3,6 @@ import { Component, createMemo, For, Show, onMount, createSignal } from 'solid-j
 import { useMarketData } from './hooks/useMarketData';
 import type { MemeItem } from './types';
 
-
 const BACKEND_URL = 'http://localhost:3001';
 
 declare global {
@@ -22,6 +21,8 @@ interface ColumnProps {
     count: number;
 }
 
+// --- 辅助函数 ---
+
 // ID 提取 (支持 x.com 和 twitter.com)
 const extractTweetId = (input: string | undefined | null): string | null => {
     if (!input) return null;
@@ -32,9 +33,33 @@ const extractTweetId = (input: string | undefined | null): string | null => {
     return null;
 };
 
+// 时间格式化
 const formatTime = (ts: number | undefined) => {
     if (!ts) return '';
     return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+};
+
+// 数值格式化 (1.2M, 500k)
+const formatNumber = (num: number | undefined | null) => {
+    if (num === undefined || num === null) return '-';
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+    return num.toFixed(0); // 小于1000直接显示整数
+};
+
+// 计算“发射耗时” (Bonding Speed)
+const getBondingDuration = (item: MemeItem): { text: string; color: string; icon: string } | null => {
+    if (!item.migrateTime || !item.createTime || item.migrateTime <= 0 || item.createTime <= 0) return null;
+    if (item.migrateTime < item.createTime) return null;
+
+    const diffMs = item.migrateTime - item.createTime;
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMins / 60);
+
+    if (diffMins < 30) return { text: `${diffMins}m`, color: '#dc3545', icon: '🔥' }; // 极速
+    if (diffHours < 2) return { text: `${diffMins}m`, color: '#fd7e14', icon: '⚡' }; // 快速
+    if (diffHours < 24) return { text: `${diffHours}h`, color: '#6c757d', icon: '⏱' }; // 普通
+    return { text: '>1d', color: '#6c757d', icon: '🐢' }; // 龟速
 };
 
 // --- 推特组件 ---
@@ -44,8 +69,6 @@ const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
 
     onMount(() => {
         if (!props.tweetId) return;
-        console.log(`[TweetEmbed] Mounting for ID: ${props.tweetId}`);
-
         if (!window.twttr) {
             const script = document.createElement('script');
             script.src = 'https://platform.twitter.com/widgets.js';
@@ -65,7 +88,6 @@ const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
                         dnt: true,
                         conversation: 'none',
                         cards: 'visible',
-                        // ✨ 修改: 宽度设为 auto 以适应 Grid 布局的卡片宽度
                         width: 'auto',
                         align: 'center'
                     }
@@ -100,7 +122,6 @@ const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
             </div>
         </div>
     );
-
 };
 
 // --- 卡片组件 ---
@@ -108,6 +129,7 @@ const MemeCard: Component<MemeCardProps> = (props) => {
     const { item } = props;
     const cleanTwitterId = createMemo(() => extractTweetId(item.twitterId || item.twitter));
     const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
+    const bondingSpeed = createMemo(() => getBondingDuration(item));
 
     const handleCardClick = () => {
         window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
@@ -115,44 +137,83 @@ const MemeCard: Component<MemeCardProps> = (props) => {
 
     const handleContentClick = (e: MouseEvent) => e.stopPropagation();
 
-    const formattedCap = () => {
-        if (!item.marketCap) return '-';
-        if (item.marketCap >= 1000000) return (item.marketCap / 1000000).toFixed(1) + 'M';
-        if (item.marketCap >= 1000) return (item.marketCap / 1000).toFixed(1) + 'K';
-        return item.marketCap.toString();
-    };
-
-    const getStatusColor = (status: string | undefined) => {
-        if (!status) return '#6c757d';
-        if (status === 'dex') return '#28a745';
-        if (status === 'bonding_curve') return '#007bff';
-        return '#6c757d';
-    };
-
     return (
         <div class="meme-card" onClick={handleCardClick}>
-            {/* Header */}
+            {/* Header Area */}
             <div class="card-header-layout">
                 <Show when={item.icon} fallback={<div style={{ width: '42px', height: '42px', background: '#eee', borderRadius: '50%' }}></div>}>
                     <img src={iconUrl} class="card-icon" loading="lazy" onError={(e) => e.currentTarget.style.display = 'none'} />
                 </Show>
 
                 <div class="card-info-col">
+                    {/* Row 1: Symbol, Flags, Time */}
                     <div class="info-row-top">
-                        <span class="card-symbol" title={item.symbol}>{item.symbol}</span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                            <Show when={item.status}>
-                                <span style={{ fontSize: '0.6em', background: getStatusColor(item.status), color: '#fff', padding: '1px 4px', borderRadius: '3px' }}>
-                                    {item.status?.toUpperCase()}
+                        <div style={{display:'flex', alignItems:'center', gap: '6px', maxWidth: '180px'}}>
+                            <span class="card-symbol" title={item.symbol}>{item.symbol}</span>
+                            
+                            {/* Paid AD Tag */}
+                            <Show when={item.paidOnDexScreener}>
+                                <span title="Paid AD on DexScreener" style={{ fontSize: '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', borderRadius: '3px', border: '1px solid #ffeeba', fontWeight: 'bold' }}>
+                                    AD
                                 </span>
                             </Show>
-                            <span class="card-time">{formatTime(item.createTime || Date.now())}</span>
+                        </div>
+                        
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                            {/* Bonding Speed Badge */}
+                            <Show when={bondingSpeed()}>
+                                <span style={{ 
+                                    fontSize: '0.7em', 
+                                    color: bondingSpeed()!.color, 
+                                    fontWeight: 'bold', 
+                                    display: 'flex', 
+                                    alignItems: 'center',
+                                    background: `${bondingSpeed()!.color}15`,
+                                    padding: '1px 5px',
+                                    borderRadius: '4px'
+                                }} title="从发币到迁移的耗时">
+                                    {bondingSpeed()!.icon} {bondingSpeed()!.text}
+                                </span>
+                            </Show>
+                            <span class="card-time">{formatTime(item.migrateTime || item.createTime || Date.now())}</span>
                         </div>
                     </div>
 
-                    <div class="info-row-bottom">
-                        <span class="stat-badge badge-cap">${formattedCap()}</span>
+                    {/* Row 2: Stats (MC, Liq, Buys/Sells, Holders) */}
+                    <div class="info-row-bottom" style={{ gap: '4px', flexWrap: 'wrap' }}>
+                        
+                        {/* 1. 市值 (MC) - 蓝色系 */}
+                        <span class="stat-badge badge-cap" title={`Market Cap: $${item.marketCap}`}>
+                            MC ${formatNumber(item.marketCap)}
+                        </span>
+
+                        {/* 2. 流动性 (Liq) - 青色系 */}
+                        <Show when={item.liquidity}>
+                            <span class="stat-badge" style={{ background: '#e3fafc', color: '#0c8599', borderColor: '#99e9f2' }} title={`Liquidity: $${item.liquidity}`}>
+                                💧 ${formatNumber(item.liquidity)}
+                            </span>
+                        </Show>
+                        
+                        {/* 3. 买卖单数 */}
+                        <Show when={item.countBuy !== undefined && item.countSell !== undefined}>
+                             <span class="stat-badge" title={`Buys: ${item.countBuy} / Sells: ${item.countSell}`}>
+                                <span style={{color: '#28a745', fontWeight: 'bold'}}>{item.countBuy}</span>
+                                <span style={{opacity: 0.3, margin: '0 2px'}}>/</span>
+                                <span style={{color: '#dc3545', fontWeight: 'bold'}}>{item.countSell}</span>
+                             </span>
+                        </Show>
+
+                        {/* 4. 持有人数 */}
                         <span class="stat-badge">👥 {item.holders || '-'}</span>
+
+                        {/* 5. 狙击手警告 */}
+                        <Show when={(item.holdersSniperPercent || 0) > 50}>
+                             <span class="stat-badge" style={{ background: '#fff5f5', color: '#e03131', borderColor: '#ffc9c9' }} title={`Sniper Holdings: ${item.holdersSniperPercent}%`}>
+                                🎯 {Math.round(item.holdersSniperPercent!)}%
+                             </span>
+                        </Show>
+
+                        {/* 6. 开发者历史 */}
                         <Show when={(item.devMigrateCount || 0) > 0}>
                             <span class="stat-badge badge-dev">Dev:{item.devMigrateCount}</span>
                         </Show>
@@ -160,21 +221,21 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                 </div>
             </div>
 
-            {/* Narrative */}
+            {/* Narrative Text */}
             <Show when={item.narrative}>
                 <div class="card-narrative-box" onClick={handleContentClick}>
                     {item.narrative}
                 </div>
             </Show>
 
-            {/* Tweet */}
+            {/* Tweet Embed */}
             <Show when={cleanTwitterId()}>
                 <div onClick={handleContentClick} style={{ width: '100%', overflow: 'hidden' }}>
                     <TweetEmbed tweetId={cleanTwitterId()!} />
                 </div>
             </Show>
 
-            {/* Bonding Curve */}
+            {/* Bonding Curve Progress Bar */}
             <div class="card-bonding-line" title={`Bonding Curve: ${item.progress?.toFixed(1)}%`}>
                 <div
                     class="bonding-fill"
@@ -186,10 +247,9 @@ const MemeCard: Component<MemeCardProps> = (props) => {
             </div>
         </div>
     );
-
 };
 
-// --- Column ---
+// --- Column Component ---
 const MemeColumn: Component<ColumnProps> = (props) => {
     return (
         <div class="meme-column">
@@ -213,23 +273,22 @@ const MemeColumn: Component<ColumnProps> = (props) => {
     );
 };
 
-// --- Page ---
+// --- Main Page Component ---
 const MemePage: Component = () => {
-    // ✨ 修改 1: 仅获取 "已发射/金狗" 数据
     const {
         marketData: migratedMemeData,
         connectionStatus: migratedStatus,
         lastUpdate
     } = useMarketData<MemeItem>('meme_migrated');
 
-    // 处理已发射 (按创建时间倒序)
     const migratedTokens = createMemo(() => {
+        // 按迁移时间倒序，确保最新的在最上面
         const sorted = migratedMemeData
             .slice()
-            .sort((a, b) => (b.createTime || 0) - (a.createTime || 0));
-
+            .sort((a, b) => (b.migrateTime || 0) - (a.migrateTime || 0));
+        
         if (sorted.length > 0) {
-            console.log(`[MemePage] 🦋 MigratedTokens Sorted (Top 1): ${sorted[0].symbol}, Time: ${new Date(sorted[0].createTime).toLocaleTimeString()}`);
+            console.log(`[MemePage] 🦋 Top Token: ${sorted[0].symbol}, Migrated At: ${new Date(sorted[0].migrateTime!).toLocaleTimeString()}`);
         }
         return sorted;
     });
@@ -260,12 +319,10 @@ const MemePage: Component = () => {
             </header>
 
             <div class="meme-board-grid">
-                {/* ✨ 修改 2: 仅渲染这一列 */}
                 <MemeColumn title="🦋 已发射/金狗 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />
             </div>
         </div>
     );
-
 };
 
 export default MemePage;
