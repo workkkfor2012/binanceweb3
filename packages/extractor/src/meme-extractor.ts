@@ -406,7 +406,7 @@ async function main() {
     try {
         browser = await chromium.launch({
             executablePath: MY_CHROME_PATH,
-            headless: false,
+            headless: true,
             args: [
                 '--start-maximized',
                 '--no-sandbox',

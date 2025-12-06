@@ -26,8 +26,7 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     register_kline_history_handler(&s, state);
 }
 
-// ... (handle_index_subscription, handle_index_unsubscription, schedule_lazy_tick_unsubscribe 保持不变) ...
-// ⚠️ 请保留原文件中的这些辅助函数，此处省略以节省空间
+
 
 fn handle_index_subscription(state: &ServerState, address: &str, room_key: &str) -> bool {
     let address_lower = address.to_lowercase();
@@ -217,7 +216,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             enrich_any_data(data, &state).await;
                             
                             should_broadcast = !data.is_empty();
-                            log_summary = format!("🐶 [MEME RUSH] Act: {:?} | Count: {}", r#type, data.len());
+                            //log_summary = format!("🐶 [MEME RUSH] Act: {:?} | Count: {}", r#type, data.len());
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                         }
                         
@@ -229,7 +228,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             enrich_any_data(data, &state).await;
                             
                             should_broadcast = !data.is_empty();
-                            log_summary = format!("🚀 [MEME MIGRATED] Act: {:?} | Count: {}", r#type, data.len());
+                           // log_summary = format!("🚀 [MEME MIGRATED] Act: {:?} | Count: {}", r#type, data.len());
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                         }
                         _ => {}
