@@ -44,7 +44,7 @@ const formatNumber = (num: number | undefined | null) => {
     if (num === undefined || num === null) return '-';
     if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
     if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
-    return num.toFixed(0); // 小于1000直接显示整数
+    return num.toFixed(0);
 };
 
 // 计算“发射耗时” (Bonding Speed)
@@ -146,20 +146,40 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                 </Show>
 
                 <div class="card-info-col">
-                    {/* Row 1: Symbol, Flags, Time */}
-                    <div class="info-row-top">
-                        <div style={{display:'flex', alignItems:'center', gap: '6px', maxWidth: '180px'}}>
-                            <span class="card-symbol" title={item.symbol}>{item.symbol}</span>
+                    {/* Row 1: Symbol, Name, Flags | Speed, Time */}
+                    <div class="info-row-top" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        
+                        {/* 左侧信息组：Symbol + AD + Name (截断) */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden', flex: '1', paddingRight: '8px' }}>
+                            {/* Symbol */}
+                            <span class="card-symbol" title={item.symbol} style={{ flexShrink: 0 }}>{item.symbol}</span>
                             
-                            {/* Paid AD Tag */}
+                            {/* Paid AD Tag (放在名字前面，保证重要信息可见) */}
                             <Show when={item.paidOnDexScreener}>
-                                <span title="Paid AD on DexScreener" style={{ fontSize: '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', borderRadius: '3px', border: '1px solid #ffeeba', fontWeight: 'bold' }}>
+                                <span title="Paid AD on DexScreener" style={{ fontSize: '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', borderRadius: '3px', border: '1px solid #ffeeba', fontWeight: 'bold', flexShrink: 0 }}>
                                     AD
                                 </span>
                             </Show>
+
+                            {/* ✨ Name: 浅色显示，过长自动省略 */}
+                            <span 
+                                style={{ 
+                                    color: '#999', 
+                                    fontSize: '0.8em', 
+                                    whiteSpace: 'nowrap', 
+                                    overflow: 'hidden', 
+                                    textOverflow: 'ellipsis',
+                                    fontWeight: 'normal',
+                                    marginTop: '2px' // 视觉微调，对齐基线
+                                }} 
+                                title={item.name}
+                            >
+                                {item.name}
+                            </span>
                         </div>
                         
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        {/* 右侧信息组：速度 + 时间 */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
                             {/* Bonding Speed Badge */}
                             <Show when={bondingSpeed()}>
                                 <span style={{ 
@@ -182,12 +202,12 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                     {/* Row 2: Stats (MC, Liq, Buys/Sells, Holders) */}
                     <div class="info-row-bottom" style={{ gap: '4px', flexWrap: 'wrap' }}>
                         
-                        {/* 1. 市值 (MC) - 蓝色系 */}
+                        {/* 1. 市值 (MC) */}
                         <span class="stat-badge badge-cap" title={`Market Cap: $${item.marketCap}`}>
                             MC ${formatNumber(item.marketCap)}
                         </span>
 
-                        {/* 2. 流动性 (Liq) - 青色系 */}
+                        {/* 2. 流动性 (Liq) */}
                         <Show when={item.liquidity}>
                             <span class="stat-badge" style={{ background: '#e3fafc', color: '#0c8599', borderColor: '#99e9f2' }} title={`Liquidity: $${item.liquidity}`}>
                                 💧 ${formatNumber(item.liquidity)}
