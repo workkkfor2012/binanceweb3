@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{error, info, warn};
 
-const MIN_HOTLIST_AMOUNT: f64 = 1.0;
+const MIN_HOTLIST_AMOUNT: f64 = 0.0001;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
 const LAZY_UNSUBSCRIBE_DELAY: u64 = 3600;
 
@@ -200,7 +200,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             // 过滤逻辑
                             data.retain(|item| (item.volume1h.unwrap_or(0.0) * item.price.unwrap_or(0.0)) >= MIN_HOTLIST_AMOUNT);
                             should_broadcast = !data.is_empty();
-                            log_summary = format!("🔥 [HOTLIST] Act: {:?} | Count: {}", r#type, data.len());
+                            //log_summary = format!("🔥 [HOTLIST] Act: {:?} | Count: {}", r#type, data.len());
                             
                             // 记录 Symbol 映射
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
