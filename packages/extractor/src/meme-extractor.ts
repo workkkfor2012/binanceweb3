@@ -174,6 +174,86 @@ function safeBool(val: any): boolean {
 }
 
 /**
+ * 🛡️ 高级数据清洗器 (Advanced Data Sanitizer)
+ * 核心思想：防止 API 抖动导致的虚假归零，同时能够识别真实的 Rug Pull
+ */
+interface LiqState {
+    lastValidLiq: number;
+    abnormalCount: number; // 连续异常次数
+}
+
+class AdvancedDataSanitizer {
+    // 内存缓存：Key = ContractAddress
+    private cache = new Map<string, LiqState>();
+    
+    // 容忍度：连续 5 次（约5秒）异常才视为真实暴跌
+    private readonly MAX_ABNORMAL_TOLERANCE = 10; 
+
+    /**
+     * 批量处理 MemeItem 列表，应用防抖逻辑
+     */
+    public process(items: MemeItem[]): MemeItem[] {
+        // 创建一个新的数组返回，避免修改原始引用的隐式副作用（虽然此处 normalizedData 已经是新的对象）
+        return items.map(item => {
+            const key = item.contractAddress;
+            const newLiq = item.liquidity;
+
+            // 1. 数据无效，直接跳过处理
+            if (typeof newLiq !== 'number' || isNaN(newLiq)) {
+                return item;
+            }
+
+            let state = this.cache.get(key);
+
+            // 2. 初始化：第一次见到该币种
+            if (!state) {
+                this.cache.set(key, { lastValidLiq: newLiq, abnormalCount: 0 });
+                return item;
+            }
+
+            // 3. 检测暴跌逻辑 (> 50% 下跌)
+            if (state.lastValidLiq > 0 && newLiq < state.lastValidLiq * 0.5) {
+                state.abnormalCount++;
+
+                if (state.abnormalCount <= this.MAX_ABNORMAL_TOLERANCE) {
+                    // CASE A: 可能是接口抖动，进行拦截
+                    // 使用旧的有效值覆盖新值
+                    logger.log(`[Sanitizer] 🛡️ 拦截异常波动 [${item.symbol}] Liq: ${state.lastValidLiq} -> ${newLiq} (Count: ${state.abnormalCount})`, logger.LOG_LEVELS.INFO);
+                    item.liquidity = state.lastValidLiq;
+                } else {
+                    // CASE B: 连续多次低值，确认为真实暴跌/撤池
+                    logger.log(`[Sanitizer] 📉 确认暴跌/撤池 [${item.symbol}] Liq: ${state.lastValidLiq} -> ${newLiq} (Accepted after ${this.MAX_ABNORMAL_TOLERANCE} checks)`, logger.LOG_LEVELS.INFO);
+                    state.lastValidLiq = newLiq;
+                    state.abnormalCount = 0; // 重置计数器
+                }
+            } else {
+                // CASE C: 数据正常（平稳、上涨、或正常范围下跌）
+                // 立即更新缓存为最新值
+                state.lastValidLiq = newLiq;
+                state.abnormalCount = 0;
+            }
+
+            // 更新状态
+            this.cache.set(key, state);
+            return item;
+        });
+    }
+
+    /**
+     * 简单维护：清理过期的 key (避免 Map 无限膨胀)
+     * 在高频交易对中，可以定期调用
+     */
+    public prune(activeAddresses: string[]) {
+        const activeSet = new Set(activeAddresses);
+        for (const key of this.cache.keys()) {
+            if (!activeSet.has(key)) {
+                this.cache.delete(key);
+            }
+        }
+    }
+}
+
+/**
  * 核心清洗函数：将 Raw Data 映射为类型安全的 MemeItem
  * 包含所有风险指标、交易计数、时间戳
  */
@@ -260,6 +340,9 @@ async function ensurePageReady(page: Page): Promise<boolean> {
 async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
+
+    // ✨ 初始化数据清洗器
+    const sanitizer = new AdvancedDataSanitizer();
 
     page.on('console', msg => {
         const text = msg.text();
@@ -361,13 +444,23 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
 
                             // 3. 核心步骤：清洗并全量推送
                             // 即使资源充裕，通常只要前50-100个最热/最新的即可
-                            const items = normalizeData(topData.slice(0, 60));
+                            const rawSlice = topData.slice(0, 60);
+                            let items = normalizeData(rawSlice);
+
+                            // ✨ 应用数据清洗器：防抖动，防错误归零 ✨
+                            items = sanitizer.process(items);
                             
                             socket.emit('data-update', { 
                                 category: `meme_${CAPTURE_CONFIG.targetCategory}`, 
                                 type: 'full', 
                                 data: items 
                             });
+
+                            // 偶尔清理一下缓存，防止 map 无限增长 (每 100 次循环清理一次)
+                            if (loopCount % 100 === 0) {
+                                const activeAddresses = items.map(i => i.contractAddress);
+                                sanitizer.prune(activeAddresses);
+                            }
                         }
                     } else {
                         if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ No target lists...`);

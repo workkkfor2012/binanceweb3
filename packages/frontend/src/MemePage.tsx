@@ -301,19 +301,27 @@ const MemePage: Component = () => {
         lastUpdate
     } = useMarketData<MemeItem>('meme_migrated');
 
-    const migratedTokens = createMemo(() => {
-        // 按迁移时间倒序，确保最新的在最上面
+    // 1. 按 Liquidity 排序前 9 名 (High to Low)
+    const topLiquidityTokens = createMemo(() => {
+        const sorted = migratedMemeData
+            .slice()
+            .sort((a, b) => (b.liquidity || 0) - (a.liquidity || 0));
+        return sorted.slice(0, 9);
+    });
+
+    // 2. 按最近发射时间排序前 9 名 (Newest First)
+    const recentTokens = createMemo(() => {
         const sorted = migratedMemeData
             .slice()
             .sort((a, b) => (b.migrateTime || 0) - (a.migrateTime || 0));
         
         if (sorted.length > 0) {
-            console.log(`[MemePage] 🦋 Top Token: ${sorted[0].symbol}, Migrated At: ${new Date(sorted[0].migrateTime!).toLocaleTimeString()}`);
+            console.log(`[MemePage] 🦋 Newest Token: ${sorted[0].symbol}, Migrated At: ${new Date(sorted[0].migrateTime!).toLocaleTimeString()}`);
         }
-        return sorted;
+        return sorted.slice(0, 9);
     });
 
-    onMount(() => console.log('[MemePage] 🚀 Migrated-Only Layout Mounted.'));
+    onMount(() => console.log('[MemePage] 🚀 Dual Column Layout Mounted.'));
 
     return (
         <div class="meme-board-container">
@@ -339,7 +347,19 @@ const MemePage: Component = () => {
             </header>
 
             <div class="meme-board-grid">
-                <MemeColumn title="🦋 已发射/金狗 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />
+                {/* 列表 1: Liquidity 排名 */}
+                <MemeColumn 
+                    title="💧 流动性榜 (Top 9 Liq)" 
+                    items={topLiquidityTokens()} 
+                    count={topLiquidityTokens().length} 
+                />
+                
+                {/* 列表 2: 最近发射 */}
+                <MemeColumn 
+                    title="🚀 最新发射 (Top 9 New)" 
+                    items={recentTokens()} 
+                    count={recentTokens().length} 
+                />
             </div>
         </div>
     );
