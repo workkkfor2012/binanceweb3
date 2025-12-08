@@ -138,7 +138,15 @@ Get-Content $logFile -Wait -Encoding UTF8 | ForEach-Object {
             }
             
             if ($assigned) {
-                $slots | ConvertTo-Json | Set-Content $slotsFile -Encoding UTF8
+                # 增加重试机制，防止多进程读写锁冲突导致的 "Stream was not readable"
+                for ($retry=0; $retry -lt 10; $retry++) {
+                    try {
+                        $slots | ConvertTo-Json | Set-Content $slotsFile -Encoding UTF8 -ErrorAction Stop
+                        break
+                    } catch {
+                        Start-Sleep -Milliseconds 100
+                    }
+                }
             }
         }
     }

@@ -23,7 +23,7 @@ function Get-MonitorCmd($title, $pattern) {
 # 使用 cmd /c 运行以确保重定向编码(UTF-8)处理更稳定，且保留原始输出
 # 2>&1 确保错误日志也被捕获
 # 注意: 我们将在 wt 中直接调用 cmd，所以这里只需准备命令字符串
-$cmdRunner = "cargo run > ""$logFile"" 2>&1"
+$cmdRunner = "cargo run --release > ""$logFile"" 2>&1"
 
 # 2. 各个监控过滤命令
 $cmdSocket  = Get-MonitorCmd "Socket Handlers" "socket_handlers"

@@ -73,11 +73,12 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
     socket.on("subscribe_kline", move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
         let state = state.clone();
         async move {
+            info!("🔔 [SUB DEBUG] Payload: address={}, chain={}, interval={}", payload.address, payload.chain, payload.interval);
             let chain_lower = payload.chain.to_lowercase();
             let address_lower = payload.address.to_lowercase();
             
             let symbol = state.token_symbols.get(&address_lower).map_or_else(
-                || format!("{}...", &payload.address[0..6]),
+                || format!("{}...", &address_lower[0..6]),
                 |s| s.value().clone(),
             );
 
@@ -85,7 +86,7 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => return,
             };
 
-            let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+            let room_name = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
             let log_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
 
             info!("🔔 [SUB] Client {} -> {}", s.id, log_name);
@@ -101,13 +102,13 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 })
                 .value_mut().clients.insert(s.id);
 
-            let need_sub_tick = handle_index_subscription(&state, &payload.address, &room_name);
+            let need_sub_tick = handle_index_subscription(&state, &address_lower, &room_name);
 
             if is_new_room {
-                let kl_stream = format!("kl@{}_{}_{}", pool_id, payload.address, payload.interval);
+                let kl_stream = format!("kl@{}_{}_{}", pool_id, address_lower, payload.interval);
                 let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Subscribe(kl_stream));
                 if need_sub_tick {
-                    let tx_stream = format!("tx@{}_{}", pool_id, payload.address);
+                    let tx_stream = format!("tx@{}_{}", pool_id, address_lower);
                     let _ = state.binance_channels.tick_tx.send(SubscriptionCommand::Subscribe(tx_stream));
                 }
             }
@@ -122,7 +123,8 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
             let pool_id = match payload.chain.to_lowercase().as_str() {
                 "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => return,
             };
-            let room_name = format!("kl@{}@{}@{}", pool_id, payload.address, payload.interval);
+            let address_lower = payload.address.to_lowercase();
+            let room_name = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
 
             s.leave(room_name.clone());
 
@@ -134,12 +136,12 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
 
             if room_empty {
                 state.app_state.remove(&room_name);
-                let kl_stream = format!("kl@{}_{}_{}", pool_id, payload.address, payload.interval);
+                let kl_stream = format!("kl@{}_{}_{}", pool_id, address_lower, payload.interval);
                 let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Unsubscribe(kl_stream));
 
-                if handle_index_unsubscription(&state, &payload.address, &room_name) {
-                    info!("⏳ [LAZY START] No subscribers for {}. Scheduling unsub in {}s...", payload.address, LAZY_UNSUBSCRIBE_DELAY);
-                    schedule_lazy_tick_unsubscribe(state.clone(), payload.address.clone(), pool_id);
+                if handle_index_unsubscription(&state, &address_lower, &room_name) {
+                    info!("⏳ [LAZY START] No subscribers for {}. Scheduling unsub in {}s...", address_lower, LAZY_UNSUBSCRIBE_DELAY);
+                    schedule_lazy_tick_unsubscribe(state.clone(), address_lower, pool_id);
                 }
             }
         }

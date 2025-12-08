@@ -199,7 +199,7 @@ async fn handle_payload(
                         let pool_id = params[0];
                         let address = params[1];
                         let interval = params[2];
-                        let room_key = format!("kl@{}@{}@{}", pool_id, address, interval);
+                        let room_key = format!("kl@{}@{}@{}", pool_id, address.to_lowercase(), interval);
                         
                         let kline = parse_kline(&wrapper.data.kline_data.values);
                         // Kline 是权威数据，更新内存并广播
