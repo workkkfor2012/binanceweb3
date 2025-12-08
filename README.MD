@@ -1,54 +1,98 @@
-<!-- README.MD -->
-`packages\frontend`这是前端代码
-`packages\extractor`这是爬虫代码
-`packages\backend`这是后端代码
+# Real-time Market Data Monitor
 
-实时市场数据监控面板 (Rust 后端版)
+这是一个现代化的高性能实时市场数据监控系统。项目采用 Monorepo 架构，后端使用 Rust 重构以追求极致性能，前端使用 SolidJS 构建响应式界面，并配备了基于 Playwright 的数据采集器。
 
-一个现代化的、高性能的实时数据监控面板。项目后端已使用 Rust (Axum + Tokio + Socketioxide) 重构，以追求极致的性能和并发能力。
+## ✨ 核心特性
 
-项目通过 pnpm Workspaces 进行包管理。它通过 Playwright 脚本从动态网页中提取数据，经由一个高性能的 Rust 后端，利用 WebSocket 实时推送给一个用 SolidJS 构建的、响应迅速的前端界面。
+*   **高性能后端**: 基于 Rust (Axum + Tokio) 构建，利用异步 I/O 和 WebSocket (Socket.IO) 实现毫秒级数据推送。
+*   **响应式前端**: 使用 SolidJS + Vite 构建，无虚拟 DOM 架构，确保在高频数据更新下的流畅渲染。
+*   **智能数据采集**: 使用 Playwright + 浏览器指纹伪装，通过注入脚本高效捕获动态网页数据变更。
+*   **图形化控制台**: 内置基于 PySide6 的 GUI 控制面板 (`run_gui.py`)，方便一键管理多进程任务。
+*   **图片代理与缓存**: 后端内置图片代理及持久化磁盘缓存机制，解决跨域及访问限制问题。
 
-核心架构
+## 🏗 技术栈
 
-本项目采用基于 pnpm Workspaces 的 monorepo（单一代码库）架构，将整个系统解耦为四个独立的、职责分明的包：
+### Core
+*   **Package Manager**: pnpm (Workspaces)
+*   **GUI Controller**: Python (PySide6)
 
-packages/extractor (数据提取器)
+### Packages
 
-技术: Playwright-Extra, TypeScript
+| Package | Role | Tech Stack |
+| :--- | :--- | :--- |
+| **`packages/backend`** | 核心服务 | **Rust**, Axum 0.8, Socketioxide, Tokio, Sqlx (SQLite), Reqwest |
+| **`packages/frontend`** | 用户界面 | **SolidJS**, Vite, TypeScript, Lightweight-charts, Socket.io-client |
+| **`packages/extractor`** | 数据采集 | **Node.js**, Playwright-Extra, TypeScript |
+| **`packages/shared-types`** | 类型共享 | TypeScript Interface definitions |
 
-职责: 作为一个独立的 Node.js 进程，启动一个带代理的浏览器实例访问目标网页。通过 page.addInitScript 注入一个高效的浏览器脚本，以极高频率（~1000ms）检测并提取数据变更。一旦有数据更新，立即通过 Socket.IO 将增量数据发送给后端。
+## 🚀 快速开始
 
-packages/backend (后端服务)
+### 前置要求
+*   [pnpm](https://pnpm.io/)
+*   [Rust Toolchain](https://www.rust-lang.org/)
+*   [Python 3.10+](https://www.python.org/) (用于 GUI)
+*   [Node.js 20+](https://nodejs.org/)
 
-技术: Rust, Axum, Socketioxide, Tokio, Reqwest
+### 安装依赖
 
-职责:
+```bash
+pnpm install
+```
 
-数据中继站: 监听来自 extractor 的 data-update 事件，并立即将这些数据广播给所有连接的前端客户端。
+### 启动项目
 
-配置接口: 提供一个 /desired-fields API 端点，用于向前端暴露当前系统监控的数据字段列表。
+#### 方式一：使用 GUI 控制面板 (推荐)
 
-图片代理与磁盘缓存: 提供一个 /image-proxy 路由。前端请求的外部图片会由后端代为抓取（使用 reqwest），并实现一个持久化磁盘缓存 (./image_cache 目录)。后端通过 SHA256 哈希 URL，将图片数据 (.data) 和元数据(Content-Type, .meta) 分别存储在磁盘上。这不仅解决了前端访问限制问题，而且通过持久化缓存，确保了即使在服务重启后，图片也无需重新抓取，极大地提升了效率。
+项目自带一个 Python 编写的图形化管理工具，可以方便地查看日志和控制各个服务的启停。
 
-开发体验: 使用 cargo-watch 实现了热重载，修改 Rust 代码后服务会自动重启。
+```bash
+# 需要安装 PySide6
+pip install PySide6
 
-packages/frontend (前端界面)
+# 启动控制面板
+python run_gui.py
+```
+在 GUI 中，你可以点击按钮分别启动：
+*   `dev:backend`: 启动 Rust 后端
+*   `dev:frontend`: 启动前端页面 (http://localhost:5173)
+*   `start:hotlist` / `start:meme`: 启动不同的数据采集脚本
 
-技术: Vite, SolidJS, TypeScript
+#### 方式二：命令行启动
 
-职责:
+如果你更喜欢命令行：
 
-数据可视化: 连接到后端的 Socket.IO 服务，接收实时数据，并以表格形式高效地渲染出来。
+```bash
+# 同时启动后端和前端
+pnpm dev
 
-配置透明化: 启动时从后端获取当前正在监控的 DESIRED_FIELDS 列表并在页面上展示，使用户清楚地了解数据范围。
+# 或者全量启动 (后端 + 前端 + 采集器)
+pnpm dev:full
 
-极致性能: SolidJS 无虚拟 DOM 的架构确保了即使在高频数据更新下，页面也能保持流畅。
+# 仅构建
+pnpm build
+```
 
-开发体验: Vite 提供了顶级的热模块替换（HMR）功能，修改任何前端代码，浏览器都会瞬时响应，无需刷新。
+## 📂 项目结构
 
-packages/shared-types (共享类型与配置)
+```
+.
+├── packages/
+│   ├── backend/        # Rust 后端服务
+│   ├── frontend/       # SolidJS 前端项目
+│   ├── extractor/      # Playwright 数据采集脚本
+│   └── shared-types/   # 前后端共享的 TS 类型定义
+├── run_gui.py          # Python GUI 任务管理器
+├── package.json        # 项目根配置
+└── pnpm-workspace.yaml # Monorepo 工作区配置
+```
 
-技术: TypeScript
+## 🔧 核心组件详解
 
-职责: 定义了 frontend 和 extractor 之间共享的 TypeScript 类型、接口以及类似 DESIRED_FIELDS 的静态配置。同时，它也定义了 API 契约，例如 Socket.IO 事件名 (如 data-update) 和 API 路由 (如 /desired-fields)，确保了 Rust 后端与 TypeScript 前/后端之间的通信规范。
+### Backend (Rust)
+作为数据中继站，它监听来自 `extractor` 的数据更新，并通过 Socket.IO 广播给所有连接的 `frontend` 客户端。同时提供 HTTP API (`/desired-fields`) 供配置查询，以及 `/image-proxy` 用于图片资源的代理和缓存。支持 `cargo-watch` 热重载。
+
+### Extractor (Node.js/Playwright)
+作为一个独立的进程运行。它启动一个带隐匿插件的浏览器实例，注入脚本以 ~1000ms 的频率检测目标网页的数据变化，并通过 Socket.IO 将增量数据发送给后端。
+
+### Frontend (SolidJS)
+连接后端的 Socket.IO 服务，接收实时数据流并使用表格或图表进行渲染。启动时会自动同步后端的监控字段配置。

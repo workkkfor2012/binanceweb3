@@ -149,7 +149,7 @@ async function main(): Promise<void> {
 
         browser = await chromium.launch({
             executablePath: MY_CHROME_PATH,
-            headless: false,
+            headless: true,
             proxy: { server: 'socks5://127.0.0.1:1080' },
             args: ['--start-maximized']
         });

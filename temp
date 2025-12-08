@@ -1623,3 +1623,108 @@ fn get_chain_id(chain: &str) -> Option<u64> {
 根据日志修改，，参考packages\extractor\src\meme-scanner.ts来修改
 `packages\extractor\src\meme-extractor.ts`
 目标是发送已迁移的品种到后端，并且为了调试，打印出品种的所有字段
+
+
+
+
+
+function main(config, profileName) {
+  console.log(`开始处理配置文件: ${profileName}`);
+
+  // 确保 proxies, proxy-groups, rules 字段存在
+  if (!Array.isArray(config.proxies)) config.proxies = [];
+  if (!Array.isArray(config['proxy-groups'])) config['proxy-groups'] = [];
+  if (!Array.isArray(config.rules)) config.rules = [];
+
+  // --- 步骤 1: 定义并创建所有新的代理组 ---
+  const newGroups = [
+    { name: '以色列', type: 'select', proxies: [] },
+    { name: 'myother', type: 'select', proxies: [] },
+    { name: 'google', type: 'select',  proxies: [] },
+    { name: 'web3.binance.com', type: 'load-balance', strategy: 'round-robin', url: 'http://www.gstatic.com/generate_204', interval: 300, proxies: [] },
+    { name: '币安api', type: 'load-balance', strategy: 'round-robin', url: 'http://www.gstatic.com/generate_204', interval: 300, proxies: [] },
+    { name: 'tradingview', type: 'load-balance', strategy: 'round-robin', url: 'http://www.gstatic.com/generate_204', interval: 300, proxies: [] },
+     { name: 'high', type: 'load-balance', strategy: 'round-robin', url: 'http://www.gstatic.com/generate_204', interval: 300, proxies: [] },
+   { name: 'low', type: 'load-balance', strategy: 'round-robin', url: 'http://www.gstatic.com/generate_204', interval: 300, proxies: [] },
+    { name: '所有节点', type: 'load-balance', strategy: 'round-robin', url: 'http://www.gstatic.com/generate_204', interval: 300, proxies: [] }
+  ];
+
+  // --- 步骤 2: 定义正则表达式并填充代理组 ---
+  const allProxyNames = config.proxies.map(p => p.name);
+  const groupFilters = {
+    '币安api': /^(?=.*高级)(?=.*(香港|新加坡|台湾|日本|Japan)).*$/,
+    'web3.binance.com': /^(?=.*高级)(?=.*(新加坡|台湾|日本|Japan)).*$/,
+    '以色列': /^(.*)(以色列)+(.*)$/, // 修正了 "||"
+    'myother': /^(.*)(日本|JP|Japan|英国|TW|台湾|UK)+(.*)$/,
+    'tradingview': /^(?=.*高级)(?=.*(香港|新加坡|台湾|日本|Japan)).*$/,
+    'high': /^(.*)(高级)(.*)$/,
+    'google': /^(?=.*(|新加坡|台湾|日本|Japan)).*$/,
+    'low': /^(.*)(实验)+(.*)$/,
+    '所有节点': /^.*$/
+  };
+
+  newGroups.forEach(group => {
+    if (groupFilters[group.name]) {
+      const regex = groupFilters[group.name];
+      const filteredProxies = allProxyNames.filter(name => regex.test(name));
+      // 如果没有匹配到，则添加一个 DIRECT 作为保底，防止代理组为空 Clash 核心报错
+      group.proxies = filteredProxies.length > 0 ? filteredProxies : ['DIRECT'];
+    }
+  });
+
+
+
+
+
+
+  // --- 步骤 3: 定义并前置插入新的规则 ---
+  const newRules = [
+    // ... (所有规则保持不变)
+   
+    'DOMAIN,nbstream.binance.com,币安api',
+    'DOMAIN,fapi.binance.com,币安api',
+    'DOMAIN-SUFFIX,web3.binance.com,web3.binance.com',
+    'DOMAIN-SUFFIX,fstream.binance.com,币安api',
+    'DOMAIN,binance.com,币安api',
+    'DOMAIN-SUFFIX,google.com,google',
+    'DOMAIN-SUFFIX,googleapis.com,google',
+    'DOMAIN-SUFFIX,g.co,google',
+    'DOMAIN-SUFFIX,goo.gl,google',
+    'DOMAIN-SUFFIX,google.cn,google',
+    'DOMAIN-SUFFIX,gstatic.com,google',
+    'DOMAIN-SUFFIX,ggpht.com,google',
+    'DOMAIN-SUFFIX,googleapis.com,google',
+    'DOMAIN-SUFFIX,google-analytics.com,google',
+    'DOMAIN-SUFFIX,googleadservices.com,google',
+    'DOMAIN-SUFFIX,googlesyndication.com,google',
+    'DOMAIN-SUFFIX,googletagmanager.com,google',
+    'DOMAIN-SUFFIX,googletagservices.com,google',
+    'DOMAIN-SUFFIX,googlevideo.com,low',
+    'DOMAIN-SUFFIX,googleusercontent.com,google',
+    'DOMAIN-SUFFIX,youtube.com,low',
+    'DOMAIN-SUFFIX,youtu.be,low',
+    'DOMAIN-SUFFIX,android.com,high',
+    'DOMAIN-SUFFIX,doubleclick.net,high',
+    'DOMAIN-SUFFIX,recaptcha.net,high',
+    'DOMAIN-SUFFIX,augmentcode.com,以色列',
+   
+   
+    //'DOMAIN,fapi.binance.com,high',
+    
+    'DOMAIN-KEYWORD,tradingview,tradingview',
+    'DOMAIN-KEYWORD,bing,low',
+    'DOMAIN-KEYWORD,ave,myother',
+  ];
+
+
+
+
+  
+  // --- 步骤 5: 将所有新内容注入到 config 对象中 ---
+  config['proxy-groups'].unshift(...newGroups);
+  config.rules.unshift(...newRules);
+  
+  console.log(`成功添加了 ${newGroups.length} 个新的代理组和 ${newRules.length} 条新的规则。`);
+
+  return config;
+}
