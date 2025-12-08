@@ -3,7 +3,7 @@ use super::{
     kline_handler,
     state::SubscriptionCommand,
     // ✨ 引入新的 Struct 和 Trait
-    types::{DataPayload, KlineSubscribePayload, KlineTick, NarrativeEntity, NarrativeResponse, Room},
+    types::{DataPayload, KlineSubscribePayload, NarrativeEntity, NarrativeResponse, Room},
     ServerState,
 };
 use socketioxide::extract::{Data, SocketRef};
@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use flate2::read::GzDecoder;
 use std::io::Read;
 
@@ -195,11 +195,11 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
             match serde_json::from_value::<DataPayload>(payload.0) {
                 Ok(mut parsed_payload) => {
                     let mut should_broadcast = false;
-                    let mut log_summary = String::new();
+                    let log_summary = String::new();
 
                     match &mut parsed_payload {
                         // 1. 处理 Hotlist (HotlistItem 结构体)
-                        DataPayload::Hotlist { r#type, data } => {
+                        DataPayload::Hotlist { r#type: _, data } => {
                             // 过滤逻辑
                             data.retain(|item| (item.volume1h.unwrap_or(0.0) * item.price.unwrap_or(0.0)) >= MIN_HOTLIST_AMOUNT);
                             should_broadcast = !data.is_empty();
@@ -213,7 +213,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         }
                         
                         // 2. 处理 New Meme (MemeScanItem 结构体)
-                        DataPayload::MemeNew { r#type, data } => {
+                        DataPayload::MemeNew { r#type: _, data } => {
                             data.retain(|item| !item.symbol.is_empty());
                             
                             // 🔥 调用泛型 Enrich 函数 (MemeScanItem 实现了 NarrativeEntity)
@@ -225,7 +225,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         }
                         
                         // 3. 处理 Migrated Meme (MemeScanItem 结构体)
-                        DataPayload::MemeMigrated { r#type, data } => {
+                        DataPayload::MemeMigrated { r#type: _, data } => {
                             data.retain(|item| !item.symbol.is_empty());
                             
                             // 🔥 调用泛型 Enrich 函数

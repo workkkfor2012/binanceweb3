@@ -4,7 +4,7 @@
     "Slot_3":  "backend::binance_task",
     "Slot_4":  "backend::cache_manager",
     "Slot_5":  "backend::socket_handlers",
-    "Slot_6":  "backend::error",
-    "Slot_7":  "",
+    "Slot_6":  "backend::http_handlers",
+    "Slot_7":  "backend::error",
     "Slot_8":  ""
 }

@@ -5,8 +5,8 @@ use crate::{
     types::{HistoricalDataWrapper, KlineHistoryResponse, KlineSubscribePayload, KlineTick},
     ServerState,
 };
-use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use socketioxide::extract::{Data, SocketRef};
 use sqlx::{
@@ -14,7 +14,7 @@ use sqlx::{
     Row,
 };
 use std::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 const API_URL_TEMPLATE: &str = "https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}";
 const API_MAX_LIMIT: i64 = 500;
@@ -47,7 +47,7 @@ pub async fn handle_kline_request(
     Data(payload): Data<KlineSubscribePayload>,
     state: ServerState,
 ) {
-    let start_total = Instant::now();
+    let _start_total = Instant::now();
     let primary_key = get_primary_key(&payload);
 
     // 1. DB Query
@@ -108,6 +108,31 @@ async fn complete_kline_data(
         };
         s.emit("historical_kline_completed", &resp).ok();
         save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
+    }
+
+    // ✨ Fix: Initialize current_kline in AppState so Ticks work immediately
+    let latest_candidate = if let Some(last_new) = new_klines.last() {
+        Some(last_new.clone())
+    } else {
+        last_kline 
+    };
+
+    if let Some(kline) = latest_candidate {
+        let chain_lower = payload.chain.to_lowercase();
+        let pool_id = match chain_lower.as_str() {
+            "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => 0,
+        };
+
+        if pool_id > 0 {
+            let room_key = format!("kl@{}@{}@{}", pool_id, payload.address.to_lowercase(), payload.interval);
+            if let Some(room) = state.app_state.get(&room_key) {
+                let mut guard = room.current_kline.lock().await;
+                if guard.is_none() {
+                    info!("✅ [KLINE INIT] Initialized current_kline for {} from history/db", room_key);
+                    *guard = Some(kline);
+                }
+            }
+        }
     }
     Ok(Some(new_klines.len()))
 }

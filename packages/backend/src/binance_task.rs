@@ -117,11 +117,12 @@ async fn connect_and_serve(
                 "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
             });
             write.send(Message::Text(msg.to_string().into())).await?;
-            sleep(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(300)).await;
         }
     }
 
     let mut heartbeat = interval(config.heartbeat_interval);
+    heartbeat.tick().await; // Consume the first immediate tick
 
     // 3. 事件循环
     loop {
@@ -132,28 +133,89 @@ async fn connect_and_serve(
 
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(SubscriptionCommand::Subscribe(stream)) => {
-                        if !active_streams.contains(&stream) {
-                            info!("📥 [CMD {}] Subscribing: {}", task_type, stream);
-                            let msg = serde_json::json!({
-                                "method": "SUBSCRIBE",
-                                "params": [stream],
-                                "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
-                            });
-                            write.send(Message::Text(msg.to_string().into())).await?;
-                            active_streams.insert(stream);
+                    Some(first_cmd) => {
+                        let mut stream_intent: std::collections::HashMap<String, SubscriptionCommand> = std::collections::HashMap::new();
+
+                        // Helper to update intent
+                        let mut process = |c: SubscriptionCommand| {
+                            let key = match &c {
+                                SubscriptionCommand::Subscribe(s) => s.clone(),
+                                SubscriptionCommand::Unsubscribe(s) => s.clone(),
+                            };
+                            stream_intent.insert(key, c);
+                        };
+
+                        process(first_cmd);
+
+                        // ⚡ DEBOUNCE: Wait 50ms to allow more commands to arrive/accumulate in the channel
+                        // This ensures we actually form a batch instead of sending one-by-one if they arrive serially but quickly
+                        sleep(Duration::from_millis(50)).await;
+
+                        // ⚡ BATCHING: Drain up to 50 pending commands from channel to send in one go
+                        for _ in 0..50 {
+                            match cmd_rx.try_recv() {
+                                Ok(c) => process(c),
+                                Err(_) => break,
+                            }
                         }
-                    },
-                    Some(SubscriptionCommand::Unsubscribe(stream)) => {
-                        if active_streams.contains(&stream) {
-                            info!("📤 [CMD {}] Unsubscribing: {}", task_type, stream);
-                            let msg = serde_json::json!({
-                                "method": "UNSUBSCRIBE",
-                                "params": [stream],
-                                "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
-                            });
-                            write.send(Message::Text(msg.to_string().into())).await?;
-                            active_streams.remove(&stream);
+
+                        // ⚡ COALESCE: Calculate the net effect for each stream
+                        // If we receive [Unsub A, Sub A], the net effect is Sub A.
+                        // If we receive [Sub A, Unsub A], the net effect is Unsub A.
+                        // We rely on the `stream_intent` map which will hold the LAST command for each stream.
+                        
+                        let mut final_sub = Vec::new();
+                        let mut final_unsub = Vec::new();
+
+                        for (stream, cmd_type) in stream_intent {
+                            match cmd_type {
+                                SubscriptionCommand::Subscribe(_) => final_sub.push(stream),
+                                SubscriptionCommand::Unsubscribe(_) => final_unsub.push(stream),
+                            }
+                        }
+
+                        // Send Subscribe Batch
+                        if !final_sub.is_empty() {
+                            let mut params_to_send = Vec::new();
+                            for stream in final_sub {
+                                if !active_streams.contains(&stream) {
+                                    active_streams.insert(stream.clone());
+                                    params_to_send.push(stream);
+                                }
+                            }
+                            if !params_to_send.is_empty() {
+                                info!("📥 [CMD {}] Batch Subscribing {} streams: {:?}", task_type, params_to_send.len(), params_to_send);
+                                for chunk in params_to_send.chunks(50) {
+                                    let msg = serde_json::json!({
+                                        "method": "SUBSCRIBE",
+                                        "params": chunk,
+                                        "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
+                                    });
+                                    write.send(Message::Text(msg.to_string().into())).await?;
+                                }
+                            }
+                        }
+
+                        // Send Unsubscribe Batch
+                        if !final_unsub.is_empty() {
+                            let mut params_to_send = Vec::new();
+                            for stream in final_unsub {
+                                if active_streams.contains(&stream) {
+                                    active_streams.remove(&stream);
+                                    params_to_send.push(stream);
+                                }
+                            }
+                            if !params_to_send.is_empty() {
+                                info!("📤 [CMD {}] Batch Unsubscribing {} streams: {:?}", task_type, params_to_send.len(), params_to_send);
+                                for chunk in params_to_send.chunks(50) {
+                                    let msg = serde_json::json!({
+                                        "method": "UNSUBSCRIBE",
+                                        "params": chunk,
+                                        "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
+                                    });
+                                    write.send(Message::Text(msg.to_string().into())).await?;
+                                }
+                            }
                         }
                     },
                     None => return Err(anyhow!("Command channel closed")),
@@ -166,12 +228,18 @@ async fn connect_and_serve(
                         match msg {
                             Message::Text(text) => handle_payload(task_type, &text, io, app_state, room_index).await,
                             Message::Ping(p) => { write.send(Message::Pong(p)).await?; }
-                            Message::Close(_) => return Ok(()),
+                            Message::Close(c) => {
+                                warn!("❌ [MANAGER {}] Received Close Frame: {:?}", task_type, c);
+                                return Ok(());
+                            }
                             _ => {}
                         }
                     },
                     Some(Err(e)) => return Err(e.into()),
-                    None => return Ok(()),
+                    None => {
+                        warn!("❌ [MANAGER {}] Received unexpected EOF (Stream ended)", task_type);
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -190,69 +258,103 @@ async fn handle_payload(
     match task_type {
         TaskType::Kline => {
             // 处理 Kline 数据：直接解析 Stream Name 找到对应房间
-            if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(text) {
-                // stream format: kl@poolID_address_interval
-                let stream_parts: Vec<&str> = wrapper.stream.split('@').collect();
-                if stream_parts.len() == 2 {
-                    let params: Vec<&str> = stream_parts[1].split('_').collect();
-                    if params.len() == 3 {
-                        let pool_id = params[0];
-                        let address = params[1];
-                        let interval = params[2];
-                        let room_key = format!("kl@{}@{}@{}", pool_id, address.to_lowercase(), interval);
-                        
-                        let kline = parse_kline(&wrapper.data.kline_data.values);
-                        // Kline 是权威数据，更新内存并广播
-                        update_room_and_broadcast(io, app_state, &room_key, kline).await;
+            // 🔍 Debug Logging for Kline Data
+            info!("🔍 [KLINE_DEBUG] Raw Payload (len={}): {:.100}...", text.len(), text);
+
+            match serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(text) {
+                Ok(wrapper) => {
+                    // stream format: kl@poolID_address_interval
+                    let stream_parts: Vec<&str> = wrapper.stream.split('@').collect();
+                    if stream_parts.len() == 2 {
+                        let params: Vec<&str> = stream_parts[1].split('_').collect();
+                        if params.len() == 3 {
+                            let pool_id = params[0];
+                            let address = params[1];
+                            let interval = params[2];
+                            let room_key = format!("kl@{}@{}@{}", pool_id, address.to_lowercase(), interval);
+                            
+                            let kline = parse_kline(&wrapper.data.kline_data.values);
+                            // Kline 是权威数据，更新内存并广播
+                            update_room_and_broadcast(io, app_state, &room_key, kline).await;
+                            info!("✅ [KLINE_DEBUG] Updated & Broadcasted: {}", room_key);
+                        } else {
+                            warn!("⚠️ [KLINE_DEBUG] Invalid stream params: {:?}", params);
+                        }
+                    } else {
+                        warn!("⚠️ [KLINE_DEBUG] Invalid stream format: {}", wrapper.stream);
                     }
+                },
+                Err(e) => {
+                    warn!("❌ [KLINE_DEBUG] JSON Parse Failed: {}. Payload: {:.200}", e, text);
                 }
             }
         }
         TaskType::Tick => {
             // 处理 Tick 数据：使用 RoomIndex 进行 O(1) 路由
-            if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(text) {
-                let tick = &wrapper.data.tick_data;
-                let stream_parts: Vec<&str> = wrapper.stream.split('@').collect();
+            // 🔍 Debug Logging for Tick Data
+            info!("🔍 [TICK_DEBUG] Raw Payload (len={}): {:.100}...", text.len(), text);
 
-                if stream_parts.len() == 2 {
-                    let params: Vec<&str> = stream_parts[1].split('_').collect();
-                    if params.len() >= 2 {
-                        let tracked_address = params[1]; // stream 中的地址
-                        
-                        // 简单的价格验证逻辑
-                        let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) { tick.t0pu } 
-                                    else if tick.t1a.eq_ignore_ascii_case(tracked_address) { tick.t1pu } 
-                                    else { return; };
-                        
-                        let usd_volume = tick.v;
+            match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(text) {
+                Ok(wrapper) => {
+                    let tick = &wrapper.data.tick_data;
+                    let stream_parts: Vec<&str> = wrapper.stream.split('@').collect();
 
-                        // ✨ 核心：利用索引找到该 Token 对应的所有房间 (1m, 15m, 1h...)
-                        if let Some(index) = room_index {
-                            if let Some(room_keys) = index.get(&tracked_address.to_lowercase()) {
-                                for room_key in room_keys.iter() {
-                                    if let Some(entry) = app_state.get(room_key) {
-                                        let mut kline_guard = entry.value().current_kline.lock().await;
-                                        if let Some(kline) = kline_guard.as_mut() {
-                                            // 价格异常过滤
-                                            if kline.close > 0.0 {
-                                                let ratio = if price > kline.close { price / kline.close } else { kline.close / price };
-                                                if ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && usd_volume < LOW_VOLUME_THRESHOLD {
-                                                    continue;
+                    if stream_parts.len() == 2 {
+                        let params: Vec<&str> = stream_parts[1].split('_').collect();
+                        if params.len() >= 2 {
+                            let tracked_address = params[1]; // stream 中的地址
+                            
+                            // 简单的价格验证逻辑
+                            let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) { tick.t0pu } 
+                                        else if tick.t1a.eq_ignore_ascii_case(tracked_address) { tick.t1pu } 
+                                        else { 
+                                            info!("⚠️ [TICK_DEBUG] Address mismatch: Tracked={} vs T0={} / T1={}", tracked_address, tick.t0a, tick.t1a);
+                                            return; 
+                                        };
+                            
+                            let usd_volume = tick.v;
+
+                            // ✨ 核心：利用索引找到该 Token 对应的所有房间 (1m, 15m, 1h...)
+                            if let Some(index) = room_index {
+                                if let Some(room_keys) = index.get(&tracked_address.to_lowercase()) {
+                                    info!("✅ [TICK_DEBUG] Match found for {}: {} rooms", tracked_address, room_keys.len());
+                                    
+                                    for room_key in room_keys.iter() {
+                                        if let Some(entry) = app_state.get(room_key) {
+                                            let mut kline_guard = entry.value().current_kline.lock().await;
+                                            if let Some(kline) = kline_guard.as_mut() {
+                                                // 价格异常过滤
+                                                if kline.close > 0.0 {
+                                                    let ratio = if price > kline.close { price / kline.close } else { kline.close / price };
+                                                    if ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && usd_volume < LOW_VOLUME_THRESHOLD {
+                                                        info!("🛑 [TICK_DEBUG] Filtered (Dev: {:.2}, Vol: {:.2})", ratio, usd_volume);
+                                                        continue;
+                                                    }
                                                 }
-                                            }
-                                            // 更新价格 (不更新 Volume，防止重复计算)
-                                            kline.high = kline.high.max(price);
-                                            kline.low = kline.low.min(price);
-                                            kline.close = price;
+                                                // 更新价格 (不更新 Volume，防止重复计算)
+                                                kline.high = kline.high.max(price);
+                                                kline.low = kline.low.min(price);
+                                                kline.close = price;
 
-                                            // 广播
-                                            broadcast_data(io, room_key, kline.clone()).await;
+                                                // 广播
+                                                broadcast_data(io, room_key, kline.clone()).await;
+                                                info!("📡 [TICK_DEBUG] Broadcasted update to {}", room_key);
+                                            } else {
+                                                info!("⚠️ [TICK_DEBUG] No active kline for room {}", room_key);
+                                            }
                                         }
                                     }
+                                } else {
+                                    info!("⚠️ [TICK_DEBUG] No rooms in index for {}", tracked_address);
                                 }
                             }
                         }
+                    } else {
+                         warn!("⚠️ [TICK_DEBUG] Unexpected stream format: {}", wrapper.stream);
                     }
+                },
+                Err(e) => {
+                    warn!("❌ [TICK_DEBUG] JSON Parse Failed: {}. Payload: {:.200}", e, text);
                 }
             }
         }
