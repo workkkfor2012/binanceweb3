@@ -12,6 +12,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{error, info, warn};
+use flate2::read::GzDecoder;
+use std::io::Read;
 
 const MIN_HOTLIST_AMOUNT: f64 = 0.0001;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
@@ -228,14 +230,16 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             enrich_any_data(data, &state).await;
                             
                             should_broadcast = !data.is_empty();
-                           // log_summary = format!("🚀 [MEME MIGRATED] Act: {:?} | Count: {}", r#type, data.len());
+                            //log_summary = format!("🚀 [MEME MIGRATED] Act: {:?} | Count: {}", r#type, data.len());
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                         }
                         _ => {}
                     }
 
                     if should_broadcast {
-                        info!("{}", log_summary);
+                        if !log_summary.is_empty() {
+                            info!("{}", log_summary);
+                        }
                         s.broadcast().emit("data-broadcast", &parsed_payload).await.ok();
                     }
                 }
@@ -326,10 +330,35 @@ async fn fetch_narrative(client: &reqwest::Client, address: &str, chain_id: u64)
         .header("Pragma", "no-cache")
         .send().await?;
 
-    if !resp.status().is_success() {
-        return Err(anyhow::anyhow!("HTTP Status {}", resp.status()));
-    }
-    let body: NarrativeResponse = resp.json().await?;
+    let bytes = resp.bytes().await?;
+    
+    // 自动检测 Gzip Magin Number (1f 8b)
+    let text_body = if bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
+        let mut d = GzDecoder::new(&bytes[..]);
+        let mut s = String::new();
+        match d.read_to_string(&mut s) {
+            Ok(_) => {
+                // info!("✅ [Gzip Decompressed] {} bytes -> {} chars", bytes.len(), s.len());
+                s
+            },
+            Err(e) => {
+                warn!("❌ [Gzip Error] Failed to decompress for {}: {}", address, e);
+                // 降级：如果解压失败，尝试直接当文本读
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+        }
+    } else {
+        String::from_utf8_lossy(&bytes).to_string()
+    };
+
+    let body: NarrativeResponse = match serde_json::from_str(&text_body) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("❌ [JSON PARSE FAILED] Addr: {} | Err: {} | Body (first 100): {:.100}", address, e, text_body);
+            return Err(e.into());
+        }
+    };
+
     if let Some(d) = body.data {
         if let Some(t) = d.text {
             if let Some(cn) = t.cn { if !cn.is_empty() { return Ok(Some(cn)); } }
