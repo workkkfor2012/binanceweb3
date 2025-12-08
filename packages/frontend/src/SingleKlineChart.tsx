@@ -33,6 +33,7 @@ interface SingleKlineChartProps {
     onSetActiveChart?: (id: string | null) => void;
     showAxes?: boolean;
     theme: ChartTheme;
+    simpleMode?: boolean;
 }
 
 // --- ✨ 新增: 图例数据接口 ---
@@ -168,12 +169,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const high = candle.high;
         const low = candle.low;
         // 上一轮我们将 value 存为了 amount
-        const amount = vol?.value || 0; 
-        
+        const amount = vol?.value || 0;
+
         const change = ((close - open) / open) * 100;
         const isUp = close >= open;
         const color = isUp ? props.theme.candle.upColor : props.theme.candle.downColor;
-        
+
         // ✨ 计算时间字符串
         const timeStr = formatTimeInChina(Number(candle.time));
 
@@ -193,7 +194,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     const handleKlineUpdate = (update: KlineUpdatePayload) => {
         const info = props.tokenInfo;
         if (!info || !candlestickSeries) return;
-        
+
         const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
         const poolId = chainToPoolId[info.chain.toLowerCase()];
         if (!poolId) return;
@@ -216,7 +217,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 const isUp = newCandle.close >= newCandle.open;
                 const avgPrice = (newCandle.open + newCandle.high + newCandle.low + newCandle.close) / 4;
                 const amount = newCandle.volume * avgPrice;
-                
+
                 volumeSeries.update({
                     time: newCandle.time as Time,
                     value: amount,
@@ -244,7 +245,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
                 grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
             });
-            
+
             if (candlestickSeries) {
                 candlestickSeries.applyOptions({
                     upColor: t.candle.upColor, downColor: t.candle.downColor,
@@ -255,8 +256,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 // Sync Volume Colors with Theme
                 if (volumeSeries) {
                     const candles = candlestickSeries.data() as CandlestickData<number>[];
-                    const volumes = volumeSeries.data() as any[]; 
-                    
+                    const volumes = volumeSeries.data() as any[];
+
                     if (candles.length === volumes.length && candles.length > 0) {
                         const newVolData = volumes.map((v, i) => {
                             const c = candles[i];
@@ -278,14 +279,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     createEffect(() => {
         const info = props.tokenInfo;
         const timeframe = props.timeframe;
-        const t = props.theme; 
+        const t = props.theme;
 
         if (!info || !timeframe) {
             cleanupChart(); setStatus('No token selected.'); return;
         }
 
         cleanupChart(); setStatus(`Loading ${info.symbol}...`);
-        
+
         if (!chartContainer) return;
 
         try {
@@ -303,23 +304,23 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                         return formatTimeInChina(time);
                     }
                 },
-                timeScale: { 
+                timeScale: {
                     visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false,
-                    rightOffset: 12, shiftVisibleRangeOnNewBar: true, fixLeftEdge: false, fixRightEdge: false, 
+                    rightOffset: 12, shiftVisibleRangeOnNewBar: true, fixLeftEdge: false, fixRightEdge: false,
                     // ✨ 核心配置: X轴刻度也尝试使用中国时间（虽然库会自动处理，但我们可以强制显示逻辑）
                     tickMarkFormatter: (time: number, tickMarkType: any, locale: string) => {
                         const date = new Date(time * 1000);
-                         // 简单的时分显示，确保是东八区
+                        // 简单的时分显示，确保是东八区
                         return date.toLocaleTimeString('zh-CN', {
-                             timeZone: 'Asia/Shanghai',
-                             hour: '2-digit', 
-                             minute: '2-digit', 
-                             hour12: false
+                            timeZone: 'Asia/Shanghai',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false
                         });
                     }
                 },
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
-                leftPriceScale: { visible: false, autoScale: false }, 
+                leftPriceScale: { visible: false, autoScale: false },
                 handleScroll: true, handleScale: true,
                 crosshair: {
                     mode: 1, // Magnet mode
@@ -327,7 +328,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             });
 
             ghostSeries = chart.addSeries(LineSeries, {
-                color: 'rgba(0,0,0,0)', lineWidth: 1, priceScaleId: 'left',   
+                color: 'rgba(0,0,0,0)', lineWidth: 1, priceScaleId: 'left',
                 crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
             });
             ghostSeries.setData(generateGhostData(timeframe));
@@ -335,12 +336,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             // Volume Series
             volumeSeries = chart.addSeries(HistogramSeries, {
                 priceFormat: { type: 'volume', precision: 2 },
-                priceScaleId: 'volume', 
+                priceScaleId: 'volume',
             });
 
             chart.priceScale('volume').applyOptions({
                 scaleMargins: { top: 0.8, bottom: 0 },
-                visible: false, 
+                visible: false,
             });
 
             const priceFormatWithFormatter = {
@@ -350,8 +351,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
             candlestickSeries = chart.addSeries(CandlestickSeries, {
                 priceFormat: priceFormatWithFormatter,
-                upColor: t.candle.upColor, downColor: t.candle.downColor, 
-                borderDownColor: t.candle.borderDownColor, borderUpColor: t.candle.borderUpColor, 
+                upColor: t.candle.upColor, downColor: t.candle.downColor,
+                borderDownColor: t.candle.borderDownColor, borderUpColor: t.candle.borderUpColor,
                 wickDownColor: t.candle.wickDownColor, wickUpColor: t.candle.wickUpColor,
                 priceScaleId: 'right'
             });
@@ -407,7 +408,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const processData = (data: any[], isInitial: boolean) => {
             try {
                 const sortedData = data.map(d => ({ ...d, time: Number(d.time) })).sort((a, b) => a.time - b.time);
-                
+
                 const volData = sortedData.map(d => {
                     const avgPrice = (d.open + d.high + d.low + d.close) / 4;
                     return {
@@ -420,7 +421,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 if (isInitial) {
                     candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
                     volumeSeries?.setData(volData);
-                    
+
                     // ✨ 初始化图例显示最后一根 K 线
                     if (sortedData.length > 0) {
                         const lastCandle = sortedData[sortedData.length - 1] as CandlestickData<number>;
@@ -429,7 +430,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     }
 
                     if (props.viewportState) {
-                         chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
+                        chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
                     } else { chart?.timeScale().scrollToRealTime(); }
                 } else {
                     const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
@@ -458,8 +459,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (response.data && response.data.length > 0) processData(response.data, false);
         };
         const handleFetchError = (err: KlineFetchErrorPayload) => {
-             const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
-             if(err.key === key) { log(`❌ Fetch error: ${err.error}`); setStatus(`Error`); }
+            const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
+            if (err.key === key) { log(`❌ Fetch error: ${err.error}`); setStatus(`Error`); }
         };
 
         socket.on('historical_kline_initial', handleInitialData);
@@ -468,7 +469,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         socket.on('kline_update', handleKlineUpdate);
 
         socket.emit('request_historical_kline', payload);
-        socket.emit('subscribe_kline', payload); 
+        socket.emit('subscribe_kline', payload);
 
         onCleanup(() => {
             unsubscribeRealtime(payload);
@@ -506,40 +507,43 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     onCleanup(() => resizeObserver?.disconnect());
 
     return (
-        <div 
+        <div
             class="single-chart-wrapper"
-            style={{ background: props.theme.layout.background, position: 'relative' }} 
+            style={{ background: props.theme.layout.background, position: 'relative', width: '100%', height: '100%' }}
             onMouseEnter={() => props.onSetActiveChart?.(props.tokenInfo?.contractAddress || '')}
         >
-            <div 
-                class="chart-header"
-                style={{
-                    "background-color": props.theme.layout.background,
-                    "color": props.theme.layout.textColor,
-                    "border-bottom": `1px solid ${props.theme.grid.horzLines}`
-                }}
-            >
-                <Show when={props.tokenInfo} fallback={<span class="placeholder" style={{color: props.theme.layout.textColor}}>{status()}</span>}>
-                    <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol}/>
-                    <span class="symbol-title" style={{ color: props.theme.layout.textColor }}>{props.tokenInfo!.symbol}</span>
-                    <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
-                    <button 
-                        class="block-button" 
-                        title={`屏蔽 ${props.tokenInfo!.symbol}`} 
-                        onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}
-                        style={{ color: props.theme.layout.textColor }}
-                    >
-                        🚫
-                    </button>
-                </Show>
-            </div>
+            {/* 头部信息栏: simpleMode 下隐藏 */}
+            <Show when={!props.simpleMode}>
+                <div
+                    class="chart-header"
+                    style={{
+                        "background-color": props.theme.layout.background,
+                        "color": props.theme.layout.textColor,
+                        "border-bottom": `1px solid ${props.theme.grid.horzLines}`
+                    }}
+                >
+                    <Show when={props.tokenInfo} fallback={<span class="placeholder" style={{ color: props.theme.layout.textColor }}>{status()}</span>}>
+                        <img src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}`} class="icon-small" alt={props.tokenInfo!.symbol} />
+                        <span class="symbol-title" style={{ color: props.theme.layout.textColor }}>{props.tokenInfo!.symbol}</span>
+                        <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
+                        <button
+                            class="block-button"
+                            title={`屏蔽 ${props.tokenInfo!.symbol}`}
+                            onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}
+                            style={{ color: props.theme.layout.textColor }}
+                        >
+                            🚫
+                        </button>
+                    </Show>
+                </div>
+            </Show>
 
             {/* ✨ 新增: 悬浮图例 UI (增加了时间显示) */}
-            <div 
-                class="chart-legend" 
+            <div
+                class="chart-legend"
                 style={{
                     position: 'absolute',
-                    top: '38px', // 躲开 chart-header
+                    top: props.simpleMode ? '4px' : '38px', // ✨ simpleMode 下往上移
                     left: '12px',
                     "z-index": 10,
                     "font-family": "'Courier New', monospace", // 等宽字体对齐数字
@@ -550,20 +554,20 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 }}
             >
                 <Show when={legendData()}>
-                    <div style={{ display: 'flex', gap: '8px', flexRule: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                         {/* 时间显示 */}
                         <span style={{ "font-weight": "bold", opacity: 0.8 }}>{legendData()!.time}</span>
-                        <span>O:<span style={{color: legendData()!.color}}>{legendData()!.open}</span></span>
-                        <span>H:<span style={{color: legendData()!.color}}>{legendData()!.high}</span></span>
-                        <span>L:<span style={{color: legendData()!.color}}>{legendData()!.low}</span></span>
-                        <span>C:<span style={{color: legendData()!.color}}>{legendData()!.close}</span></span>
-                        <span>Amt:<span style={{color: props.theme.layout.textColor}}>{legendData()!.amount}</span></span>
-                        <span style={{color: legendData()!.color}}>({legendData()!.changePercent})</span>
+                        <span>O:<span style={{ color: legendData()!.color }}>{legendData()!.open}</span></span>
+                        <span>H:<span style={{ color: legendData()!.color }}>{legendData()!.high}</span></span>
+                        <span>L:<span style={{ color: legendData()!.color }}>{legendData()!.low}</span></span>
+                        <span>C:<span style={{ color: legendData()!.color }}>{legendData()!.close}</span></span>
+                        <span>Amt:<span style={{ color: props.theme.layout.textColor }}>{legendData()!.amount}</span></span>
+                        <span style={{ color: legendData()!.color }}>({legendData()!.changePercent})</span>
                     </div>
                 </Show>
             </div>
 
-            <div ref={chartContainer!} class="chart-container" />
+            <div ref={chartContainer!} class="chart-container" style={{ width: '100%', height: '100%' }} />
         </div>
     );
 
