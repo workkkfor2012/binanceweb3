@@ -145,34 +145,16 @@ async fn build_and_warm_client(proxy_url: Option<&str>, index: usize, pool_name:
         };
 
         // --- 暖机检查 (Warm-up) ---
+        // 移除严格的暖机检查。因为并发启动 30 个客户端去请求 web3.binance.com 可能会触发 WAF/RateLimit，
+        // 导致大量客户端被错误判定为“不可用”并替换为 broken_client (0.0.0.0)。
+        // 实际的请求错误由 http_handlers 中的重试逻辑处理即可。
         if proxy_url.is_some() {
-            // 只有代理模式才需要严格暖机，验证隧道是否打通
-            // 发送一个极轻量的请求 (HEAD)
-            match client.head(HEALTH_CHECK_URL).send().await {
-                Ok(resp) => {
-                     // 403/404/200 都代表 TCP 通道建立了，代理没挂
-                     // 只要状态码不是 5xx 或者是连接错误，都算成功
-                     if resp.status().as_u16() < 500 {
-                         if attempt > 1 {
-                             info!("✅ [POOL:{}] Client #{} warmed up successfully on attempt {}.", pool_name, index, attempt);
-                         }
-                         return client;
-                     }
-                     warn!("⚠️ [POOL:{}] Warm-up got 5xx ({}). Retrying...", pool_name, resp.status());
-                }
-                Err(e) => {
-                    warn!("⚠️ [POOL:{}] Client #{} warm-up failed ({}). Retrying ({}/3)...", pool_name, index, e, attempt);
-                }
-            }
-        } else {
-            // 直连模式直接返回，不需要强制 HTTP 测试
-            return client; 
+             info!("✅ [POOL:{}] Client #{} created (No Http Warm-up).", pool_name, index);
         }
         
-        // 稍微等待再重试
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        return client;
     }
     
-    error!("🔥 [POOL:{}] Client #{} failed all warm-up attempts. Returning BROKEN client to protect IP.", pool_name, index);
+    error!("🔥 [POOL:{}] Client #{} failed all build attempts.", pool_name, index);
     build_safe_fallback(proxy_url) 
 }

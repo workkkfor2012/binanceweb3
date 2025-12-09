@@ -55,9 +55,20 @@ async fn main() {
             std::fs::create_dir_all(parent).expect("Failed to create database directory");
         }
     }
+
+    // ✨ 优化 DB 配置：开启 WAL 模式，提升并发读写性能
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+    use std::str::FromStr;
+
+    let db_opts = SqliteConnectOptions::from_str(&config.database_url)
+        .expect("Invalid database URL")
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal);
+
     let db_pool = SqlitePoolOptions::new()
         .max_connections(10)
-        .connect(&config.database_url)
+        .connect_with(db_opts)
         .await
         .expect("Failed to connect to SQLite database");
     kline_handler::init_db(&db_pool).await.expect("Failed to initialize database schema");
@@ -70,11 +81,11 @@ async fn main() {
     let proxy_url = format!("http://{}", config.proxy_addr);
 
     // 叙事抓取池 (API 请求，较低并发)
-    let narrative_proxy_pool = ClientPool::new(8, Some(proxy_url.clone()), "PROXY_API".to_string()).await;
+    let narrative_proxy_pool = ClientPool::new(10, Some(proxy_url.clone()), "PROXY_API".to_string()).await;
 
     // ✨ 图片代理池 (高并发，大流量)
     // 增加连接数以应对并发加载图片的场景，使用独立的池避免阻塞 API 请求
-    let image_proxy_pool = ClientPool::new(30, Some(proxy_url), "PROXY_IMG".to_string()).await;
+    let image_proxy_pool = ClientPool::new(10, Some(proxy_url), "PROXY_IMG".to_string()).await;
 
     // ✨ 1. 创建全局 Channels
     let (kline_tx, kline_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
