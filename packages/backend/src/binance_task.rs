@@ -292,7 +292,7 @@ async fn handle_payload(
         TaskType::Tick => {
             // 处理 Tick 数据：使用 RoomIndex 进行 O(1) 路由
             // 🔍 Debug Logging for Tick Data
-            info!("🔍 [TICK_DEBUG] Raw Payload (len={}): {:.100}...", text.len(), text);
+            //info!("🔍 [TICK_DEBUG] Raw Payload (len={}): {:.100}...", text.len(), text);
 
             match serde_json::from_str::<BinanceStreamWrapper<BinanceTickDataWrapper>>(text) {
                 Ok(wrapper) => {
@@ -308,7 +308,7 @@ async fn handle_payload(
                             let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) { tick.t0pu } 
                                         else if tick.t1a.eq_ignore_ascii_case(tracked_address) { tick.t1pu } 
                                         else { 
-                                            info!("⚠️ [TICK_DEBUG] Address mismatch: Tracked={} vs T0={} / T1={}", tracked_address, tick.t0a, tick.t1a);
+                                            //info!("⚠️ [TICK_DEBUG] Address mismatch: Tracked={} vs T0={} / T1={}", tracked_address, tick.t0a, tick.t1a);
                                             return; 
                                         };
                             
@@ -317,7 +317,7 @@ async fn handle_payload(
                             // ✨ 核心：利用索引找到该 Token 对应的所有房间 (1m, 15m, 1h...)
                             if let Some(index) = room_index {
                                 if let Some(room_keys) = index.get(&tracked_address.to_lowercase()) {
-                                    info!("✅ [TICK_DEBUG] Match found for {}: {} rooms", tracked_address, room_keys.len());
+                                   // info!("✅ [TICK_DEBUG] Match found for {}: {} rooms", tracked_address, room_keys.len());
                                     
                                     for room_key in room_keys.iter() {
                                         if let Some(entry) = app_state.get(room_key) {
@@ -327,7 +327,7 @@ async fn handle_payload(
                                                 if kline.close > 0.0 {
                                                     let ratio = if price > kline.close { price / kline.close } else { kline.close / price };
                                                     if ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && usd_volume < LOW_VOLUME_THRESHOLD {
-                                                        info!("🛑 [TICK_DEBUG] Filtered (Dev: {:.2}, Vol: {:.2})", ratio, usd_volume);
+                                                        //info!("🛑 [TICK_DEBUG] Filtered (Dev: {:.2}, Vol: {:.2})", ratio, usd_volume);
                                                         continue;
                                                     }
                                                 }
@@ -338,14 +338,14 @@ async fn handle_payload(
 
                                                 // 广播
                                                 broadcast_data(io, room_key, kline.clone()).await;
-                                                info!("📡 [TICK_DEBUG] Broadcasted update to {}", room_key);
+                                                //info!("📡 [TICK_DEBUG] Broadcasted update to {}", room_key);
                                             } else {
-                                                info!("⚠️ [TICK_DEBUG] No active kline for room {}", room_key);
+                                                //info!("⚠️ [TICK_DEBUG] No active kline for room {}", room_key);
                                             }
                                         }
                                     }
                                 } else {
-                                    info!("⚠️ [TICK_DEBUG] No rooms in index for {}", tracked_address);
+                                    //info!("⚠️ [TICK_DEBUG] No rooms in index for {}", tracked_address);
                                 }
                             }
                         }
