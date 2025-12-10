@@ -1,5 +1,5 @@
 // packages/frontend/src/ChartPageLayout.tsx
-import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
+import { Component, createSignal, onMount, onCleanup, createMemo, Show, createEffect, untrack } from 'solid-js';
 import type { MarketItem } from 'shared-types';
 import CompactRankingListsContainer from './CompactRankingListsContainer';
 import MultiChartGrid from './MultiChartGrid';
@@ -118,8 +118,18 @@ const ChartPageLayout: Component = () => {
       .sort((a, b) => {
         const valA = a[rankBy]!;
         const valB = b[rankBy]!;
-        return (typeof valB === 'string' ? parseFloat(valB) : valB) -
-          (typeof valA === 'string' ? parseFloat(valA) : valA);
+        const numA = typeof valA === 'string' ? parseFloat(valA) : valA;
+        const numB = typeof valB === 'string' ? parseFloat(valB) : valB;
+
+        // Primary Sort: Value Descending
+        if (numB !== numA) {
+          return numB - numA;
+        }
+
+        // Secondary Sort: Contract Address (Stable Tie-breaker)
+        // This ensures that if two tokens have the exact same price/change, 
+        // they don't swap positions randomly.
+        return a.contractAddress.localeCompare(b.contractAddress);
       })
       .slice(0, 9);
   });
@@ -178,12 +188,13 @@ const ChartPageLayout: Component = () => {
                   <span class="hotkey-hint" style={{ opacity: 0.6 }}> (Key: T)</span>
                 </div>
               </div>
+
               <MultiChartGrid
                 tokens={rankedTokensForGrid()}
                 onBlockToken={handleBlockToken}
                 timeframe={activeTimeframe()}
                 viewportState={viewportState()}
-                onViewportChange={handleViewportChange}
+                onViewportChange={setViewportState}
                 activeChartId={activeChartId()}
                 onSetActiveChart={setActiveChartId}
                 theme={currentTheme()}
