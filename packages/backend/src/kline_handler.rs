@@ -14,12 +14,11 @@ use sqlx::{
     Row,
 };
 use std::time::Instant;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 const API_URL_TEMPLATE: &str = "https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}";
-const API_MAX_LIMIT: i64 = 500;
-const DB_MAX_RECORDS: i64 = 1000;
-const DB_PRUNE_TO_COUNT: i64 = 500;
+/// 币安API单次最多返回500根K线，也是我们缓存的上限
+const MAX_KLINES: i64 = 500;
 
 // ✨ 确保是 public
 pub async fn init_db(pool: &SqlitePool) -> Result<()> {
@@ -94,7 +93,7 @@ async fn complete_kline_data(
     // 简化逻辑：如果没有数据或数据旧了，就去拉取
     let limit = match last_kline {
         Some(_) => 50, // 简单策略：增量拉取
-        None => API_MAX_LIMIT,
+        None => MAX_KLINES,
     };
 
     let new_klines = fetch_historical_data_with_pool(&state.client_pool, payload, limit).await?;
@@ -172,23 +171,55 @@ async fn fetch_historical_data_with_pool(
 }
 
 // ... DB Helpers ...
+/// 获取最新的500根K线，按时间升序返回（前端需要升序渲染）
 async fn get_klines_from_db(pool: &SqlitePool, key: &str) -> Result<Vec<KlineTick>> {
-    sqlx::query_as::<_, KlineTick>("SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time ASC")
-        .bind(key).fetch_all(pool).await.context("DB fetch all")
+    // 使用子查询：先倒序取最新500根，再外层正序排列
+    sqlx::query_as::<_, KlineTick>(
+        "SELECT time, open, high, low, close, volume FROM (
+            SELECT * FROM klines WHERE primary_key = ? ORDER BY time DESC LIMIT ?
+        ) ORDER BY time ASC"
+    )
+    .bind(key)
+    .bind(MAX_KLINES)
+    .fetch_all(pool)
+    .await
+    .context("获取缓存K线数据失败")
 }
 async fn get_last_kline_from_db(pool: &SqlitePool, key: &str) -> Result<Option<KlineTick>> {
     sqlx::query_as("SELECT time, open, high, low, close, volume FROM klines WHERE primary_key = ? ORDER BY time DESC LIMIT 1")
         .bind(key).fetch_optional(pool).await.context("DB fetch last")
 }
+/// 保存K线数据并自动裁剪，确保每个品种/周期最多保留500根
 async fn save_klines_to_db(pool: &SqlitePool, key: &str, klines: &[KlineTick]) -> Result<()> {
     if klines.is_empty() { return Ok(()); }
+    
     let mut tx = pool.begin().await?;
+    
+    // 1. 插入/更新新数据
     for k in klines {
         sqlx::query("INSERT OR REPLACE INTO klines (primary_key, time, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(key).bind(k.time.timestamp()).bind(k.open).bind(k.high).bind(k.low).bind(k.close).bind(k.volume)
             .execute(&mut *tx).await?;
     }
+    
+    // 2. 裁剪：删除超过500根的旧数据
+    let deleted = sqlx::query(
+        "DELETE FROM klines WHERE primary_key = ? AND time NOT IN (
+            SELECT time FROM klines WHERE primary_key = ? ORDER BY time DESC LIMIT ?
+        )"
+    )
+    .bind(key)
+    .bind(key)
+    .bind(MAX_KLINES)
+    .execute(&mut *tx)
+    .await?;
+    
     tx.commit().await?;
+    
+    if deleted.rows_affected() > 0 {
+        info!("🧹 [PRUNE] {} 删除了 {} 条旧K线数据", key, deleted.rows_affected());
+    }
+    
     Ok(())
 }
 // Helper functions
