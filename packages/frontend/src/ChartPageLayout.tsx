@@ -40,18 +40,18 @@ const saveBlockListToStorage = (blockList: Set<string>): void => {
 const ChartPageLayout: Component = () => {
   // ✨ 修复：显式传入 'hotlist' 作为分类
   const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
-  
+
   // UI 状态
   const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('priceChange5m');
   const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
   const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
-  
+
   // 视图与焦点状态
   const [viewportState, setViewportState] = createSignal<ViewportState | null>(null);
   const [activeChartId, setActiveChartId] = createSignal<string | null>(null);
   const [viewMode, setViewMode] = createSignal<'grid' | 'single'>('grid');
   const [focusedToken, setFocusedToken] = createSignal<MarketItem | null>(null);
-  
+
   // 主题状态
   const [themeIndex, setThemeIndex] = createSignal(0);
   const currentTheme = createMemo(() => PRESET_THEMES[themeIndex()]);
@@ -64,32 +64,32 @@ const ChartPageLayout: Component = () => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
     if (e.key.toLowerCase() === 't') {
-        setThemeIndex((prev) => (prev + 1) % PRESET_THEMES.length);
-        console.log(`[Layout] 🎨 Theme changed to: ${PRESET_THEMES[(themeIndex() + 1) % PRESET_THEMES.length].name}`);
-        return;
+      setThemeIndex((prev) => (prev + 1) % PRESET_THEMES.length);
+      console.log(`[Layout] 🎨 Theme changed to: ${PRESET_THEMES[(themeIndex() + 1) % PRESET_THEMES.length].name}`);
+      return;
     }
 
     if (Object.keys(TIMEFRAME_MAP).includes(e.key)) {
-        const newTimeframe = TIMEFRAME_MAP[e.key];
-        setActiveTimeframe(newTimeframe);
-        if (viewMode() === 'grid') setViewportState(null);
-        return;
+      const newTimeframe = TIMEFRAME_MAP[e.key];
+      setActiveTimeframe(newTimeframe);
+      if (viewMode() === 'grid') setViewportState(null);
+      return;
     }
 
     if (e.key.toLowerCase() === 'f') {
-        if (viewMode() === 'grid') {
-            const hoveredTokenId = activeChartId();
-            if (hoveredTokenId) {
-                const token = rankedTokensForGrid().find(t => t.contractAddress === hoveredTokenId);
-                if (token) {
-                    setFocusedToken(token);
-                    setViewMode('single');
-                }
-            }
-        } else {
-            setViewMode('grid');
-            setFocusedToken(null);
+      if (viewMode() === 'grid') {
+        const hoveredTokenId = activeChartId();
+        if (hoveredTokenId) {
+          const token = rankedTokensForGrid().find(t => t.contractAddress === hoveredTokenId);
+          if (token) {
+            setFocusedToken(token);
+            setViewMode('single');
+          }
         }
+      } else {
+        setViewMode('grid');
+        setFocusedToken(null);
+      }
     }
   };
 
@@ -111,7 +111,7 @@ const ChartPageLayout: Component = () => {
     const rankBy = activeRankBy();
     const blocked = blockList();
     if (!rankBy) return [];
-    
+
     return [...marketData]
       .filter(item => !blocked.has(item.contractAddress))
       .filter(item => item.icon && item[rankBy] != null)
@@ -119,7 +119,7 @@ const ChartPageLayout: Component = () => {
         const valA = a[rankBy]!;
         const valB = b[rankBy]!;
         return (typeof valB === 'string' ? parseFloat(valB) : valB) -
-               (typeof valA === 'string' ? parseFloat(valA) : valA);
+          (typeof valA === 'string' ? parseFloat(valA) : valA);
       })
       .slice(0, 9);
   });
@@ -134,19 +134,19 @@ const ChartPageLayout: Component = () => {
   };
 
   return (
-    <div 
-        class="chart-page-container" 
-        style={{ 
-            "background-color": currentTheme().layout.background,
-            "color": currentTheme().layout.textColor
-        }}
+    <div
+      class="chart-page-container"
+      style={{
+        "background-color": currentTheme().layout.background,
+        "color": currentTheme().layout.textColor
+      }}
     >
-      <div 
+      <div
         class="left-sidebar"
         style={{
-            "background-color": currentTheme().layout.background,
-            "border-color": currentTheme().grid.vertLines,
-            "color": currentTheme().layout.textColor
+          "background-color": currentTheme().layout.background,
+          "border-color": currentTheme().grid.vertLines,
+          "color": currentTheme().layout.textColor
         }}
       >
         <CompactRankingListsContainer
@@ -158,10 +158,10 @@ const ChartPageLayout: Component = () => {
           theme={currentTheme()}
         />
         <div style={{ "padding": "10px", "font-size": "0.8em", "opacity": 0.6, "text-align": "center" }}>
-            Status: {connectionStatus()}
+          Status: {connectionStatus()}
         </div>
       </div>
-      
+
       <div class="right-chart-grid">
         <Show
           when={viewMode() === 'single' && focusedToken()}
@@ -172,7 +172,7 @@ const ChartPageLayout: Component = () => {
                   <span>Timeframe: </span>
                   <strong>{activeTimeframe().toUpperCase()}</strong>
                   <span class="hotkey-hint" style={{ opacity: 0.6 }}> (Keys: 1-5)</span>
-                  
+
                   <span style={{ "margin-left": "15px" }}>Theme: </span>
                   <strong>{currentTheme().name}</strong>
                   <span class="hotkey-hint" style={{ opacity: 0.6 }}> (Key: T)</span>

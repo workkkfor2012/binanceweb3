@@ -136,7 +136,7 @@ const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
 const MemeCard: Component<MemeCardProps> = (props) => {
     const { item } = props;
     const cleanTwitterId = createMemo(() => extractTweetId(item.twitterId || item.twitter));
-    const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
+    const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}&symbol=${encodeURIComponent(item.symbol)}` : '';
     const bondingSpeed = createMemo(() => getBondingDuration(item));
 
     const handleCardClick = () => {
@@ -159,7 +159,15 @@ const MemeCard: Component<MemeCardProps> = (props) => {
             {/* Header Area */}
             <div class="card-header-layout">
                 <Show when={item.icon} fallback={<div style={{ width: '42px', height: '42px', background: '#eee', borderRadius: '50%' }}></div>}>
-                    <img src={iconUrl} class="card-icon" loading="lazy" onError={(e) => e.currentTarget.style.display = 'none'} />
+                    <img
+                        src={iconUrl}
+                        class="card-icon"
+                        loading="lazy"
+                        onError={(e) => {
+                            // console.error(`[IconError] Symbol: ${item.symbol} | URL: ${e.currentTarget.src}`);
+                            e.currentTarget.style.display = 'none';
+                        }}
+                    />
                 </Show>
 
                 <div class="card-info-col">

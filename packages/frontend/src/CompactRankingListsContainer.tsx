@@ -87,9 +87,13 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
                                     }
                                 >
                                     <img
-                                        src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}`}
+                                        src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}&symbol=${item.symbol}`}
                                         alt={item.symbol}
                                         class="icon"
+                                        onError={(e) => {
+                                            // console.error(`[IconError] Symbol: ${item.symbol} | URL: ${e.currentTarget.src}`);
+                                            e.currentTarget.style.display = 'none';
+                                        }}
                                     />
                                 </Show>
                                 <span class="symbol-compact">{item.symbol}</span>
@@ -160,9 +164,13 @@ const RawDataList: Component<RawDataListProps> = (props) => {
                                         }
                                     >
                                         <img
-                                            src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}`}
+                                            src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}&symbol=${item.symbol}`}
                                             alt={item.symbol}
                                             class="icon"
+                                            onError={(e) => {
+                                                // console.error(`[IconError] Symbol: ${item.symbol} | URL: ${e.currentTarget.src}`);
+                                                e.currentTarget.style.display = 'none';
+                                            }}
                                         />
                                     </Show>
                                     <span class="symbol-compact">{item.symbol}</span>

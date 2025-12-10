@@ -30,7 +30,15 @@ const SingleTokenView: Component<SingleTokenViewProps> = (props) => {
                 }}
             >
                 <div class="token-info">
-                    <img src={`https://localhost:3001/image-proxy?url=${encodeURIComponent(props.token.icon!)}`} class="icon" alt={props.token.symbol} />
+                    <img
+                        src={`https://localhost:3001/image-proxy?url=${encodeURIComponent(props.token.icon!)}&symbol=${props.token.symbol}`}
+                        class="icon"
+                        alt={props.token.symbol}
+                        onError={(e) => {
+                            // console.error(`[IconError] Symbol: ${props.token.symbol} | URL: ${e.currentTarget.src}`);
+                            e.currentTarget.style.display = 'none';
+                        }}
+                    />
                     <h1>{props.token.symbol}</h1>
                     <span class="chain-badge">{props.token.chain.toUpperCase()}</span>
                 </div>
