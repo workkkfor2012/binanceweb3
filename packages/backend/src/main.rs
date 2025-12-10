@@ -23,6 +23,9 @@ use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::fs::File;
+use std::io::BufReader;
+use rustls::ServerConfig;
 
 // ✨ 引入新类型
 use crate::state::{BinanceChannels, SubscriptionCommand};
@@ -162,9 +165,57 @@ async fn main() {
         )
         .layer(layer);
 
-    info!("🚀 Rust server is running at http://0.0.0.0:3001");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    // 🔐 HTTPS 配置（HTTP/2 支持 - 使用 Ring 加密后端）
+    let cert_file = File::open("cert.pem")
+        .expect("Failed to open cert.pem");
+    let key_file = File::open("key.pem")
+        .expect("Failed to open key.pem");
+    
+    let mut cert_reader = BufReader::new(cert_file);
+    let mut key_reader = BufReader::new(key_file);
+    
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Failed to parse cert.pem");
+    
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .expect("Failed to read private key")
+        .expect("No private key found in key.pem");
+    
+    let mut tls_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("Failed to build TLS config");
+    
+    // 启用 HTTP/2
+    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    
+    let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_config));
+
+    // 🚀 启动两个服务器（并发运行）
+    info!("🔒 Starting HTTPS server on port 3001 (HTTP/2 for frontend)");
+    info!("🌐 Starting HTTP server on port 3002 (HTTP/1.1 for crawler)");
+    
+    let https_app = app.clone();
+    let http_app = app;
+    
+    let https_server = tokio::spawn(async move {
+        axum_server::bind_rustls("0.0.0.0:3001".parse::<std::net::SocketAddr>().unwrap(), rustls_config)
+            .serve(https_app.into_make_service())
+            .await
+            .unwrap();
+    });
+    
+    let http_server = tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:3002").await.unwrap();
+        axum::serve(listener, http_app).await.unwrap();
+    });
+    
+    // 等待两个服务器（任意一个崩溃就退出）
+    tokio::select! {
+        _ = https_server => info!("HTTPS server stopped"),
+        _ = http_server => info!("HTTP server stopped"),
+    }
 }
 
 fn init_tracing() {

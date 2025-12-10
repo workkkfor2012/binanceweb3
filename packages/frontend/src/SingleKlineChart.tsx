@@ -18,7 +18,7 @@ import type { MarketItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
 import type { ChartTheme } from './themes';
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = 'https://localhost:3001';
 
 // --- 配置区 ---
 const FORCE_GHOST_CANDLE_COUNT = 1000;

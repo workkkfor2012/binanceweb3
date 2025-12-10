@@ -5,7 +5,7 @@ import type { MemeItem, MarketItem } from './types';
 import SingleKlineChart from './SingleKlineChart';
 import { PRESET_THEMES } from './themes';
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = 'https://localhost:3001';
 
 declare global {
     interface Window {

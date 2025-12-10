@@ -3,7 +3,7 @@ import { createSignal, onMount, For, Component, JSX, createMemo } from 'solid-js
 import type { MarketItem, HotlistItem } from './types'; // 引入修正后的类型
 import { useMarketData } from './hooks/useMarketData';
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = 'https://localhost:3001';
 const CHAINS = ['BSC', 'Base', 'Solana'];
 
 // --- 辅助函数区 ---
@@ -64,7 +64,7 @@ const RankingList: Component<RankingListProps> = (props) => {
       // 使用类型断言访问可能的动态属性
       const valA = (a as any)[props.rankBy] ?? -Infinity;
       const valB = (b as any)[props.rankBy] ?? -Infinity;
-      
+
       const numA = typeof valA === 'string' ? parseFloat(valA) : valA;
       const numB = typeof valB === 'string' ? parseFloat(valB) : valB;
       return numB - numA;
@@ -97,23 +97,23 @@ interface MarketRowProps {
 const MarketRow: Component<MarketRowProps> = (props) => {
   const { item } = props;
   const proxiedIconUrl = () => item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
-  
+
   const handleRowClick = () => {
-      window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
+    window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
   };
 
   // 辅助函数：安全获取 HotlistItem 独有的可选字段
   // 因为 MemeItem 没有这些字段，直接访问会报错
   const getHotlistField = (field: keyof HotlistItem) => {
-      if (item.source === 'hotlist') {
-          return (item as HotlistItem)[field];
-      }
-      return undefined;
+    if (item.source === 'hotlist') {
+      return (item as HotlistItem)[field];
+    }
+    return undefined;
   }
 
   return (
     <tr onClick={handleRowClick} style={{ cursor: 'pointer' }}>
-      <td><img src={proxiedIconUrl()} alt={item.symbol} class="icon" onError={(e) => e.currentTarget.style.display='none'} /></td>
+      <td><img src={proxiedIconUrl()} alt={item.symbol} class="icon" onError={(e) => e.currentTarget.style.display = 'none'} /></td>
       <td>{item.symbol}</td>
       <td>{item.chain}</td>
       <td>{formatPrice(item.price)}</td>
@@ -123,7 +123,7 @@ const MarketRow: Component<MarketRowProps> = (props) => {
       {/* 某些字段可能不存在于 MemeItem，使用 optional access 或 helper */}
       <td>{(item as any).chainId || '-'}</td>
       <td title={item.contractAddress}>{`${String(item.contractAddress).substring(0, 6)}...`}</td>
-      
+
       {/* ✨ 即使是可选字段，现在也能通过类型检查，不会报错 */}
       <td>{formatPercentage(getHotlistField('priceChange1m'))}</td>
       <td>{formatPercentage(getHotlistField('priceChange5m'))}</td>
@@ -156,14 +156,14 @@ const PRICE_CHANGE_RANKINGS = [
 
 const App: Component = () => {
   const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
-  
+
   const [desiredFields, setDesiredFields] = createSignal<string[]>([]);
   const [selectedChain, setSelectedChain] = createSignal<string>(CHAINS[0]);
-  
-  const filteredData = createMemo(() => 
+
+  const filteredData = createMemo(() =>
     marketData.filter(item => item.chain === selectedChain())
   );
-  
+
   onMount(() => {
     console.log('[App] 🚀 Mounting Main Dashboard (Table View)...');
     const fetchDesiredFields = async () => {
@@ -172,10 +172,10 @@ const App: Component = () => {
         if (!response.ok) throw new Error('Network response was not ok');
         const fields: string[] = await response.json();
         const preferredOrder = [
-            'icon', 'symbol', 'chain', 'price', 'priceChange24h', 'volume24h', 'marketCap', 
-            'chainId', 'contractAddress',
-            'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h',
-            'volume1m', 'volume5m', 'volume1h', 'volume4h'
+          'icon', 'symbol', 'chain', 'price', 'priceChange24h', 'volume24h', 'marketCap',
+          'chainId', 'contractAddress',
+          'priceChange1m', 'priceChange5m', 'priceChange1h', 'priceChange4h',
+          'volume1m', 'volume5m', 'volume1h', 'volume4h'
         ];
         const orderedFields = [...new Set([...preferredOrder, ...fields])];
         const finalFields = orderedFields.filter(f => fields.includes(f));
@@ -192,22 +192,22 @@ const App: Component = () => {
     <div class="page-wrapper">
       <header class="app-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div class="header-left">
-            <h1>🔥 Market Hotlist</h1>
-            <nav class="nav-links" style={{ display: 'flex', gap: '15px', marginTop: '10px' }}>
-                <span class="nav-btn active" style={{ fontWeight: 'bold', textDecoration: 'underline' }}>🔥 Hotlist</span>
-                <a href="/meme.html" class="nav-btn" style={{ textDecoration: 'none', color: '#666' }}>🐶 Meme New</a>
-            </nav>
+          <h1>🔥 Market Hotlist</h1>
+          <nav class="nav-links" style={{ display: 'flex', gap: '15px', marginTop: '10px' }}>
+            <span class="nav-btn active" style={{ fontWeight: 'bold', textDecoration: 'underline' }}>🔥 Hotlist</span>
+            <a href="/meme.html" class="nav-btn" style={{ textDecoration: 'none', color: '#666' }}>🐶 Meme New</a>
+          </nav>
         </div>
-        
+
         <div class="stats-panel">
-            <div class="status-indicator">
-                <span>Status: </span>
-                <span class={connectionStatus().includes('Connected') ? 'positive' : 'negative'}>
-                   {connectionStatus()}
-                </span>
-            </div>
-            <div class="update-time">Upd: {lastUpdate()}</div>
-            <div class="count-badge">Count: {filteredData().length} / {marketData.length}</div>
+          <div class="status-indicator">
+            <span>Status: </span>
+            <span class={connectionStatus().includes('Connected') ? 'positive' : 'negative'}>
+              {connectionStatus()}
+            </span>
+          </div>
+          <div class="update-time">Upd: {lastUpdate()}</div>
+          <div class="count-badge">Count: {filteredData().length} / {marketData.length}</div>
         </div>
       </header>
 
@@ -270,9 +270,9 @@ const App: Component = () => {
             </tr>
           </thead>
           <tbody>
-            <For 
-                each={filteredData()} 
-                fallback={<tr><td colspan={desiredFields().length || 1} style="text-align:center; padding: 20px;">等待数据或该链无数据...</td></tr>}
+            <For
+              each={filteredData()}
+              fallback={<tr><td colspan={desiredFields().length || 1} style="text-align:center; padding: 20px;">等待数据或该链无数据...</td></tr>}
             >
               {(item) => <MarketRow item={item} />}
             </For>

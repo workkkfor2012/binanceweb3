@@ -33,6 +33,10 @@ sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "macros", "ch
 chrono = { version = "0.4.42", features = ["serde"] }
 tokio-retry = "0.3.0"
 flate2 = "1.1.5"
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls-pemfile = "2.2"
 
 [profile.dev]
 incremental = true

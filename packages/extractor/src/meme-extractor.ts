@@ -12,7 +12,7 @@ chromium.use(stealth());
 // ==============================================================================
 // --- ⚙️ 配置区域 ---
 // ==============================================================================
-const SERVER_URL = 'http://localhost:3001';
+const SERVER_URL = 'http://localhost:3002';
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
 
@@ -185,9 +185,9 @@ interface LiqState {
 class AdvancedDataSanitizer {
     // 内存缓存：Key = ContractAddress
     private cache = new Map<string, LiqState>();
-    
+
     // 容忍度：连续 5 次（约5秒）异常才视为真实暴跌
-    private readonly MAX_ABNORMAL_TOLERANCE = 10; 
+    private readonly MAX_ABNORMAL_TOLERANCE = 10;
 
     /**
      * 批量处理 MemeItem 列表，应用防抖逻辑
@@ -262,19 +262,19 @@ function normalizeData(rawItems: any[]): MemeItem[] {
 
     return rawItems.map(raw => {
         const isMigrated = String(raw.migrateStatus) === 'true';
-        
+
         // 原始时间戳
         const migrateTime = safeInt(raw.migrateTime);
         const createTime = safeInt(raw.createTime);
-        
+
         // 排序用时间：如果已迁移，优先展示迁移时间(发射时间)
         const displayTime = (isMigrated && migrateTime > 0) ? migrateTime : createTime;
 
         // 计算买卖比
         const countBuy = safeInt(raw.countBuy);
         const countSell = safeInt(raw.countSell);
-        const buySellRatio = countSell > 0 
-            ? parseFloat((countBuy / countSell).toFixed(2)) 
+        const buySellRatio = countSell > 0
+            ? parseFloat((countBuy / countSell).toFixed(2))
             : countBuy; // 防止除以0
 
         return {
@@ -285,7 +285,7 @@ function normalizeData(rawItems: any[]): MemeItem[] {
             name: raw.name || raw.symbol,
             icon: raw.icon === 'null' ? undefined : raw.icon,
             decimal: safeInt(raw.decimal),
-            
+
             // --- 状态与时间 ---
             status: isMigrated ? 'dex' : 'trading',
             progress: safeFloat(raw.progress),
@@ -293,7 +293,7 @@ function normalizeData(rawItems: any[]): MemeItem[] {
             migrateTime: migrateTime,
             displayTime: displayTime,
             updateTime: Date.now(),
-            
+
             // --- 资金与交易 ---
             liquidity: safeFloat(raw.liquidity),
             marketCap: safeFloat(raw.marketCap),
@@ -321,7 +321,7 @@ function normalizeData(rawItems: any[]): MemeItem[] {
             twitter: raw.twitter === 'null' ? null : raw.twitter,
             telegram: raw.telegram === 'null' ? null : raw.telegram,
             website: raw.website === 'null' ? null : raw.website,
-            
+
             source: 'meme-rush'
         };
     });
@@ -370,13 +370,13 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
         await ensurePageReady(page);
         await handleGuidePopup(page);
         await checkAndClickCookieBanner(page);
-        
+
         // 模拟鼠标激活页面
         const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
         await page.mouse.move(viewport.width / 2, viewport.height / 2);
         await page.evaluate(async () => {
             window.scrollTo(0, 500); await new Promise(r => setTimeout(r, 500));
-            window.scrollTo(0, 0);   await new Promise(r => setTimeout(r, 500));
+            window.scrollTo(0, 0); await new Promise(r => setTimeout(r, 500));
         });
 
         logger.log(`[Loop] 🚀 开始监听 [${CAPTURE_CONFIG.targetCategory}] (Full Data Mode)...`, logger.LOG_LEVELS.INFO);
@@ -396,7 +396,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
                     return { lists: window.MemeScannerEngine.scan() };
                 }).catch(async (e) => {
                     if (e.message.includes('Execution context was destroyed')) {
-                        await page.evaluate(SCANNER_LOGIC_SCRIPT).catch(() => {});
+                        await page.evaluate(SCANNER_LOGIC_SCRIPT).catch(() => { });
                     }
                     return null;
                 });
@@ -404,10 +404,10 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
                 if (scanResult && scanResult.lists && scanResult.lists.length > 0) {
                     noDataCount = 0;
                     const lists = scanResult.lists;
-                    const targetLists = lists.filter((l:any) => l.type === CAPTURE_CONFIG.targetCategory);
-                    
+                    const targetLists = lists.filter((l: any) => l.type === CAPTURE_CONFIG.targetCategory);
+
                     if (targetLists.length > 0) {
-                        targetLists.sort((a:any, b:any) => b.time - a.time);
+                        targetLists.sort((a: any, b: any) => b.time - a.time);
                         const bestList = targetLists[0];
                         const topData = bestList.data; // Raw Data Objects
 
@@ -426,7 +426,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
                             // 2. 发现新头部币种时，打印丰富的调试信息
                             if (currentSymbol !== lastTopSymbol) {
                                 logger.log(`\n🔥 [NEW TOP] ${currentSymbol} found! Count: ${bestList.count}`, logger.LOG_LEVELS.INFO);
-                                
+
                                 console.log('   --------------------------------------------------------');
                                 console.log(`   ⏰ Time:     ${new Date(showTimeTs).toLocaleTimeString()} (Ts: ${showTimeTs})`);
                                 console.log(`   📊 Buy/Sell: ${firstRaw.countBuy} / ${firstRaw.countSell}`);
@@ -437,7 +437,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
 
                                 lastTopSymbol = currentSymbol;
                             }
-                            
+
                             if (loopCount % 5 === 0) {
                                 process.stdout.write(`\r[Scan #${loopCount}] Fetched ${topData.length} items. Top: ${currentSymbol.padEnd(6)} `);
                             }
@@ -449,11 +449,11 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
 
                             // ✨ 应用数据清洗器：防抖动，防错误归零 ✨
                             items = sanitizer.process(items);
-                            
-                            socket.emit('data-update', { 
-                                category: `meme_${CAPTURE_CONFIG.targetCategory}`, 
-                                type: 'full', 
-                                data: items 
+
+                            socket.emit('data-update', {
+                                category: `meme_${CAPTURE_CONFIG.targetCategory}`,
+                                type: 'full',
+                                data: items
                             });
 
                             // 偶尔清理一下缓存，防止 map 无限增长 (每 100 次循环清理一次)
@@ -468,7 +468,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
                 } else {
                     noDataCount++;
                     if (loopCount % 5 === 0) process.stdout.write(`\r[Scan #${loopCount}] ⏳ 暂无数据...`);
-                    
+
                     if (noDataCount > 30) {
                         logger.log(`\n[Auto-Fix] 数据流中断，刷新页面...`, logger.LOG_LEVELS.INFO);
                         noDataCount = 0;
@@ -484,7 +484,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
             }
         }, CAPTURE_CONFIG.interval);
 
-        await new Promise(() => {});
+        await new Promise(() => { });
 
     } catch (error: any) {
         logger.log(`❌ Setup Error: ${error.message}`, logger.LOG_LEVELS.ERROR);

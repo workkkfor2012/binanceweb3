@@ -19,7 +19,7 @@ chromium.use(stealth());
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const EXTRACTION_INTERVAL_MS = 500;
-const SERVER_URL = 'http://localhost:3001';
+const SERVER_URL = 'http://localhost:3002';
 
 // ✨ 配置分类：全是 hotlist
 const TARGETS = [
@@ -97,7 +97,7 @@ async function setupPageForChain(
         process.stdout.write(`\r[${new Date().toLocaleTimeString()}] ${perfString}   `);
 
         if (type !== 'no-change' && data && data.length > 0) {
-            
+
             // 映射到 Shared Types 的 HotlistItem
             const enrichedData: HotlistItem[] = data.map((item: any) => ({
                 // --- BaseItem ---
@@ -106,7 +106,7 @@ async function setupPageForChain(
                 symbol: item.symbol,
                 icon: item.icon,
                 updateTime: Date.now(),
-                
+
                 // --- HotlistItem 特有 ---
                 price: parseFloat(item.price) || 0,
                 marketCap: parseFloat(item.marketCap) || 0,
@@ -116,15 +116,15 @@ async function setupPageForChain(
                 priceChange24h: parseFloat(item.priceChange24h) || 0,
                 volume5m: parseFloat(item.volume5m) || 0,
                 priceChange5m: parseFloat(item.priceChange5m) || 0,
-                
+
                 source: 'hotlist'
             }));
 
             // 发送 Payload，Category 必须是 'hotlist'
-            socket.emit('data-update', { 
+            socket.emit('data-update', {
                 category: category, // 这里的 category 应该是 'hotlist'
-                type: type, 
-                data: enrichedData 
+                type: type,
+                data: enrichedData
             });
         }
     };

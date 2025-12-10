@@ -34,4 +34,6 @@ dist-ssr
 # Vite
 .vite
 
-
+# TLS 证书（本地开发）
+packages/backend/cert.pem
+packages/backend/key.pem
