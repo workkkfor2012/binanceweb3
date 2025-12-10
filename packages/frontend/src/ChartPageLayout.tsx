@@ -114,7 +114,7 @@ const ChartPageLayout: Component = () => {
 
     return [...marketData]
       .filter(item => !blocked.has(item.contractAddress))
-      .filter(item => item.icon && item[rankBy] != null)
+      .filter(item => item[rankBy] != null && String(item[rankBy]).trim() !== '')
       .sort((a, b) => {
         const valA = a[rankBy]!;
         const valB = b[rankBy]!;
