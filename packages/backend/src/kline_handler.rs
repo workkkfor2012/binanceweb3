@@ -6,13 +6,14 @@ use crate::{
     ServerState,
 };
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::Value;
 use socketioxide::extract::{Data, SocketRef};
 use sqlx::{
     sqlite::{SqlitePool, SqliteRow},
     Row,
 };
+use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{error, info, warn};
 
@@ -66,11 +67,14 @@ pub async fn handle_kline_request(
         }
     };
 
+    // ✨ HYDRATION: Fill gaps before sending
+    let hydrated_data = fill_kline_gaps(initial_data, &payload.interval, MAX_KLINES as usize);
+
     let initial_response = KlineHistoryResponse {
         address: payload.address.clone(),
         chain: payload.chain.clone(),
         interval: payload.interval.clone(),
-        data: initial_data,
+        data: hydrated_data,
     };
     s.emit("historical_kline_initial", &initial_response).ok();
 
@@ -80,7 +84,6 @@ pub async fn handle_kline_request(
     });
 }
 
-// ... (以下辅助函数保持不变，为节省篇幅略去，但文件需要包含它们) ...
 // 请保留原文件中 complete_kline_data, fetch_historical_data_with_pool, DB操作函数 等
 // 确保 fetch_historical_data_with_pool 使用 state.client_pool
 async fn complete_kline_data(
@@ -98,41 +101,49 @@ async fn complete_kline_data(
 
     let new_klines = fetch_historical_data_with_pool(&state.client_pool, payload, limit).await?;
     
+    // Save new raw data to DB first
     if !new_klines.is_empty() {
+        save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
+    }
+
+    // ✨ HYDRATION: Always read back the FULL updated set from DB and hydrate
+    // This ensures continuity even if we only fetched a small chunk
+    let full_raw_data = get_klines_from_db(&state.db_pool, primary_key).await.unwrap_or_default();
+    
+    if !full_raw_data.is_empty() {
+        let hydrated_data = fill_kline_gaps(full_raw_data, &payload.interval, MAX_KLINES as usize);
+
         let resp = KlineHistoryResponse {
             address: payload.address.clone(),
             chain: payload.chain.clone(),
             interval: payload.interval.clone(),
-            data: new_klines.clone(),
+            data: hydrated_data.clone(), // Send full hydrated set
         };
         s.emit("historical_kline_completed", &resp).ok();
-        save_klines_to_db(&state.db_pool, primary_key, &new_klines).await?;
-    }
-
-    // ✨ Fix: Initialize current_kline in AppState so Ticks work immediately
-    let latest_candidate = if let Some(last_new) = new_klines.last() {
-        Some(last_new.clone())
-    } else {
-        last_kline 
-    };
-
-    if let Some(kline) = latest_candidate {
-        let chain_lower = payload.chain.to_lowercase();
-        let pool_id = match chain_lower.as_str() {
-            "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => 0,
-        };
-
-        if pool_id > 0 {
-            let room_key = format!("kl@{}@{}@{}", pool_id, payload.address.to_lowercase(), payload.interval);
-            if let Some(room) = state.app_state.get(&room_key) {
-                let mut guard = room.current_kline.lock().await;
-                if guard.is_none() {
-                    info!("✅ [KLINE INIT] Initialized current_kline for {} from history/db", room_key);
-                    *guard = Some(kline);
-                }
-            }
+        
+        // Initialize current_kline for ticks (use the last REAL one or last HYDRATED one? Ticks need real price)
+        // Use the last element of hydrated (which mirrors last real close)
+        let latest_candidate = hydrated_data.last().cloned();
+        
+        if let Some(kline) = latest_candidate {
+             let chain_lower = payload.chain.to_lowercase();
+             let pool_id = match chain_lower.as_str() {
+                 "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => 0,
+             };
+     
+             if pool_id > 0 {
+                 let room_key = format!("kl@{}@{}@{}", pool_id, payload.address.to_lowercase(), payload.interval);
+                 if let Some(room) = state.app_state.get(&room_key) {
+                     let mut guard = room.current_kline.lock().await;
+                     if guard.is_none() {
+                         info!("✅ [KLINE INIT] Initialized current_kline for {} from history/db", room_key);
+                         *guard = Some(kline);
+                     }
+                 }
+             }
         }
     }
+
     Ok(Some(new_klines.len()))
 }
 
@@ -222,6 +233,71 @@ async fn save_klines_to_db(pool: &SqlitePool, key: &str, klines: &[KlineTick]) -
     
     Ok(())
 }
+
+/// ✨ Gap Filling Implementation
+fn fill_kline_gaps(mut raw_data: Vec<KlineTick>, interval_str: &str, target_count: usize) -> Vec<KlineTick> {
+    if raw_data.is_empty() {
+        return vec![];
+    }
+
+    let interval_ms = interval_to_ms(interval_str);
+    if interval_ms == 0 {
+        return raw_data;
+    }
+    let interval_dur = Duration::milliseconds(interval_ms);
+
+    // 1. Determine End Time (Aligned to current time)
+    let now = Utc::now();
+    let now_ts = now.timestamp_millis();
+    let aligned_end_ts = (now_ts / interval_ms) * interval_ms;
+    let end_time = Utc.timestamp_millis_opt(aligned_end_ts).unwrap();
+
+    // 2. Determine Start Time
+    let start_time = end_time - (interval_dur * (target_count as i32 - 1));
+
+    // 3. Map for O(1) lookup
+    let data_map: HashMap<i64, KlineTick> = raw_data
+        .drain(..)
+        .map(|k| (k.time.timestamp_millis(), k))
+        .collect();
+
+    let mut filled_data = Vec::with_capacity(target_count);
+    let mut last_close = 0.0;
+    
+    // Try to find an initial close if the start of window is empty
+    // "Backfill" strategy: find the first available data point
+    let first_available = data_map.values().min_by_key(|k| k.time);
+    if let Some(first) = first_available {
+        last_close = first.open; // Use Open as the seed
+    }
+
+    let mut curr = start_time;
+    for _ in 0..target_count {
+        let ts = curr.timestamp_millis();
+        
+        if let Some(mut existing) = data_map.get(&ts).cloned() {
+            // Data exists
+            last_close = existing.close;
+            filled_data.push(existing);
+        } else {
+            // Gap -> Fill
+            let synthetic = KlineTick {
+                time: curr,
+                open: last_close,
+                high: last_close,
+                low: last_close,
+                close: last_close,
+                volume: 0.0,
+            };
+            filled_data.push(synthetic);
+        }
+
+        curr = curr + interval_dur;
+    }
+
+    filled_data
+}
+
 // Helper functions
 fn get_primary_key(p: &KlineSubscribePayload) -> String { format!("{}@{}@{}", p.address, p.chain, p.interval) }
 fn format_interval_for_api(i: &str) -> String { if let Some(v) = i.strip_suffix('m') { format!("{}min", v) } else { i.to_string() } }
@@ -232,7 +308,6 @@ fn interval_to_ms(i: &str) -> i64 {
     match u.as_str() { "m"=>val*60000, "h"=>val*3600000, "d"=>val*86400000, _=>0 }
 }
 fn parse_api_data(data: &[Vec<Value>], _label: &str) -> Result<Vec<KlineTick>> {
-     // (Implement same parsing logic as before)
      let mut res = Vec::new();
      for d in data {
          let t = d.get(5).and_then(|v| v.as_i64()).unwrap_or(0);
