@@ -1,7 +1,8 @@
 // packages/frontend/src/CompactRankingListsContainer.tsx
-import { Component, createMemo, For, JSX, Show } from 'solid-js';
+import { Component, createMemo, For, JSX } from 'solid-js';
 import type { MarketItem } from 'shared-types';
 import type { ChartTheme } from './themes';
+import TokenAvatar from './components/TokenAvatar';
 
 const BACKEND_URL = 'https://localhost:3001';
 
@@ -72,30 +73,12 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
                             }}
                         >
                             <div class="symbol-and-icon">
-                                {/* 图标显示逻辑：有图显示，无图显示占位符 */}
-                                <Show
-                                    when={item.icon}
-                                    fallback={
-                                        <div class="icon" style={{
-                                            background: props.theme.grid.vertLines,
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            fontSize: '10px',
-                                            color: props.theme.layout.textColor
-                                        }}>?</div>
-                                    }
-                                >
-                                    <img
-                                        src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}&symbol=${item.symbol}`}
-                                        alt={item.symbol}
-                                        class="icon"
-                                        onError={(e) => {
-                                            // console.error(`[IconError] Symbol: ${item.symbol} | URL: ${e.currentTarget.src}`);
-                                            e.currentTarget.style.display = 'none';
-                                        }}
-                                    />
-                                </Show>
+                                <TokenAvatar
+                                    symbol={item.symbol}
+                                    src={item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}&symbol=${item.symbol}` : null}
+                                    size={24}
+                                    class="icon"
+                                />
                                 <span class="symbol-compact">{item.symbol}</span>
                             </div>
                             <span class="value-compact">{props.formatter(item[props.rankBy])}</span>
@@ -150,29 +133,12 @@ const RawDataList: Component<RawDataListProps> = (props) => {
                                 }}
                             >
                                 <div class="symbol-and-icon">
-                                    <Show
-                                        when={item.icon}
-                                        fallback={
-                                            <div class="icon" style={{
-                                                background: props.theme.grid.vertLines,
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                justifyContent: 'center',
-                                                fontSize: '10px',
-                                                color: props.theme.layout.textColor
-                                            }}>?</div>
-                                        }
-                                    >
-                                        <img
-                                            src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon!)}&symbol=${item.symbol}`}
-                                            alt={item.symbol}
-                                            class="icon"
-                                            onError={(e) => {
-                                                // console.error(`[IconError] Symbol: ${item.symbol} | URL: ${e.currentTarget.src}`);
-                                                e.currentTarget.style.display = 'none';
-                                            }}
-                                        />
-                                    </Show>
+                                    <TokenAvatar
+                                        symbol={item.symbol}
+                                        src={item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}&symbol=${item.symbol}` : null}
+                                        size={24}
+                                        class="icon"
+                                    />
                                     <span class="symbol-compact">{item.symbol}</span>
                                 </div>
                                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>

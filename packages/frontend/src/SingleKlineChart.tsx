@@ -1,4 +1,5 @@
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
+import TokenAvatar from './components/TokenAvatar';
 import {
     createChart,
     ColorType,
@@ -523,14 +524,11 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     }}
                 >
                     <Show when={props.tokenInfo} fallback={<span class="placeholder" style={{ color: props.theme.layout.textColor }}>{status()}</span>}>
-                        <img
-                            src={`${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}&symbol=${props.tokenInfo!.symbol}`}
+                        <TokenAvatar
+                            symbol={props.tokenInfo!.symbol}
+                            src={props.tokenInfo!.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}&symbol=${props.tokenInfo!.symbol}` : null}
                             class="icon-small"
-                            alt={props.tokenInfo!.symbol}
-                            onError={(e) => {
-                                // console.error(`[IconError] Symbol: ${props.tokenInfo!.symbol} | URL: ${e.currentTarget.src}`);
-                                e.currentTarget.style.display = 'none';
-                            }}
+                            size={20}
                         />
                         <span class="symbol-title" style={{ color: props.theme.layout.textColor }}>{props.tokenInfo!.symbol}</span>
                         <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
