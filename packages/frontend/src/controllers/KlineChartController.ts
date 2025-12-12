@@ -319,10 +319,18 @@ export class KlineChartController {
             if (response.data && response.data.length > 0) this.processBulkData(response.data, false);
         };
 
+        const handleConnect = () => {
+            if (!this.currentToken) return;
+            console.log(`[KlineChartController] 🔄 Reconnected. Resubscribing & Fetching history for ${this.currentToken.symbol}...`);
+            socket.emit('request_historical_kline', payload);
+            socket.emit('subscribe_kline', payload);
+        };
+
         // Listeners
         socket.on('kline_update', handleKlineUpdate);
         socket.on('historical_kline_initial', handleInitialData);
         socket.on('historical_kline_completed', handleCompletedData);
+        socket.on('connect', handleConnect);
 
         // Emit
         socket.emit('request_historical_kline', payload);
@@ -333,6 +341,7 @@ export class KlineChartController {
             socket.off('kline_update', handleKlineUpdate);
             socket.off('historical_kline_initial', handleInitialData);
             socket.off('historical_kline_completed', handleCompletedData);
+            socket.off('connect', handleConnect);
             socket.emit('unsubscribe_kline', payload);
         });
     }

@@ -464,10 +464,17 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (err.key === key) { log(`❌ Fetch error: ${err.error}`); setStatus(`Error`); }
         };
 
+        const handleConnect = () => {
+            console.log(`[SingleKlineChart] 🔄 Reconnected. Resubscribing & Fetching history for ${info.symbol}...`);
+            socket.emit('request_historical_kline', payload);
+            socket.emit('subscribe_kline', payload);
+        };
+
         socket.on('historical_kline_initial', handleInitialData);
         socket.on('historical_kline_completed', handleCompletedData);
         socket.on('kline_fetch_error', handleFetchError);
         socket.on('kline_update', handleKlineUpdate);
+        socket.on('connect', handleConnect);
 
         socket.emit('request_historical_kline', payload);
         socket.emit('subscribe_kline', payload);
@@ -477,6 +484,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             socket.off('historical_kline_initial', handleInitialData);
             socket.off('historical_kline_completed', handleCompletedData);
             socket.off('kline_fetch_error', handleFetchError);
+            socket.off('connect', handleConnect);
             cleanupChart();
         });
     });
