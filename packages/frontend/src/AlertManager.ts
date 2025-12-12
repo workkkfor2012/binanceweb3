@@ -25,7 +25,7 @@ const ALERT_THRESHOLDS = {
     priceChangeVolume1m_min: 50000, // 1分钟价格异动所需的最小成交额
     priceChangeVolume5m_min: 150000, // 5分钟价格异动所需的最小成交额
 };
-const COOLDOWN_PERIOD_MS = 1000*60;
+const COOLDOWN_PERIOD_MS = 1000 * 60;
 
 // --- 模块内部状态 ---
 let availablePreferredVoices: SpeechSynthesisVoice[] = [];
@@ -48,7 +48,7 @@ export function initializeVoices(): void {
     }
 }
 
-function speak(text: string): void {
+export function speak(text: string): void {
     console.log(`[SpeakFlow] 收到请求，准备播报: "${text}"`);
 
     if (speechSynthesis.speaking) {
@@ -97,7 +97,7 @@ function canAlert(id: string, type: string): boolean {
 }
 
 export function checkAndTriggerAlerts(
-    newItem: MarketItem, 
+    newItem: MarketItem,
     oldItem: MarketItem | undefined,
     onAlert: (logMessage: string, alertType: 'volume' | 'price') => void
 ): void {
@@ -107,7 +107,7 @@ export function checkAndTriggerAlerts(
 
     const { contractAddress, symbol, volume1m, volume5m, priceChange1m, priceChange5m } = newItem;
     let message = '';
-    
+
     // 规则 1: 1分钟成交额
     if (volume1m > ALERT_THRESHOLDS.volume1m && canAlert(contractAddress, 'volume1m')) {
         const volumeText = `${Math.round(volume1m / 10000)}万`;

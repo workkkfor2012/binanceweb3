@@ -1,9 +1,10 @@
 // packages/frontend/src/MemePage.tsx
-import { Component, createMemo, For, Show, onMount, createSignal, onCleanup } from 'solid-js';
+import { Component, createMemo, For, Show, onMount, createSignal, onCleanup, createEffect } from 'solid-js';
 import { useMarketData } from './hooks/useMarketData';
 import type { MemeItem, MarketItem } from './types';
 import SingleKlineChart from './SingleKlineChart';
 import { PRESET_THEMES } from './themes';
+import { speak, initializeVoices } from './AlertManager.js';
 
 const BACKEND_URL = 'https://localhost:3001';
 
@@ -326,7 +327,7 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                     <Show when={chartsInitialized()}>
                         <SingleKlineChart
                             tokenInfo={marketItem}
-                            timeframe="15m" // 默认 15m 看趋势
+                            timeframe="1m" // 默认 1m 看局部
                             theme={PRESET_THEMES[0]} // 使用亮色主题
                             viewportState={null}
                             activeChartId={null}
@@ -403,8 +404,32 @@ const MemePage: Component = () => {
         return sorted.slice(0, 9);
     });
 
+    // ✨ 监听新币并在前端语音播报
+    const [lastAnnouncedTokenAddr, setLastAnnouncedTokenAddr] = createSignal<string | null>(null);
+
+    createEffect(() => {
+        const tokens = recentTokens();
+        // 确保有数据
+        if (tokens.length > 0) {
+            const newest = tokens[0];
+            const lastAddr = lastAnnouncedTokenAddr();
+
+            // 如果是页面刚加载 (lastAddr === null)，我们记录它是“当前最新”，但不播报
+            // 只有当之后 newest 变了，且不等于 lastAddr 时才播报
+            if (lastAddr === null) {
+                setLastAnnouncedTokenAddr(newest.contractAddress);
+            } else if (lastAddr !== newest.contractAddress) {
+                // 发现新币！
+                console.log(`[VoiceAlert] 🔔 New Token Detected: ${newest.symbol} (${newest.contractAddress})`);
+                speak(`新币发射 ${newest.symbol}`);
+                setLastAnnouncedTokenAddr(newest.contractAddress);
+            }
+        }
+    });
+
     // ✨ 监听键盘事件 'H'
     onMount(() => {
+        initializeVoices();
         console.log('[MemePage] 🚀 Dual Column Layout Mounted.');
 
         const handleKeydown = (e: KeyboardEvent) => {
