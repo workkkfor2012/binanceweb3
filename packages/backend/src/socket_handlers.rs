@@ -129,7 +129,7 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 
                 // 2. Send Subscribe Command
                 if let Some(sender) = state.token_managers.get(&address_lower) {
-                    let kl_stream = format!("kl@{}_{}_{}", pool_id, address_lower, payload.interval);
+                    let kl_stream = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
                     let _ = sender.send(SubscriptionCommand::Subscribe(kl_stream));
                     
                     if need_sub_tick {
@@ -162,7 +162,7 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
 
             if room_empty {
                 state.app_state.remove(&room_name);
-                let kl_stream = format!("kl@{}_{}_{}", pool_id, address_lower, payload.interval);
+                let kl_stream = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
                 
                 if let Some(sender) = state.token_managers.get(&address_lower) {
                     let _ = sender.send(SubscriptionCommand::Unsubscribe(kl_stream));
@@ -196,7 +196,7 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
                         let address = parts[2].to_string();
                         let interval = parts[3];
 
-                        let kl_stream = format!("kl@{}_{}_{}", pool_id, address, interval);
+                        let kl_stream = format!("kl@{}@{}@{}", pool_id, address, interval);
                          if let Some(sender) = state.token_managers.get(&address.to_lowercase()) {
                             let _ = sender.send(SubscriptionCommand::Unsubscribe(kl_stream));
                         }

@@ -127,7 +127,7 @@ async fn connect_and_serve(
     }
     
     for interval in active_intervals.iter() {
-         streams_to_sub.push(format!("kl@{}_{}_{}", pool_id, token_address.to_lowercase(), interval));
+         streams_to_sub.push(format!("kl@{}@{}@{}", pool_id, token_address.to_lowercase(), interval));
     }
 
     if !streams_to_sub.is_empty() {
@@ -250,22 +250,22 @@ async fn handle_payload(
 
     // Try parsing as Kline first
     if let Ok(wrapper) = serde_json::from_str::<BinanceStreamWrapper<BinanceKlineDataWrapper>>(text) {
-         // stream: kl@poolID_address_interval
+         // stream: kl@poolID@address@interval (使用@作为分隔符)
          let parts: Vec<&str> = wrapper.stream.split('@').collect();
-         if parts.len() == 2 {
-             let params: Vec<&str> = parts[1].split('_').collect(); // [poolId, addr, interval]
-             if params.len() == 3 {
-                 let interval = params[2];
-                 // Construct room key explicitly from payload
-                 let room_key = format!("kl@{}_{}_{}", params[0], params[1], interval);
-                 let kline = parse_kline(&wrapper.data.kline_data.values);
-                 
-                 // Update & Broadcast
-                 if let Some(room) = app_state.get(&room_key) {
-                     *room.current_kline.lock().await = Some(kline.clone());
-                     let bca = KlineBroadcastData { room: room_key.clone(), data: kline };
-                     io.to(room_key).emit("kline_update", &bca).await.ok();
-                 }
+         if parts.len() == 4 {
+             // parts[0] = "kl", parts[1] = poolId, parts[2] = address, parts[3] = interval
+             let pool_id = parts[1];
+             let address = parts[2];
+             let interval = parts[3];
+             // room_key 格式与内部一致
+             let room_key = format!("kl@{}@{}@{}", pool_id, address, interval);
+             let kline = parse_kline(&wrapper.data.kline_data.values);
+             
+             // Update & Broadcast
+             if let Some(room) = app_state.get(&room_key) {
+                 *room.current_kline.lock().await = Some(kline.clone());
+                 let bca = KlineBroadcastData { room: room_key.clone(), data: kline };
+                 io.to(room_key).emit("kline_update", &bca).await.ok();
              }
          }
          return;
