@@ -17,10 +17,13 @@ pub enum SubscriptionCommand {
     Unsubscribe(String),
 }
 
-#[derive(Clone)]
-pub struct BinanceChannels {
-    pub kline_tx: UnboundedSender<SubscriptionCommand>,
-    pub tick_tx: UnboundedSender<SubscriptionCommand>,
+// ✨ Token Manager Map: Token Address (Lower) -> Sender<SubscriptionCommand>
+// 用于向特定 Token 的 Worker 发送指令 (Subscribe/Unsubscribe/Shutdown)
+// 这里的 Sender 通常是 mpsc::UnboundedSender<SubscriptionCommand>
+pub type TokenManagerMap = Arc<DashMap<String, UnboundedSender<SubscriptionCommand>>>;
+
+pub fn new_token_manager_map() -> TokenManagerMap {
+    Arc::new(DashMap::new())
 }
 
 pub fn new_app_state() -> AppState {

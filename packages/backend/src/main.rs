@@ -9,6 +9,7 @@ mod http_handlers;
 mod kline_handler;
 mod socket_handlers;
 mod state;
+mod token_manager; // ✨ 新增模块
 mod types;
 
 use axum::{routing::get, Router};
@@ -28,12 +29,12 @@ use std::io::BufReader;
 use rustls::ServerConfig;
 
 // ✨ 引入新类型
-use crate::state::{BinanceChannels, SubscriptionCommand};
+use crate::state::{TokenManagerMap, SubscriptionCommand}; // 修改引用
 
 #[derive(Clone)]
 pub struct ServerState {
     pub app_state: state::AppState,
-    pub room_index: state::RoomIndex, // ✨ 索引
+    pub room_index: state::RoomIndex,
     pub config: Arc<Config>,
     pub io: SocketIo,
     pub token_symbols: Arc<DashMap<String, String>>,
@@ -41,8 +42,8 @@ pub struct ServerState {
     pub db_pool: SqlitePool,
     pub client_pool: ClientPool,
     pub narrative_proxy_pool: ClientPool,
-    pub image_proxy_pool: ClientPool, // ✨ 新增：专门用于图片的代理池
-    pub binance_channels: BinanceChannels, // ✨ 通道
+    pub image_proxy_pool: ClientPool,
+    pub token_managers: TokenManagerMap, // ✨ 替换为 Token Managers
 }
 
 #[tokio::main]
@@ -90,44 +91,9 @@ async fn main() {
     // 增加连接数以应对并发加载图片的场景，使用独立的池避免阻塞 API 请求
     let image_proxy_pool = ClientPool::new(10, Some(proxy_url), "PROXY_IMG".to_string()).await;
 
-    // ✨ 1. 创建全局 Channels
-    let (kline_tx, kline_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
-    let (tick_tx, tick_rx) = mpsc::unbounded_channel::<SubscriptionCommand>();
-
     let app_state = state::new_app_state();
     let room_index = state::new_room_index();
-
-    // ✨ 2. 启动全局 Binance 任务
-    // Task A: Kline Manager (不需要索引)
-    let config_clone1 = config.clone();
-    let io_clone1 = io.clone();
-    let state_clone1 = app_state.clone();
-    tokio::spawn(async move {
-        binance_task::start_global_manager(
-            binance_task::TaskType::Kline,
-            io_clone1,
-            config_clone1,
-            state_clone1,
-            None, 
-            kline_rx,
-        ).await;
-    });
-
-    // Task B: Tick Manager (需要索引)
-    let config_clone2 = config.clone();
-    let io_clone2 = io.clone();
-    let state_clone2 = app_state.clone();
-    let index_clone2 = room_index.clone();
-    tokio::spawn(async move {
-        binance_task::start_global_manager(
-            binance_task::TaskType::Tick,
-            io_clone2,
-            config_clone2,
-            state_clone2,
-            Some(index_clone2),
-            tick_rx,
-        ).await;
-    });
+    let token_managers = state::new_token_manager_map();
 
     let server_state = ServerState {
         app_state,
@@ -139,8 +105,8 @@ async fn main() {
         db_pool,
         client_pool,
         narrative_proxy_pool,
-        image_proxy_pool, // 注入图片池
-        binance_channels: BinanceChannels { kline_tx, tick_tx },
+        image_proxy_pool,
+        token_managers,
     };
 
     let socket_state = server_state.clone();

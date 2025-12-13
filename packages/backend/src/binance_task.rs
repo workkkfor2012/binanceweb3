@@ -1,7 +1,7 @@
 // packages/backend/src/binance_task.rs
 use super::{
     config::Config,
-    state::{AppState, RoomIndex, SubscriptionCommand},
+    state::{AppState, RoomIndex},
     types::{
         BinanceKlineDataWrapper, BinanceStreamWrapper, BinanceTickDataWrapper, KlineBroadcastData,
         KlineTick,
@@ -48,203 +48,7 @@ impl std::fmt::Display for TaskType {
     }
 }
 
-// ✨ 核心入口：启动全局管理器
-pub async fn start_global_manager(
-    task_type: TaskType,
-    io: SocketIo,
-    config: Arc<Config>,
-    app_state: AppState,
-    room_index: Option<RoomIndex>,
-    mut cmd_rx: UnboundedReceiver<SubscriptionCommand>,
-) {
-    info!("🚀 [STARTUP] Starting Global {}...", task_type);
-    let mut active_streams: HashSet<String> = HashSet::new();
 
-    loop {
-        // 无限重连机制
-        let result = connect_and_serve(
-            task_type,
-            &io,
-            &config,
-            &app_state,
-            &room_index,
-            &mut cmd_rx,
-            &mut active_streams,
-        )
-        .await;
-
-        match result {
-            Ok(_) => warn!("🔁 [MANAGER {}] Disconnected gracefully. Reconnecting in 3s...", task_type),
-            Err(e) => error!("🔁 [MANAGER {}] Connection crash: {:#?}. Retrying in 5s...", task_type, e),
-        }
-        sleep(Duration::from_secs(5)).await;
-    }
-}
-
-async fn connect_and_serve(
-    task_type: TaskType,
-    io: &SocketIo,
-    config: &Config,
-    app_state: &AppState,
-    room_index: &Option<RoomIndex>,
-    cmd_rx: &mut UnboundedReceiver<SubscriptionCommand>,
-    active_streams: &mut HashSet<String>,
-) -> Result<()> {
-    // 1. 建立连接 (复用 HTTP 隧道逻辑)
-    let stream = establish_http_tunnel(task_type, config).await?;
-    let host = Url::parse(&config.binance_wss_url)?.host_str().unwrap_or_default().to_string();
-    let tls_stream = wrap_stream_with_tls(stream, &host).await?;
-
-    let mut request = config.binance_wss_url.as_str().into_client_request()?;
-    request.headers_mut().insert("User-Agent", "Rust/Backend GlobalManager".parse()?);
-
-    let (ws_stream, response) = client_async_with_config(request, tls_stream, None)
-        .await.context("WebSocket handshake failed")?;
-
-    info!("✅ [MANAGER {}] Connected! Status: {}", task_type, response.status());
-
-    let (mut write, mut read) = ws_stream.split();
-
-    // 2. 断线重连后恢复订阅
-    if !active_streams.is_empty() {
-        info!("🔄 [MANAGER {}] Resubscribing {} streams...", task_type, active_streams.len());
-        let params: Vec<&str> = active_streams.iter().map(|s| s.as_str()).collect();
-        // 分批订阅，防止请求过大
-        for chunk in params.chunks(50) {
-            let msg = serde_json::json!({
-                "method": "SUBSCRIBE",
-                "params": chunk,
-                "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
-            });
-            write.send(Message::Text(msg.to_string().into())).await?;
-            sleep(Duration::from_millis(300)).await;
-        }
-    }
-
-    let mut heartbeat = interval(config.heartbeat_interval);
-    heartbeat.tick().await; // Consume the first immediate tick
-
-    // 3. 事件循环
-    loop {
-        tokio::select! {
-            _ = heartbeat.tick() => {
-                write.send(Message::Ping(vec![].into())).await?;
-            }
-
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    Some(first_cmd) => {
-                        let mut stream_intent: std::collections::HashMap<String, SubscriptionCommand> = std::collections::HashMap::new();
-
-                        // Helper to update intent
-                        let mut process = |c: SubscriptionCommand| {
-                            let key = match &c {
-                                SubscriptionCommand::Subscribe(s) => s.clone(),
-                                SubscriptionCommand::Unsubscribe(s) => s.clone(),
-                            };
-                            stream_intent.insert(key, c);
-                        };
-
-                        process(first_cmd);
-
-                        // ⚡ DEBOUNCE: Wait 50ms to allow more commands to arrive/accumulate in the channel
-                        // This ensures we actually form a batch instead of sending one-by-one if they arrive serially but quickly
-                        sleep(Duration::from_millis(50)).await;
-
-                        // ⚡ BATCHING: Drain up to 50 pending commands from channel to send in one go
-                        for _ in 0..50 {
-                            match cmd_rx.try_recv() {
-                                Ok(c) => process(c),
-                                Err(_) => break,
-                            }
-                        }
-
-                        // ⚡ COALESCE: Calculate the net effect for each stream
-                        // If we receive [Unsub A, Sub A], the net effect is Sub A.
-                        // If we receive [Sub A, Unsub A], the net effect is Unsub A.
-                        // We rely on the `stream_intent` map which will hold the LAST command for each stream.
-                        
-                        let mut final_sub = Vec::new();
-                        let mut final_unsub = Vec::new();
-
-                        for (stream, cmd_type) in stream_intent {
-                            match cmd_type {
-                                SubscriptionCommand::Subscribe(_) => final_sub.push(stream),
-                                SubscriptionCommand::Unsubscribe(_) => final_unsub.push(stream),
-                            }
-                        }
-
-                        // Send Subscribe Batch
-                        if !final_sub.is_empty() {
-                            let mut params_to_send = Vec::new();
-                            for stream in final_sub {
-                                if !active_streams.contains(&stream) {
-                                    active_streams.insert(stream.clone());
-                                    params_to_send.push(stream);
-                                }
-                            }
-                            if !params_to_send.is_empty() {
-                                info!("📥 [CMD {}] Batch Subscribing {} streams: {:?}", task_type, params_to_send.len(), params_to_send);
-                                for chunk in params_to_send.chunks(50) {
-                                    let msg = serde_json::json!({
-                                        "method": "SUBSCRIBE",
-                                        "params": chunk,
-                                        "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
-                                    });
-                                    write.send(Message::Text(msg.to_string().into())).await?;
-                                }
-                            }
-                        }
-
-                        // Send Unsubscribe Batch
-                        if !final_unsub.is_empty() {
-                            let mut params_to_send = Vec::new();
-                            for stream in final_unsub {
-                                if active_streams.contains(&stream) {
-                                    active_streams.remove(&stream);
-                                    params_to_send.push(stream);
-                                }
-                            }
-                            if !params_to_send.is_empty() {
-                                info!("📤 [CMD {}] Batch Unsubscribing {} streams: {:?}", task_type, params_to_send.len(), params_to_send);
-                                for chunk in params_to_send.chunks(50) {
-                                    let msg = serde_json::json!({
-                                        "method": "UNSUBSCRIBE",
-                                        "params": chunk,
-                                        "id": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis()
-                                    });
-                                    write.send(Message::Text(msg.to_string().into())).await?;
-                                }
-                            }
-                        }
-                    },
-                    None => return Err(anyhow!("Command channel closed")),
-                }
-            }
-
-            msg_result = read.next() => {
-                match msg_result {
-                    Some(Ok(msg)) => {
-                        match msg {
-                            Message::Text(text) => handle_payload(task_type, &text, io, app_state, room_index).await,
-                            Message::Ping(p) => { write.send(Message::Pong(p)).await?; }
-                            Message::Close(c) => {
-                                warn!("❌ [MANAGER {}] Received Close Frame: {:?}", task_type, c);
-                                return Ok(());
-                            }
-                            _ => {}
-                        }
-                    },
-                    Some(Err(e)) => return Err(e.into()),
-                    None => {
-                        warn!("❌ [MANAGER {}] Received unexpected EOF (Stream ended)", task_type);
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-}
 
 async fn handle_payload(
     task_type: TaskType,
@@ -390,7 +194,7 @@ async fn broadcast_data(io: &SocketIo, room_name: &str, kline: KlineTick) {
 }
 
 // 建立 TCP 代理连接
-async fn establish_http_tunnel(task_type: TaskType, config: &Config) -> Result<TcpStream> {
+pub async fn establish_http_tunnel(worker_id: &str, config: &Config) -> Result<TcpStream> {
     let url_obj = Url::parse(&config.binance_wss_url)?;
     let host = url_obj.host_str().unwrap_or_default();
     let port = url_obj.port_or_known_default().unwrap_or(443);
@@ -409,12 +213,12 @@ async fn establish_http_tunnel(task_type: TaskType, config: &Config) -> Result<T
     let response = String::from_utf8_lossy(&buf[..n]);
 
     if !response.starts_with("HTTP/1.1 200") {
-        return Err(anyhow!("❌ [MANAGER {}] Proxy CONNECT failed: {}", task_type, response.trim()));
+        return Err(anyhow!("❌ [MANAGER {}] Proxy CONNECT failed: {}", worker_id, response.trim()));
     }
     Ok(stream)
 }
 
-async fn wrap_stream_with_tls(stream: TcpStream, host: &str) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
+pub async fn wrap_stream_with_tls(stream: TcpStream, host: &str) -> Result<tokio_native_tls::TlsStream<TcpStream>> {
     let tls_connector = native_tls::TlsConnector::builder().build()?;
     let tokio_tls_connector = TokioTlsConnector::from(tls_connector);
     tokio_tls_connector.connect(host, stream).await.context("TLS Handshake failed")

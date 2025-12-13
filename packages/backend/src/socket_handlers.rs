@@ -61,7 +61,9 @@ fn schedule_lazy_tick_unsubscribe(state: ServerState, address: String, pool_id: 
         if should_really_unsub {
             info!("📤 [LAZY EXEC] Timer ended. No subscribers for {}. Unsubscribing Tick.", address);
             let tx_stream = format!("tx@{}_{}", pool_id, address);
-            let _ = state.binance_channels.tick_tx.send(SubscriptionCommand::Unsubscribe(tx_stream));
+            if let Some(sender) = state.token_managers.get(&address_lower) {
+                 let _ = sender.send(SubscriptionCommand::Unsubscribe(tx_stream));
+            }
             state.room_index.remove(&address_lower);
         } else {
             info!("♻️ [LAZY ABORT] Timer ended. User rejoined {}. Keeping connection alive.", address);
@@ -105,11 +107,35 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
             let need_sub_tick = handle_index_subscription(&state, &address_lower, &room_name);
 
             if is_new_room {
-                let kl_stream = format!("kl@{}_{}_{}", pool_id, address_lower, payload.interval);
-                let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Subscribe(kl_stream));
-                if need_sub_tick {
-                    let tx_stream = format!("tx@{}_{}", pool_id, address_lower);
-                    let _ = state.binance_channels.tick_tx.send(SubscriptionCommand::Subscribe(tx_stream));
+                // 1. Ensure TokenWorker exists
+                if !state.token_managers.contains_key(&address_lower) {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    state.token_managers.insert(address_lower.clone(), tx);
+                    
+                    let state_clone = state.clone();
+                    let address_clone = address_lower.clone();
+                    tokio::spawn(async move {
+                         crate::token_manager::start_token_worker(
+                             address_clone,
+                             pool_id,
+                             state_clone.io.clone(),
+                             state_clone.config.clone(),
+                             state_clone.app_state.clone(),
+                             state_clone.room_index.clone(),
+                             rx
+                         ).await;
+                    });
+                }
+                
+                // 2. Send Subscribe Command
+                if let Some(sender) = state.token_managers.get(&address_lower) {
+                    let kl_stream = format!("kl@{}_{}_{}", pool_id, address_lower, payload.interval);
+                    let _ = sender.send(SubscriptionCommand::Subscribe(kl_stream));
+                    
+                    if need_sub_tick {
+                        let tx_stream = format!("tx@{}_{}", pool_id, address_lower);
+                        let _ = sender.send(SubscriptionCommand::Subscribe(tx_stream));
+                    }
                 }
             }
         }
@@ -137,7 +163,10 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
             if room_empty {
                 state.app_state.remove(&room_name);
                 let kl_stream = format!("kl@{}_{}_{}", pool_id, address_lower, payload.interval);
-                let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Unsubscribe(kl_stream));
+                
+                if let Some(sender) = state.token_managers.get(&address_lower) {
+                    let _ = sender.send(SubscriptionCommand::Unsubscribe(kl_stream));
+                }
 
                 if handle_index_unsubscription(&state, &address_lower, &room_name) {
                     info!("⏳ [LAZY START] No subscribers for {}. Scheduling unsub in {}s...", address_lower, LAZY_UNSUBSCRIBE_DELAY);
@@ -168,7 +197,9 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
                         let interval = parts[3];
 
                         let kl_stream = format!("kl@{}_{}_{}", pool_id, address, interval);
-                        let _ = state.binance_channels.kline_tx.send(SubscriptionCommand::Unsubscribe(kl_stream));
+                         if let Some(sender) = state.token_managers.get(&address.to_lowercase()) {
+                            let _ = sender.send(SubscriptionCommand::Unsubscribe(kl_stream));
+                        }
 
                         if handle_index_unsubscription(&state, &address, &room_name) {
                             schedule_lazy_tick_unsubscribe(state.clone(), address, pool_id);
