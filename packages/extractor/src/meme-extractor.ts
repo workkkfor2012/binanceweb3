@@ -14,7 +14,7 @@ chromium.use(stealth());
 // ==============================================================================
 const SERVER_URL = 'http://localhost:3002';
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
+const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=sol';
 
 const CAPTURE_CONFIG = {
     // 🎯 目标: 'migrated'
@@ -47,53 +47,56 @@ const SCANNER_LOGIC_SCRIPT = `
         identifyType(list) {
             const first = list[0];
             const mStatus = String(first.migrateStatus);
-            const progress = parseFloat(first.progress || '0');
-            // 进度大于99或状态为true视为已迁移
-            if (mStatus === 'true' || progress >= 99) return 'migrated';
-            return 'new';
+            // 🚀 核心修改：严格指纹识别
+            // 只有 migrateStatus 为 'true' 才是真正的已迁移榜单
+            // 坚决移除 progress 判断，避免由 "即将发行" 榜单(99%)造成的误判
+            if (mStatus === 'true') return 'migrated';
+            
+            // 下面这些不是我们的目标，但为了逻辑完整保留
+            if (mStatus === 'false') return 'rising'; // 比如 Festivus (96%)
+            return 'new'; // migrateStatus is null
         },
 
         scan() {
-            // 1. 缓存策略
+            // 1. 快速通道：如果有缓存且依然有效，直接读取
             if (this.fiberCache) {
                 try {
-                    const data = this.fiberCache.memoizedProps?.value || this.fiberCache.memoizedProps;
-                    let list = null;
+                    const data = this.fiberCache.source === 'state' 
+                        ? this.fiberCache.fiber.memoizedState
+                        : (this.fiberCache.fiber.memoizedProps?.value || this.fiberCache.fiber.memoizedProps);
+
                     if (data) {
-                        if (Array.isArray(data.allTokens)) list = data.allTokens;
-                        else if (Array.isArray(data.currentTokens)) list = data.currentTokens;
-                        else if (Array.isArray(data)) list = data;
-                        else {
-                             Object.values(data).forEach(v => {
-                                if (this.isValidTokenList(v)) list = v;
-                             });
+                        // 尝试从缓存路径读取 list
+                        let list = data[this.fiberCache.keyName];
+                        // 如果直接就是 list (props.value itself is the list context?)
+                        if (!list && Array.isArray(data)) list = data;
+                        
+                        if (list && this.isValidTokenList(list)) {
+                            // 二次校验：确保它依然是我们要的类型
+                            const type = this.identifyType(list);
+                            if (type === '${CAPTURE_CONFIG.targetCategory}') {
+                                const time = parseInt(list[0].migrateTime || 0);
+                                return [{
+                                    source: 'cache',
+                                    type: type,
+                                    count: list.length,
+                                    time: time,
+                                    data: list
+                                }];
+                            }
                         }
                     }
-
-                    if (list && this.isValidTokenList(list)) {
-                        const type = this.identifyType(list);
-                        if (type === '${CAPTURE_CONFIG.targetCategory}') {
-                            const time = type === 'migrated' 
-                                ? parseInt(list[0].migrateTime || 0)
-                                : parseInt(list[0].createTime || list[0].startTime || 0);
-
-                            return [{
-                                source: 'cache',
-                                type: type,
-                                count: list.length,
-                                time: time,
-                                data: list
-                            }];
-                        }
-                    }
-                } catch(e) {}
-                this.fiberCache = null; 
+                } catch(e) {
+                    console.log('[Scanner] Cache失效，重新扫描...');
+                }
+                this.fiberCache = null; // Cache failed, reset
             }
 
-            // 2. 深度扫描
-            const allElements = document.querySelectorAll('div, span, section, main, ul, li, a, img, h2, h3');
+            // 2. 深度扫描模式 (Search & Lock)
+            // 我们寻找全页面中【唯一】正确的已迁移列表数据源
+            const allElements = document.querySelectorAll('div, span, section, main, ul, li');
             const visitedFibers = new WeakSet();
-            const foundLists = [];
+            const candidates = []; // 收集所有候选人
 
             for (const el of allElements) {
                 let fiber = this.getReactFiber(el);
@@ -108,36 +111,34 @@ const SCANNER_LOGIC_SCRIPT = `
                     }
                     visitedFibers.add(fiber);
 
+                    // 检查 props, context(value), state
                     const sources = [
-                        fiber.memoizedProps?.value,
-                        fiber.memoizedProps,
-                        fiber.memoizedState
+                        { name: 'props_value', val: fiber.memoizedProps?.value },
+                        { name: 'props', val: fiber.memoizedProps },
+                        { name: 'state', val: fiber.memoizedState }
                     ];
 
-                    for (const data of sources) {
+                    for (const src of sources) {
+                        const data = src.val;
                         if (!data || typeof data !== 'object') continue;
 
                         Object.keys(data).forEach(key => {
                             const val = data[key];
+                            // 必须是有效列表
                             if (this.isValidTokenList(val)) {
                                 const type = this.identifyType(val);
                                 
-                                if (type === '${CAPTURE_CONFIG.targetCategory}' && !this.fiberCache) {
-                                    this.fiberCache = fiber; 
+                                // 🎯 只关注目标类型 (Migrated)
+                                if (type === '${CAPTURE_CONFIG.targetCategory}') {
+                                    candidates.push({
+                                        fiber: fiber,
+                                        source: src.name,
+                                        keyName: key,
+                                        data: val,
+                                        count: val.length,
+                                        depth: depth
+                                    });
                                 }
-
-                                const time = type === 'migrated' 
-                                    ? parseInt(val[0].migrateTime || 0)
-                                    : parseInt(val[0].createTime || val[0].startTime || 0);
-
-                                foundLists.push({
-                                    source: 'scan',
-                                    type: type,
-                                    count: val.length,
-                                    time: time,
-                                    keyName: key,
-                                    data: val
-                                });
                             }
                         });
                     }
@@ -145,7 +146,39 @@ const SCANNER_LOGIC_SCRIPT = `
                     depth++;
                 }
             }
-            return foundLists;
+
+            // 3. 锁定最佳数据源
+            if (candidates.length > 0) {
+                // 排序逻辑：
+                // 1. Count (完整性): 必须包含尽可能多的代币
+                // 2. Depth (稳定性): 优先选择由更高层级组件 (Context/Page) 提供的源数据
+                //    (Depth 越大意味着我们向上追溯得越远，越接近根节点)
+                candidates.sort((a, b) => {
+                    if (b.count !== a.count) return b.count - a.count;
+                    return b.depth - a.depth; 
+                });
+
+                const best = candidates[0];
+                
+                // 🔒 Lock it!
+                this.fiberCache = {
+                    fiber: best.fiber,
+                    source: best.source,
+                    keyName: best.keyName
+                };
+
+                const time = parseInt(best.data[0].migrateTime || 0);
+                
+                return [{
+                    source: 'scan_new_lock',
+                    type: '${CAPTURE_CONFIG.targetCategory}',
+                    count: best.count,
+                    time: time,
+                    data: best.data
+                }];
+            }
+
+            return [];
         }
     };
 })();
@@ -280,6 +313,7 @@ function normalizeData(rawItems: any[]): MemeItem[] {
         return {
             // --- 基础 ---
             chain: 'BSC', // 原始数据 chainId: "56"
+            chainId: raw.chainId, // ✨ 传递原始 chainId (如 CT_501)
             contractAddress: raw.contractAddress || '',
             symbol: raw.symbol || 'UNKNOWN',
             name: raw.name || raw.symbol,

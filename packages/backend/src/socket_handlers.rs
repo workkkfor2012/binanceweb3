@@ -239,14 +239,20 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             // 记录 Symbol 映射
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                             
-                            // 🔥 调用泛型 Enrich 函数 (HotlistItem 实现了 NarrativeEntity)
-                            enrich_any_data(data, &state).await; 
+                            // 🔥 Hotlist 不需要 Narrative，直接跳过
+                            // enrich_any_data(data, &state).await;    
                         }
                         
                         // 2. 处理 New Meme (MemeScanItem 结构体)
                         DataPayload::MemeNew { r#type: _, data } => {
                             data.retain(|item| !item.symbol.is_empty());
                             
+                            
+                            // 🔥 Debug Logic: 打印收到的 Meme 完整信息
+                            // for item in data.iter() {
+                            //     info!("📦 [MemeNew Received] Detailed Item: {:?}", item);
+                            // }
+
                             // 🔥 调用泛型 Enrich 函数 (MemeScanItem 实现了 NarrativeEntity)
                             enrich_any_data(data, &state).await;
                             
@@ -259,6 +265,12 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         DataPayload::MemeMigrated { r#type: _, data } => {
                             data.retain(|item| !item.symbol.is_empty());
                             
+                            
+                            // 🔥 Debug Logic: 打印收到的 MemeMigrated 完整信息
+                            // for item in data.iter() {
+                            //     info!("🚀 [MemeMigrated Received] Detailed Item: {:?}", item);
+                            // }
+
                             // 🔥 调用泛型 Enrich 函数
                             enrich_any_data(data, &state).await;
                             
@@ -309,12 +321,22 @@ where T: NarrativeEntity + Send + Sync
         // 错峰延时，避免瞬间打爆 API
         let delay = std::time::Duration::from_millis(q_idx as u64 * 250);
 
-        if let Some(cid) = get_chain_id(&chain) {
+        // 1. 确定 ChainID 
+        // 优先使用 narrative_chain_id (如 CT_501)
+        // 如果没有，尝试使用旧的映射 (bsc -> 56)
+        let specific_cid = items[idx].get_narrative_chain_id();
+        let final_cid = if let Some(id) = specific_cid {
+            Some(id)
+        } else {
+            get_chain_id(&chain).map(|id| id.to_string())
+        };
+
+        if let Some(cid) = final_cid {
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
                 let (client_idx, client) = proxy_pool.get_client().await;
                 
-                match fetch_narrative(&client, &addr, cid).await {
+                match fetch_narrative(&client, &addr, &cid).await {
                     Ok(Some(t)) => {
                         info!("✅ [Fetch OK] {}: {:.15}...", addr, t);
                         cache.insert(addr.to_lowercase(), t);
@@ -347,8 +369,9 @@ where T: NarrativeEntity + Send + Sync
     }
 }
 
-async fn fetch_narrative(client: &reqwest::Client, address: &str, chain_id: u64) -> anyhow::Result<Option<String>> {
+async fn fetch_narrative(client: &reqwest::Client, address: &str, chain_id: &str) -> anyhow::Result<Option<String>> {
     let url = format!("{}?contractAddress={}&chainId={}", NARRATIVE_API_URL, address, chain_id);
+    info!("🔗 [Narrative Req] URL: {}", url);
     let resp = client.get(&url)
         .header("ClientType", "web")
         .header("Origin", "https://web3.binance.com")
@@ -409,3 +432,4 @@ fn get_chain_id(chain: &str) -> Option<u64> {
         _ => None,
     }
 }
+

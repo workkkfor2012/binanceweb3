@@ -16,6 +16,8 @@ pub trait NarrativeEntity {
     fn get_chain(&self) -> &str;
     fn set_narrative(&mut self, narrative: String);
     fn get_narrative(&self) -> Option<&str>;
+    // 🔥 新增：获取 Narrative 专用 ChainID (如 "CT_501")
+    fn get_narrative_chain_id(&self) -> Option<String>;
 }
 
 // ==============================================================================
@@ -48,6 +50,7 @@ impl NarrativeEntity for HotlistItem {
     fn get_chain(&self) -> &str { &self.chain }
     fn set_narrative(&mut self, n: String) { self.narrative = Some(n); }
     fn get_narrative(&self) -> Option<&str> { self.narrative.as_deref() }
+    fn get_narrative_chain_id(&self) -> Option<String> { None }
 }
 
 // ==============================================================================
@@ -120,6 +123,7 @@ impl NarrativeEntity for MemeScanItem {
     fn get_chain(&self) -> &str { &self.chain }
     fn set_narrative(&mut self, n: String) { self.narrative = Some(n); }
     fn get_narrative(&self) -> Option<&str> { self.narrative.as_deref() }
+    fn get_narrative_chain_id(&self) -> Option<String> { self.chain_id.clone() }
 }
 
 // ==============================================================================

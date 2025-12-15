@@ -148,6 +148,83 @@ const DEEP_DETECTIVE_SCRIPT = `
 })();
 `;
 
+/**
+ * 🕵️ 简易监控脚本 (每5秒运行)
+ * 目标：
+ * 1. 快速扫描列表
+ * 2. 返回【数量】和【前5个币名】
+ */
+const PERIODIC_MONITOR_SCRIPT = `
+(() => {
+    const results = [];
+    const visitedFibers = new WeakSet();
+
+    const getReactFiber = (el) => {
+        const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'));
+        return key ? el[key] : null;
+    };
+
+    const isValidTokenList = (list) => {
+        if (!Array.isArray(list) || list.length < 2) return false;
+        const first = list[0];
+        if (!first || typeof first !== 'object') return false;
+        return (first.symbol || first.name) && (Object.keys(first).some(k => k.toLowerCase().includes('addr')));
+    };
+
+    const allElements = document.querySelectorAll('div, span, section, main, ul, li');
+    
+    allElements.forEach(el => {
+        let fiber = getReactFiber(el);
+        let depth = 0;
+        const MAX_CLIMB = 50; 
+
+        while (fiber && depth < MAX_CLIMB) {
+            if (visitedFibers.has(fiber)) {
+                fiber = fiber.return;
+                depth++;
+                continue;
+            }
+            visitedFibers.add(fiber);
+
+            const sources = [
+                { name: 'Props', data: fiber.memoizedProps },
+                { name: 'Props.Value', data: fiber.memoizedProps?.value },
+                { name: 'State', data: fiber.memoizedState }
+            ];
+
+            sources.forEach(src => {
+                if (!src.data || typeof src.data !== 'object') return;
+
+                Object.keys(src.data).forEach(propKey => {
+                    const val = src.data[propKey];
+                    if (isValidTokenList(val)) {
+                        const first = val[0];
+                        results.push({
+                            source: \`\${src.name} -> \${propKey}\`,
+                            depth: depth,
+                            count: val.length,
+                            // 完整对象，用于展示所有字段
+                            firstItemFull: first,
+                            // 前5个元素的检查
+                            top5: val.slice(0, 5).map(t => ({
+                                symbol: t.symbol,
+                                migrateStatus: t.migrateStatus
+                            }))
+                        });
+                    }
+                });
+            });
+
+            fiber = fiber.return;
+            depth++;
+        }
+    });
+
+    // 不去重，直接返回所有发现的列表，按 count 排序
+    return results.sort((a, b) => b.count - a.count);
+})();
+`;
+
 async function scanMemePage() {
     logger.init();
     logger.log(`🕵️ [MemeScanner V10] 启动全字段深度扫描`, logger.LOG_LEVELS.INFO);
@@ -210,7 +287,7 @@ async function scanMemePage() {
                 console.log(`\n===============================================================`);
                 console.log(`📦 [LIST #${idx + 1}] source: ${res.location} | Count: ${res.count}`);
                 console.log(`===============================================================`);
-                
+
                 console.log(`📊 [SORTING TRENDS] (这决定了谁在队列最上面)`);
                 console.log(`   Time:     ${res.trends.time}`);
                 console.log(`   Progress: ${res.trends.progress}`);
@@ -230,6 +307,48 @@ async function scanMemePage() {
             console.log(`2. 寻找类似 'listingStatus', 'state', 'phase', 'isDex' 这样的字段。`);
             console.log(`3. 比较 [LIST #1] 和 [LIST #2] (如果有)，通常一个是 'New' 一个是 'Migrated'。`);
             console.log(`4. 确认 'Time' 的排序趋势：如果 Time 是 Descending (⬇️)，则数组第 0 个就是最新的。`);
+
+            logger.log(`\n[Loop] 进入5秒轮询模式... 按 Ctrl+C 停止`, logger.LOG_LEVELS.INFO);
+
+            // 下面开始死循环监控
+            while (true) {
+                await page.waitForTimeout(5000); // 5秒
+
+                try {
+                    const periodicResults: any[] = await page.evaluate(PERIODIC_MONITOR_SCRIPT);
+
+                    if (periodicResults && periodicResults.length > 0) {
+                        const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+                        console.log(`\n[${timeStr}] 🔍 Deep Probe Report -------------------------`);
+
+                        periodicResults.forEach((list, idx) => {
+                            if (list.count < 5) return; // Ignore small noise
+
+                            console.log(`📦 [List #${idx + 1}] Source: ${list.source} (Depth: ${list.depth}) | Count: ${list.count}`);
+
+                            // 打印前5个的一致性
+                            const top5Str = list.top5.map((t: any) => `${t.symbol}(${t.migrateStatus})`).join(', ');
+                            console.log(`   Top 5: ${top5Str}`);
+
+                            // 打印第一个元素的关键字段概览 (Key-Value)
+                            // 为了不刷屏，只打印几个关键的 + 所有 key names
+                            const f = list.firstItemFull;
+                            const keys = Object.keys(f);
+                            console.log(`   First Item Keys (${keys.length}): ${keys.join(', ')}`);
+                            console.log(`   First Item Sample:`);
+                            console.log(`     - symbol: ${f.symbol}`);
+                            console.log(`     - migrateStatus: ${f.migrateStatus}`);
+                            console.log(`     - progress: ${f.progress}`);
+                            console.log(`     - createTime: ${f.createTime}`);
+                            console.log(`     - migrateTime: ${f.migrateTime}`);
+
+                            console.log(`   --------------------------------------------------`);
+                        });
+                    }
+                } catch (err: any) {
+                    console.error('[Monitor Error]', err.message);
+                }
+            }
         }
 
     } catch (e: any) {
@@ -237,7 +356,7 @@ async function scanMemePage() {
     } finally {
         // 保持浏览器开启一会以便人工检查，如果需要关闭请取消注释
         // await browser.close();
-        logger.close();
+        // logger.close(); // 死循环模式下，只有报错才会走到这里，或者手动关闭。先注释掉以免过早关闭
     }
 }
 
