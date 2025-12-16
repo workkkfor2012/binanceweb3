@@ -157,6 +157,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
     const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
         socket.off('kline_update', handleKlineUpdate);
+        
+        // ✨ LOG: 打印取消订阅事件
+        console.log(`[Socket] 📤 EMIT: unsubscribe_kline`, JSON.stringify(payload));
         socket.emit('unsubscribe_kline', payload);
     };
 
@@ -466,7 +469,11 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         const handleConnect = () => {
             console.log(`[SingleKlineChart] 🔄 Reconnected. Resubscribing & Fetching history for ${info.symbol}...`);
+            
+            // ✨ LOG: 打印重连时的发送事件
+            console.log(`[Socket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
             socket.emit('request_historical_kline', payload);
+            console.log(`[Socket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
             socket.emit('subscribe_kline', payload);
         };
 
@@ -476,7 +483,10 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         socket.on('kline_update', handleKlineUpdate);
         socket.on('connect', handleConnect);
 
+        // ✨ LOG: 打印初始发送事件
+        console.log(`[Socket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
         socket.emit('request_historical_kline', payload);
+        console.log(`[Socket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
         socket.emit('subscribe_kline', payload);
 
         onCleanup(() => {

@@ -123,11 +123,11 @@ async fn connect_and_serve(
     // BUT, if we are reconnecting, we must resubscribe to what we had.
     
     if *is_tick_subscribed {
-        streams_to_sub.push(format!("tx@{}_{}", pool_id, token_address.to_lowercase()));
+        streams_to_sub.push(format!("tx@{}_{}", pool_id, token_address));
     }
     
     for interval in active_intervals.iter() {
-         streams_to_sub.push(format!("kl@{}@{}@{}", pool_id, token_address.to_lowercase(), interval));
+         streams_to_sub.push(format!("kl@{}@{}@{}", pool_id, token_address, interval));
     }
 
     if !streams_to_sub.is_empty() {
@@ -161,7 +161,7 @@ async fn connect_and_serve(
                                     }
                                 } else if raw_stream.starts_with("kl@") {
                                     // Extract interval
-                                    let parts: Vec<&str> = raw_stream.split('_').collect();
+                                    let parts: Vec<&str> = raw_stream.split('@').collect();
                                     if let Some(interval) = parts.last() {
                                         if !active_intervals.contains(*interval) {
                                             active_intervals.insert(interval.to_string());
@@ -220,6 +220,7 @@ async fn connect_and_serve(
 }
 
 async fn send_subscribe(write: &mut WsWrite, params: Vec<String>) -> Result<()> {
+    info!("📡 [WS-OUT] Subscribing: {:?}", params);
     let msg = serde_json::json!({
         "method": "SUBSCRIBE",
         "params": params,
@@ -276,19 +277,30 @@ async fn handle_payload(
         let tick = &wrapper.data.tick_data;
         let parts: Vec<&str> = wrapper.stream.split('@').collect();
         if parts.len() == 2 {
+            // parts[1] example: "16_address"
             let params: Vec<&str> = parts[1].split('_').collect(); // [poolId, addr]
             if params.len() >= 2 {
                 let tracked_address = params[1]; 
                 
+                // Debug log for received tick (sampled)
+                if tick.v > 1000.0 { // 只打印大额或随机打印，防止刷屏，但为了调试先全部打印关键信息
+                     info!("🔔 [TICK RECV] Stream: {} | Addr: {} | Price: {}", wrapper.stream, tracked_address, tick.t0pu);
+                }
+
                 // Price extraction
                 let price = if tick.t0a.eq_ignore_ascii_case(tracked_address) { tick.t0pu } 
                             else if tick.t1a.eq_ignore_ascii_case(tracked_address) { tick.t1pu } 
-                            else { return; };
+                            else { 
+                                warn!("⚠️ [TICK MISMATCH] Tracked: {} | T0: {} | T1: {}", tracked_address, tick.t0a, tick.t1a);
+                                return; 
+                            };
                 
                 let usd_volume = tick.v;
 
                 // Broadcast 1: Update all Room Klines for this token
-                if let Some(room_keys) = room_index.get(&tracked_address.to_lowercase()) {
+                // Use tracked_address directly (it respects case from subscription)
+                if let Some(room_keys) = room_index.get(tracked_address) {
+                    let mut broadcast_count = 0;
                     for room_key in room_keys.iter() {
                          if let Some(entry) = app_state.get(room_key) {
                              let mut kline_guard = entry.value().current_kline.lock().await;
@@ -297,6 +309,7 @@ async fn handle_payload(
                                  if kline.close > 0.0 {
                                      let ratio = if price > kline.close { price / kline.close } else { kline.close / price };
                                      if ratio > LOW_VOLUME_PRICE_DEVIATION_THRESHOLD && usd_volume < LOW_VOLUME_THRESHOLD {
+                                         warn!("🛡️ [PRICE FILTER] Ignored anomaly: Price {} vs Last {}, Vol {}", price, kline.close, usd_volume);
                                          continue;
                                      }
                                  }
@@ -306,9 +319,15 @@ async fn handle_payload(
 
                                  let bca = KlineBroadcastData { room: room_key.clone(), data: kline.clone() };
                                  io.to(room_key.clone()).emit("kline_update", &bca).await.ok();
+                                 broadcast_count += 1;
                              }
                          }
                     }
+                    if broadcast_count > 0 && tick.v > 5000.0 {
+                         info!("📡 [BROADCAST] Sent update to {} rooms for {}", broadcast_count, tracked_address);
+                    }
+                } else {
+                    warn!("⚠️ [NO ROOMS] Received tick for {} but no rooms found in index", tracked_address);
                 }
             }
         }

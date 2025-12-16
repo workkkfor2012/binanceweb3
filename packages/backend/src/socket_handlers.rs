@@ -11,13 +11,23 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
-use tracing::{info, warn};
+use tracing::{info, warn, error}; // ✨ Added error
 use flate2::read::GzDecoder;
 use std::io::Read;
 
 const MIN_HOTLIST_AMOUNT: f64 = 0.0001;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
 const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
+// Helper to normalize address based on chain/pool_id
+// EVM (BSC/ETH/Base) -> Lowercase
+// Solana (PoolId 16) -> Case Sensitive (Keep Original)
+pub fn normalize_address(pool_id: i64, address: &str) -> String {
+    if pool_id == 16 {
+        address.to_string()
+    } else {
+        address.to_lowercase()
+    }
+}
 
 pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     info!("🔌 [Socket.IO] Client connected: {}", s.id);
@@ -30,17 +40,15 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
 
 
 
-fn handle_index_subscription(state: &ServerState, address: &str, room_key: &str) -> bool {
-    let address_lower = address.to_lowercase();
-    let mut entry = state.room_index.entry(address_lower).or_default();
+fn handle_index_subscription(state: &ServerState, normalized_address: &str, room_key: &str) -> bool {
+    let mut entry = state.room_index.entry(normalized_address.to_string()).or_default();
     let is_first = entry.is_empty();
     entry.insert(room_key.to_string());
     is_first
 }
 
-fn handle_index_unsubscription(state: &ServerState, address: &str, room_key: &str) -> bool {
-    let address_lower = address.to_lowercase();
-    if let Some(mut entry) = state.room_index.get_mut(&address_lower) {
+fn handle_index_unsubscription(state: &ServerState, normalized_address: &str, room_key: &str) -> bool {
+    if let Some(mut entry) = state.room_index.get_mut(normalized_address) {
         entry.remove(room_key);
         return entry.is_empty();
     }
@@ -77,18 +85,20 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
         async move {
             info!("🔔 [SUB DEBUG] Payload: address={}, chain={}, interval={}", payload.address, payload.chain, payload.interval);
             let chain_lower = payload.chain.to_lowercase();
-            let address_lower = payload.address.to_lowercase();
-            
-            let symbol = state.token_symbols.get(&address_lower).map_or_else(
-                || format!("{}...", &address_lower[0..6]),
-                |s| s.value().clone(),
-            );
-
+            // 1. Calculate pool_id FIRST to determine normalization rule
             let pool_id = match chain_lower.as_str() {
                 "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => return,
             };
 
-            let room_name = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
+            // 2. Normalize Address (Preserve case for SOL, lowercase for EVM)
+            let address = normalize_address(pool_id, &payload.address);
+            
+            let symbol = state.token_symbols.get(&address).map_or_else(
+                || format!("{}...", &address[0..6]),
+                |s| s.value().clone(),
+            );
+
+            let room_name = format!("kl@{}@{}@{}", pool_id, address, payload.interval);
             let log_name = format!("kl@{}@{}@{}", pool_id, &symbol, payload.interval);
 
             info!("🔔 [SUB] Client {} -> {}", s.id, log_name);
@@ -104,16 +114,17 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                 })
                 .value_mut().clients.insert(s.id);
 
-            let need_sub_tick = handle_index_subscription(&state, &address_lower, &room_name);
+            let need_sub_tick = handle_index_subscription(&state, &address, &room_name);
 
             if is_new_room {
-                // 1. Ensure TokenWorker exists
-                if !state.token_managers.contains_key(&address_lower) {
+                // 1. Ensure TokenWorker exists (Use normalized address as key)
+                if !state.token_managers.contains_key(&address) {
+                    info!("🛠️ [WORKER SPAWN] Creating new TokenWorker for: {}", address); // ✨ Debug Log
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                    state.token_managers.insert(address_lower.clone(), tx);
+                    state.token_managers.insert(address.clone(), tx);
                     
                     let state_clone = state.clone();
-                    let address_clone = address_lower.clone();
+                    let address_clone = address.clone();
                     tokio::spawn(async move {
                          crate::token_manager::start_token_worker(
                              address_clone,
@@ -125,18 +136,28 @@ fn register_kline_subscribe_handler(socket: &SocketRef, state: ServerState) {
                              rx
                          ).await;
                     });
+                } else {
+                    info!("♻️ [WORKER REUSE] TokenWorker already exists for: {}", address); // ✨ Debug Log
                 }
                 
                 // 2. Send Subscribe Command
-                if let Some(sender) = state.token_managers.get(&address_lower) {
-                    let kl_stream = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
-                    let _ = sender.send(SubscriptionCommand::Subscribe(kl_stream));
+                if let Some(sender) = state.token_managers.get(&address) {
+                    let kl_stream = format!("kl@{}@{}@{}", pool_id, address, payload.interval);
+                    info!("📤 [CMD SEND] Subscribe Kline: {}", kl_stream); // ✨ Debug Log
+                    if let Err(e) = sender.send(SubscriptionCommand::Subscribe(kl_stream)) {
+                        error!("❌ [CMD FAIL] Failed to send Kline sub command: {}", e);
+                    }
                     
                     if need_sub_tick {
-                        let tx_stream = format!("tx@{}_{}", pool_id, address_lower);
-                        let _ = sender.send(SubscriptionCommand::Subscribe(tx_stream));
+                        let tx_stream = format!("tx@{}_{}", pool_id, address);
+                        info!("📤 [CMD SEND] Subscribe Tick: {}", tx_stream); // ✨ Debug Log
+                        if let Err(e) = sender.send(SubscriptionCommand::Subscribe(tx_stream)) {
+                             error!("❌ [CMD FAIL] Failed to send Tick sub command: {}", e);
+                        }
                     }
                 }
+            } else {
+                info!("✋ [SUB SKIP] Room {} already exists, assuming worker subscribed.", room_name); // ✨ Debug Log
             }
         }
     });
@@ -146,15 +167,21 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
     socket.on("unsubscribe_kline", move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
         let state = state.clone();
         async move {
+            // 1. Calculate pool_id FIRST
             let pool_id = match payload.chain.to_lowercase().as_str() {
                 "bsc" => 14, "sol" | "solana" => 16, "base" => 199, _ => return,
             };
-            let address_lower = payload.address.to_lowercase();
-            let room_name = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
+
+            // 2. Normalize Address
+            let address = normalize_address(pool_id, &payload.address);
+            
+            // 3. Construct keys (Use Normalized Address)
+            let room_name = format!("kl@{}@{}@{}", pool_id, address, payload.interval);
 
             s.leave(room_name.clone());
 
             let mut room_empty = false;
+            // Remove from app_state
             if let Some(mut room) = state.app_state.get_mut(&room_name) {
                 room.clients.remove(&s.id);
                 room_empty = room.clients.is_empty();
@@ -162,15 +189,15 @@ fn register_kline_unsubscribe_handler(socket: &SocketRef, state: ServerState) {
 
             if room_empty {
                 state.app_state.remove(&room_name);
-                let kl_stream = format!("kl@{}@{}@{}", pool_id, address_lower, payload.interval);
+                let kl_stream = format!("kl@{}@{}@{}", pool_id, address, payload.interval);
                 
-                if let Some(sender) = state.token_managers.get(&address_lower) {
+                if let Some(sender) = state.token_managers.get(&address) {
                     let _ = sender.send(SubscriptionCommand::Unsubscribe(kl_stream));
                 }
 
-                if handle_index_unsubscription(&state, &address_lower, &room_name) {
-                    info!("⏳ [LAZY START] No subscribers for {}. Scheduling unsub in {}s...", address_lower, LAZY_UNSUBSCRIBE_DELAY);
-                    schedule_lazy_tick_unsubscribe(state.clone(), address_lower, pool_id);
+                if handle_index_unsubscription(&state, &address, &room_name) {
+                    info!("⏳ [LAZY START] No subscribers for {}. Scheduling unsub in {}s...", address, LAZY_UNSUBSCRIBE_DELAY);
+                    schedule_lazy_tick_unsubscribe(state.clone(), address, pool_id);
                 }
             }
         }
@@ -193,11 +220,11 @@ fn register_disconnect_handler(socket: &SocketRef, state: ServerState) {
                     let parts: Vec<&str> = room_name.split('@').collect();
                     if parts.len() == 4 {
                         let pool_id = parts[1].parse::<i64>().unwrap_or(0);
-                        let address = parts[2].to_string();
+                        let address = parts[2].to_string(); // Already normalized in room key
                         let interval = parts[3];
 
                         let kl_stream = format!("kl@{}@{}@{}", pool_id, address, interval);
-                         if let Some(sender) = state.token_managers.get(&address.to_lowercase()) {
+                         if let Some(sender) = state.token_managers.get(&address) {
                             let _ = sender.send(SubscriptionCommand::Unsubscribe(kl_stream));
                         }
 
@@ -432,4 +459,3 @@ fn get_chain_id(chain: &str) -> Option<u64> {
         _ => None,
     }
 }
-

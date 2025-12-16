@@ -153,12 +153,18 @@ async fn fetch_historical_data_with_pool(
     limit: i64,
 ) -> Result<Vec<KlineTick>> {
     let formatted_interval = format_interval_for_api(&payload.interval);
+    
+    // Normalize platform name (e.g. SOL -> solana)
+    let platform = if payload.chain.eq_ignore_ascii_case("SOL") { "solana" } else { &payload.chain };
+
     let url = API_URL_TEMPLATE
         .replace("{address}", &payload.address)
-        .replace("{platform}", &payload.chain)
+        .replace("{platform}", platform)
         .replace("{interval}", &formatted_interval)
         .replace("{limit}", &limit.to_string());
     
+    info!("🔗 [KLINE Request] URL: {}", url);
+
     let interval_label = payload.interval.clone();
 
     // 简单的重试逻辑

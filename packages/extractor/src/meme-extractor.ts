@@ -15,6 +15,8 @@ chromium.use(stealth());
 const SERVER_URL = 'http://localhost:3002';
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=sol';
+const urlParams = new URL(TARGET_URL).searchParams;
+const TARGET_CHAIN = (urlParams.get('chain') || 'BSC').toUpperCase();
 
 const CAPTURE_CONFIG = {
     // 🎯 目标: 'migrated'
@@ -312,7 +314,7 @@ function normalizeData(rawItems: any[]): MemeItem[] {
 
         return {
             // --- 基础 ---
-            chain: 'BSC', // 原始数据 chainId: "56"
+            chain: TARGET_CHAIN, // 动态读取 TARGET_URL 中的 chain 参数 (如 SOL)
             chainId: raw.chainId, // ✨ 传递原始 chainId (如 CT_501)
             contractAddress: raw.contractAddress || '',
             symbol: raw.symbol || 'UNKNOWN',
