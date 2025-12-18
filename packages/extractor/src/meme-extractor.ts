@@ -14,7 +14,7 @@ chromium.use(stealth());
 // ==============================================================================
 const SERVER_URL = 'http://localhost:3002';
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=sol';
+const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
 const urlParams = new URL(TARGET_URL).searchParams;
 const TARGET_CHAIN = (urlParams.get('chain') || 'BSC').toUpperCase();
 

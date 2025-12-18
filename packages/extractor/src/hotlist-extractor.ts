@@ -23,8 +23,8 @@ const SERVER_URL = 'http://localhost:3002';
 
 // ✨ 配置分类：全是 hotlist
 const TARGETS = [
-    { name: 'BSC', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc' },
-    // { name: 'Base', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=base' },
+    // { name: 'BSC', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc' },
+    { name: 'SOL', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=sol' },
 ];
 
 const SELECTORS = {

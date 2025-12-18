@@ -15,7 +15,7 @@ use tracing::{info, warn, error}; // ✨ Added error
 use flate2::read::GzDecoder;
 use std::io::Read;
 
-const MIN_HOTLIST_AMOUNT: f64 = 0.0001;
+const MIN_HOTLIST_AMOUNT: f64 = 5000.0;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
 const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
 // Helper to normalize address based on chain/pool_id
