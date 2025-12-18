@@ -18,12 +18,13 @@ chromium.use(stealth());
 // --- ⚙️ 配置区 ---
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const EXTRACTION_INTERVAL_MS = 500;
+const EXTRACTION_INTERVAL_MS = 500; // 抓取频率
+const EMIT_INTERVAL_MS = 500;       // 聚合发送频率
 const SERVER_URL = 'http://localhost:3002';
 
 // ✨ 配置分类：全是 hotlist
 const TARGETS = [
-    // { name: 'BSC', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc' },
+    { name: 'BSC', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=bsc' },
     { name: 'SOL', category: 'hotlist', url: 'https://web3.binance.com/zh-CN/markets/trending?chain=sol' },
 ];
 
@@ -37,6 +38,9 @@ const HEURISTIC_CONFIG = {
     requiredKeys: ['symbol', 'price', 'volume24h', 'marketCap', 'priceChange24h'],
 };
 // ==============================================================================
+
+// 定义回调函数类型，用于更新全局状态
+type UpdateStateCallback = (chainName: string, data: HotlistItem[]) => void;
 
 async function gotoWithRetry(page: Page, url: string, criticalSelector: string, chainName: string, maxRetries: number = 3): Promise<void> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -58,7 +62,7 @@ async function setupPageForChain(
     browser: Browser,
     browserScript: string,
     target: { name: string; url: string; category: string },
-    socket: Socket
+    updateState: UpdateStateCallback // 👈 修改：不再传入 socket，而是传入更新回调
 ): Promise<void> {
     const { name: chainName, url, category } = target;
     const context = await browser.newContext({ viewport: null });
@@ -91,13 +95,11 @@ async function setupPageForChain(
 
     // ✨ 数据处理回调：将 Raw Item (any) 转换为 HotlistItem
     const handleExtractedData = (result: ExtractedDataPayload): void => {
-        const { type, data, duration, totalCount, cacheHit } = result;
+        const { type, data } = result;
 
-        const perfString = `[${chainName.padEnd(6)}] 读取: ${String(totalCount).padEnd(3)} | 耗时: ${duration}ms | 缓存: ${cacheHit ? '命中' : '未命中'}`;
-        process.stdout.write(`\r[${new Date().toLocaleTimeString()}] ${perfString}   `);
+        // 如果需要调试单链日志，可以使用 logger.log，这里为了避免未使用变量报错，移除了 perfString
 
         if (type !== 'no-change' && data && data.length > 0) {
-
             // 映射到 Shared Types 的 HotlistItem
             const enrichedData: HotlistItem[] = data.map((item: any) => ({
                 // --- BaseItem ---
@@ -120,12 +122,8 @@ async function setupPageForChain(
                 source: 'hotlist'
             }));
 
-            // 发送 Payload，Category 必须是 'hotlist'
-            socket.emit('data-update', {
-                category: category, // 这里的 category 应该是 'hotlist'
-                type: type,
-                data: enrichedData
-            });
+            // ⚡️ 更新全局状态，而不是直接发送
+            updateState(chainName, enrichedData);
         }
     };
 
@@ -133,16 +131,50 @@ async function setupPageForChain(
     logger.log(`✅ [Setup][${chainName}] 页面初始化完成，提取器已注入并运行。`, logger.LOG_LEVELS.INFO);
 }
 
+// ==============================================================================
+// --- 🔄 聚合逻辑 ---
+// ==============================================================================
+class DataAggregator {
+    private store: Map<string, HotlistItem[]> = new Map();
+
+    // 更新某个链的数据
+    public update(chain: string, data: HotlistItem[]) {
+        this.store.set(chain, data);
+    }
+
+    // 获取聚合后的数据
+    public getMergedData(): HotlistItem[] {
+        const allData: HotlistItem[] = [];
+        for (const chainData of this.store.values()) {
+            allData.push(...chainData);
+        }
+        return allData;
+    }
+
+    // 获取当前状态摘要（用于日志）
+    public getStats(): string {
+        const parts: string[] = [];
+        let total = 0;
+        for (const [chain, data] of this.store.entries()) {
+            parts.push(`${chain}:${data.length}`);
+            total += data.length;
+        }
+        return `[Total: ${total}] (${parts.join(', ')})`;
+    }
+}
 
 async function main(): Promise<void> {
     logger.init();
     let browser: Browser | undefined;
     const socket: Socket = io(SERVER_URL);
 
+    // 初始化聚合器
+    const aggregator = new DataAggregator();
+
     socket.on('connect', () => logger.log(`✅ [Socket.IO] 成功连接到服务器: ${SERVER_URL}`, logger.LOG_LEVELS.INFO));
     socket.on('connect_error', (err: Error) => logger.log(`❌ [Socket.IO] 连接失败: ${err.message}.`, logger.LOG_LEVELS.ERROR));
 
-    logger.log('🚀 [HotlistExtractor] 脚本启动...', logger.LOG_LEVELS.INFO);
+    logger.log('🚀 [HotlistExtractor] 脚本启动 (聚合模式)...', logger.LOG_LEVELS.INFO);
 
     try {
         const browserScript = await fs.readFile(path.join(__dirname, '..', 'src', 'browser-script.js'), 'utf-8');
@@ -154,12 +186,38 @@ async function main(): Promise<void> {
             args: ['--start-maximized']
         });
 
+        // 定义更新回调
+        const updateCallback: UpdateStateCallback = (chainName, data) => {
+            aggregator.update(chainName, data);
+        };
+
         const setupPromises = TARGETS.map(target =>
-            setupPageForChain(browser!, browserScript, target, socket)
+            setupPageForChain(browser!, browserScript, target, updateCallback)
         );
         await Promise.all(setupPromises);
 
-        logger.log(`\n👍 所有 [${TARGETS.length}] 个页面初始化完毕。`, logger.LOG_LEVELS.INFO);
+        logger.log(`\n👍 所有 [${TARGETS.length}] 个页面初始化完毕，开始聚合发送循环。`, logger.LOG_LEVELS.INFO);
+
+        // --- 🔄 启动聚合发送循环 ---
+        setInterval(() => {
+            const mergedData = aggregator.getMergedData();
+
+            if (mergedData.length > 0) {
+                // 发送合并后的数据
+                socket.emit('data-update', {
+                    category: 'hotlist',
+                    type: 'merged-update', // 标识为合并更新
+                    data: mergedData,
+                    timestamp: Date.now()
+                });
+
+                // 打印聚合日志
+                const stats = aggregator.getStats();
+                process.stdout.write(`\r[${new Date().toLocaleTimeString()}] 📡 发送聚合数据 ${stats}      `);
+            }
+        }, EMIT_INTERVAL_MS);
+
+        // 保持进程活跃
         await new Promise(() => { });
 
     } catch (error: any) {
