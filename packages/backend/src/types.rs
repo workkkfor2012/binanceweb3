@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
+use ts_rs::TS;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -23,7 +24,8 @@ pub trait NarrativeEntity {
 // ==============================================================================
 // 2. 结构体 A: Hotlist (精简市场数据)
 // ==============================================================================
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/HotlistItem.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct HotlistItem {
     pub chain: String,
@@ -45,7 +47,9 @@ pub struct HotlistItem {
     pub volume4h: Option<f64>,
     pub price_change4h: Option<f64>,
     
+    #[ts(optional)]
     pub source: Option<String>,
+    #[ts(optional)]
     pub narrative: Option<String>,
 }
 
@@ -61,7 +65,8 @@ impl NarrativeEntity for HotlistItem {
 // 3. 结构体 B: MemeScanItem (全量数据 - 对应 Extractor 的输出)
 //    🔥 已修正：类型与 meme-extractor.ts 的 safeInt/safeFloat/safeBool 对应
 // ==============================================================================
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/MemeScanItem.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct MemeScanItem {
     // --- 基础信息 (String) ---
@@ -71,41 +76,71 @@ pub struct MemeScanItem {
     pub name: String,
     
     // 可选字符串
+    #[ts(optional)]
     pub icon: Option<String>,
+    #[ts(optional)]
     pub chain_id: Option<String>, 
+    #[ts(optional)]
     pub ca_icon: Option<String>,      
+    #[ts(optional)]
     pub icon_status: Option<String>,  
+    #[ts(optional)]
     pub ca_icon_status: Option<String>,
+    #[ts(optional)]
     pub protocol: Option<String>,     
+    #[ts(optional)]
     pub height: Option<String>,
+    #[ts(optional)]
     pub first_seen: Option<String>,
+    #[ts(optional)]
     pub migrate_status: Option<String>,
+    #[ts(optional)]
     pub status: Option<String>,
     
     // --- 整数类型 (safeInt -> i64) ---
+    #[ts(type = "number")]
     pub decimal: i64,      
+    #[ts(type = "number")]
     pub create_time: i64,       
+    #[ts(type = "number")]
     pub migrate_time: i64, 
+    #[ts(type = "number")]
     pub display_time: i64,
+    #[ts(optional, type = "number")]
     pub update_time: Option<i64>, // TS 中是 Date.now()，但也可能没发
+    #[ts(type = "number")]
     pub holders: i64,
+    #[ts(type = "number")]
     pub count: i64,     
+    #[ts(type = "number")]
     pub count_buy: i64, 
+    #[ts(type = "number")]
     pub count_sell: i64,
+    #[ts(type = "number")]
     pub dev_migrate_count: i64,
 
     // --- 浮点数类型 (safeFloat -> f64) ---
+    #[ts(type = "number")]
     pub progress: f64,
+    #[ts(optional, type = "number")]
     pub liquidity: Option<f64>,
+    #[ts(optional, type = "number")]
     pub market_cap: Option<f64>,
+    #[ts(optional, type = "number")]
     pub volume: Option<f64>,
+    #[ts(type = "number")]
     pub buy_sell_ratio: f64,
 
     // 🔥 报错修复点：百分比数据现在接收浮点数 (如 86, 45.5)
+    #[ts(type = "number")]
     pub holders_top10_percent: f64, 
+    #[ts(type = "number")]
     pub holders_dev_percent: f64,
+    #[ts(type = "number")]
     pub holders_sniper_percent: f64,
+    #[ts(type = "number")]
     pub holders_insider_percent: f64,
+    #[ts(type = "number")]
     pub dev_sell_percent: f64,
     
     // --- 布尔类型 (safeBool -> bool) ---
@@ -114,11 +149,16 @@ pub struct MemeScanItem {
     pub paid_on_dex_screener: bool, 
 
     // --- 社交 ---
+    #[ts(optional)]
     pub twitter: Option<String>,
+    #[ts(optional)]
     pub telegram: Option<String>,
+    #[ts(optional)]
     pub website: Option<String>,
     
+    #[ts(optional)]
     pub narrative: Option<String>,
+    #[ts(optional)]
     pub source: Option<String>,
 }
 
@@ -134,7 +174,8 @@ impl NarrativeEntity for MemeScanItem {
 // 4. Payload 定义 (交通枢纽)
 // ==============================================================================
 
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/DataAction.ts")]
 pub enum DataAction {
     #[serde(rename = "snapshot")]
     Snapshot,
@@ -146,7 +187,8 @@ pub enum DataAction {
     Unknown,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/DataPayload.ts")]
 #[serde(tag = "category")]
 pub enum DataPayload {
     // 1. Hotlist -> 使用 HotlistItem
@@ -231,10 +273,12 @@ pub struct KlineBroadcastData {
     pub room: String,
     pub data: KlineTick,
 }
-#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+#[derive(Debug, Serialize, Clone, Default, PartialEq, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/KlineTick.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct KlineTick {
     #[serde(with = "chrono::serde::ts_seconds")]
+#[ts(type = "string")] // DateTime<Utc> 映射为 string
     pub time: DateTime<Utc>,
     pub open: f64,
     pub high: f64,
@@ -266,4 +310,20 @@ pub struct CacheMeta {
 #[derive(Debug, Deserialize)]
 pub struct HistoricalDataWrapper {
     pub data: Vec<Vec<serde_json::Value>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_bindings() {
+        // ts-rs 会在编译/测试时自动导出，但显式调用可以确保它们生成。
+        // 在此处只是为了明确生成顺序。
+        HotlistItem::export().expect("Failed to export HotlistItem");
+        MemeScanItem::export().expect("Failed to export MemeScanItem");
+        DataAction::export().expect("Failed to export DataAction");
+        DataPayload::export().expect("Failed to export DataPayload");
+        KlineTick::export().expect("Failed to export KlineTick");
+    }
 }

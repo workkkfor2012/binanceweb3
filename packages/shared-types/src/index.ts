@@ -1,10 +1,17 @@
 // packages/shared-types/src/index.ts
 
-// 导出 MemeRush 原始类型，方便外部直接从 index 引用
+// 1. 导出自动生成的绑定类型 (由 Rust 后端通过 ts-rs 生成)
+export * from './bindings/HotlistItem';
+export * from './bindings/MemeScanItem';
+export * from './bindings/DataAction';
+export * from './bindings/DataPayload';
+export * from './bindings/KlineTick';
+
+// 2. 导出手动定义的类型 (爬虫原始 Raw Dump 等)
 export * from './meme-rush';
 
 // ----------------------------------------------------------------------------
-// 1. 核心常量定义 (用于爬虫 Dynamic Extraction)
+// 3. 核心常量定义 (用于爬虫 Dynamic Extraction)
 // ----------------------------------------------------------------------------
 export const DESIRED_FIELDS = [
     'contractAddress',
@@ -25,8 +32,12 @@ export const DESIRED_FIELDS = [
 ];
 
 // ----------------------------------------------------------------------------
-// 2. 通信载荷定义
+// 4. 运行时类型 / 别名 (用于平滑过渡或前端特定逻辑)
 // ----------------------------------------------------------------------------
+import { HotlistItem } from './bindings/HotlistItem';
+import { MemeScanItem } from './bindings/MemeScanItem';
+
+// ExtractedDataPayload 是爬虫内部在浏览器环境使用的结构，由于不经过 Rust 后端，保留 TS 定义
 export interface ExtractedDataPayload {
     type: 'snapshot' | 'update' | 'no-change';
     data?: any[];
@@ -39,94 +50,14 @@ export interface ExtractedDataPayload {
     cacheHit: boolean;
 }
 
-// ----------------------------------------------------------------------------
-// 3. 基础业务实体接口
-// ----------------------------------------------------------------------------
-interface BaseItem {
-    chain: string;
-    contractAddress: string;
-    symbol: string;
-    icon?: string;
-    updateTime: number;
-}
-
-// 🔥 Hotlist 专用接口
-export interface HotlistItem extends BaseItem {
-    price: number;
-    marketCap: number;
-    chainId?: string;
-    volume1m?: number;
-    priceChange1m?: number;
-    volume5m?: number;
-    priceChange5m?: number;
-    volume1h: number;
-    priceChange1h: number;
-    volume4h?: number;
-    priceChange4h?: number;
-    volume24h: number;
-    priceChange24h: number;
-    source: 'hotlist';
-}
-
-// 🐶 Meme Rush 专用接口 (已扩展新字段)
-export interface MemeItem extends BaseItem {
-    name: string;
-
-    // --- 核心状态 ---
-    progress: number;
-    status: 'trading' | 'migrating' | 'dex' | 'bonding_curve';
-    createTime: number; // 原始创建时间
-    migrateTime?: number; // ✨ 迁移时间 (如果是 '0' 则未迁移)
-    displayTime: number; // 前端排序用的统一时间
-
-    // --- 交易数据 ---
-    liquidity: number;
-    marketCap: number;
-    volume: number; // 总交易量
-    count: number; // 总交易笔数
-    countBuy?: number; // ✨ 🟢 买单数
-    countSell?: number; // ✨ 🔴 卖单数
-    buySellRatio?: number; // ⚖️ 买卖比
-
-    // --- 持仓分析 (关键风控数据) ---
-    holders: number;
-    holdersTop10Percent?: number; // 前10持仓占比
-    holdersDevPercent?: number; // Dev持仓占比
-    holdersSniperPercent?: number; // ✨ 🔫 狙击手占比 (风险指标)
-    holdersInsiderPercent?: number; // 🐀 老鼠仓占比
-    devSellPercent?: number; // Dev卖出比例
-
-    // --- 开发者历史 ---
-    devMigrateCount?: number; // 🏆 开发者发币历史
-
-    // --- 社交与推广 ---
-    twitter?: string;
-    twitterId?: string;
-    telegram?: string;
-    website?: string;
-    paidOnDexScreener?: boolean; // ✨ 📢 是否买广告 (金狗指标)
-
-    // --- 其他 ---
-    narrative?: string;
-    sensitiveToken?: boolean;
-    exclusive?: boolean;
-    decimal?: number;
-
-    // --- 补充字段 (基于实际数据完善) ---
-    chainId?: string | null;
-    caIcon?: string | null;
-    caIconStatus?: number | null;
-    iconStatus?: number | null;
-    firstSeen?: number | null;
-    height?: number | null;
-    migrateStatus?: boolean | null;
-    protocol?: number | null;
-
+/**
+ * MemeItem 在前端被广泛使用，且包含一些前端计算/装饰字段。
+ * 我们将其定义为基础 MemeScanItem 的扩展。
+ */
+export interface MemeItem extends MemeScanItem {
+    // 这里可以添加以后前端专用的扩展字段，目前先继承所有后端字段
+    // 如果后续后端增加了字段，MemeItem 会自动同步
     source: 'meme-rush';
 }
-
-export type DataPayload =
-    | { category: 'hotlist'; type: 'snapshot' | 'update'; data: HotlistItem[] }
-    | { category: 'meme_new'; type: 'snapshot' | 'update'; data: MemeItem[] };
 
 export type MarketItem = HotlistItem | MemeItem;

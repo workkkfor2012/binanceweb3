@@ -37,6 +37,7 @@ axum-server = { version = "0.8", default-features = false, features = ["tls-rust
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 rustls-pemfile = "2.2"
+ts-rs = { version = "11.1.0", features = ["format"] }
 
 [profile.dev]
 incremental = true
