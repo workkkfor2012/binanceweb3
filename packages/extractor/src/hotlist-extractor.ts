@@ -118,6 +118,10 @@ async function setupPageForChain(
                 priceChange24h: parseFloat(item.priceChange24h) || 0,
                 volume5m: parseFloat(item.volume5m) || 0,
                 priceChange5m: parseFloat(item.priceChange5m) || 0,
+                volume1m: parseFloat(item.volume1m) || 0,
+                priceChange1m: parseFloat(item.priceChange1m) || 0,
+                volume4h: parseFloat(item.volume4h) || 0,
+                priceChange4h: parseFloat(item.priceChange4h) || 0,
 
                 source: 'hotlist'
             }));

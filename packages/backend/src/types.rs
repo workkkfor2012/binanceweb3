@@ -40,6 +40,10 @@ pub struct HotlistItem {
     pub price_change24h: Option<f64>,
     pub volume5m: Option<f64>,
     pub price_change5m: Option<f64>,
+    pub volume1m: Option<f64>,
+    pub price_change1m: Option<f64>,
+    pub volume4h: Option<f64>,
+    pub price_change4h: Option<f64>,
     
     pub source: Option<String>,
     pub narrative: Option<String>,

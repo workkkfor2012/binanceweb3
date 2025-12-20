@@ -1,353 +1,729 @@
-这是一个非常棒的功能升级！利用 migrateTime - createTime（即 Bonding Curve 填满耗时）确实是判断 Meme 代币“爆发力”和“庄家实力”的核心指标。
-
-根据你的需求和提供的数据字段，我已经重新构建了前端代码。
-
-修改重点：
-
-🔥 金狗雷达 (Bonding Speed): 计算发射耗时。
-
-< 30分钟: 显示 🔥 火焰图标（极速/强庄）。
-
-< 2小时: 显示 ⚡ 闪电图标（快速）。
-
-> 24小时: 显示 🐢 乌龟图标（磨盘）。
-
-💰 氪金标记 (AD): 利用 paidOnDexScreener 字段，给付费代币打上金色 "AD" 标签。
-
-🎯 风险预警 (Sniper): 利用 holdersSniperPercent，如果狙击手占比过高 (>50%)，显示红色警告。
-
-📊 买卖情绪: 直接展示 countBuy / countSell，直观看到买盘是否强劲。
-
-
-// packages/frontend/src/MemePage.tsx
-import { Component, createMemo, For, Show, onMount, createSignal, createEffect } from 'solid-js';
-import { useMarketData } from './hooks/useMarketData';
-import type { MemeItem } from './types';
-
-
-const BACKEND_URL = 'http://localhost:3001';
-
-declare global {
-    interface Window {
-        twttr: any;
-    }
-}
-
-interface MemeCardProps {
-    item: MemeItem;
-}
-
-interface ColumnProps {
-    title: string;
-    items: MemeItem[];
-    count: number;
-}
-
-// ID 提取 (支持 x.com 和 twitter.com)
-const extractTweetId = (input: string | undefined | null): string | null => {
-    if (!input) return null;
-    const str = String(input).trim();
-    if (/^\d+$/.test(str)) return str;
-    const match = str.match(/status\/(\d+)/);
-    if (match && match[1]) return match[1];
-    return null;
-};
-
-const formatTime = (ts: number | undefined) => {
-    if (!ts) return '';
-    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-};
-
-// ✨ 核心逻辑：计算“发射耗时” (Bonding Speed)
-// 逻辑：迁移时间 - 创建时间 = 填满曲线耗时
-const getBondingDuration = (item: MemeItem): { text: string; color: string; icon: string } | null => {
-    // 必须两个时间都有且有效
-    if (!item.migrateTime || !item.createTime || item.migrateTime <= 0 || item.createTime <= 0) return null;
-    
-    // 如果 migrateTime 比 createTime 还小（极端数据异常），则不显示
-    if (item.migrateTime < item.createTime) return null;
-
-    const diffMs = item.migrateTime - item.createTime;
-    const diffMins = Math.floor(diffMs / (1000 * 60));
-    const diffHours = Math.floor(diffMins / 60);
-
-    // 🚀 极速金狗：小于 30 分钟 (Strong Bullish)
-    if (diffMins < 30) {
-        return { text: `${diffMins}m`, color: '#dc3545', icon: '🔥' }; // Red Fire
-    }
-    // ⚡ 快速：小于 2 小时
-    if (diffHours < 2) {
-        return { text: `${diffMins}m`, color: '#fd7e14', icon: '⚡' }; // Orange Bolt
-    }
-    // ⏱ 普通：小于 24 小时
-    if (diffHours < 24) {
-        return { text: `${diffHours}h`, color: '#6c757d', icon: '⏱' }; // Gray
-    }
-    // 🐢 龟速
-    return { text: '>1d', color: '#6c757d', icon: '🐢' };
-};
-
-// --- 推特组件 ---
-const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
-    let containerRef: HTMLDivElement | undefined;
-    const [isLoaded, setIsLoaded] = createSignal(false);
-
-    onMount(() => {
-        if (!props.tweetId) return;
-
-        if (!window.twttr) {
-            const script = document.createElement('script');
-            script.src = 'https://platform.twitter.com/widgets.js';
-            script.async = true;
-            document.head.appendChild(script);
+{
+    "chainId": "CT_501",
+    "contractAddress": "4sbmNLamh2t6UDpER9wXCHnKed2CXZmjVWXhr55Tcp4o",
+    "defaultIndex": 3,
+    "symbol": "NVIDA",
+    "icon": "https://bin.bnbstatic.com/images/web3-data/public/token/logos/23895BC3851FA4395B1295A6E4101E68.jpg",
+    "createTime": 1766225164000,
+    "decimal": "6",
+    "liquidity": 138994.28,
+    "isMaxPoolBurned": false,
+    "topLiquidityBurned": null,
+    "holders": 1404,
+    "kycHolders": 7,
+    "marketCap": 105037.06346690659,
+    "price": 0.000105037063466907,
+    "count1m": 119,
+    "count5m": 576,
+    "count1h": 3974,
+    "count4h": 3974,
+    "count24h": 3974,
+    "count1mBuy": 60,
+    "count5mBuy": 309,
+    "count1hBuy": 2164,
+    "count4hBuy": 2164,
+    "count24hBuy": 2164,
+    "count1mSell": 59,
+    "count5mSell": 267,
+    "count1hSell": 1810,
+    "count4hSell": 1810,
+    "count24hSell": 1810,
+    "volume1m": 31688.29,
+    "volume5m": 157830.49,
+    "volume1h": 1046791.8,
+    "volume4h": 1046791.8,
+    "volume24h": 1046791.8,
+    "chart1m": null,
+    "chart5m": null,
+    "chart1h": {
+      "price": [
+        {
+          "timestamp": 1766223660000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223720000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223780000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223840000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223900000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223960000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224020000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224080000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224140000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224200000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224260000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224320000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224380000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224440000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224500000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224560000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224620000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224680000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224740000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224800000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224860000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224920000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224980000,
+          "value": null
+        },
+        {
+          "timestamp": 1766225040000,
+          "value": null
+        },
+        {
+          "timestamp": 1766225100000,
+          "value": null
+        },
+        {
+          "timestamp": 1766225160000,
+          "value": null
+        },
+        {
+          "timestamp": 1766225220000,
+          "value": 0.000052773079956788116
+        },
+        {
+          "timestamp": 1766225280000,
+          "value": 0.000054018818784259886
+        },
+        {
+          "timestamp": 1766225340000,
+          "value": 0.00005708818913198014
+        },
+        {
+          "timestamp": 1766225400000,
+          "value": 0.00005926205828585755
+        },
+        {
+          "timestamp": 1766225460000,
+          "value": 0.00006069755481629813
+        },
+        {
+          "timestamp": 1766225520000,
+          "value": 0.00006357275642111218
+        },
+        {
+          "timestamp": 1766225580000,
+          "value": 0.000062163069632826
+        },
+        {
+          "timestamp": 1766225640000,
+          "value": 0.0000654704836681716
+        },
+        {
+          "timestamp": 1766225700000,
+          "value": 0.0000646506570709535
+        },
+        {
+          "timestamp": 1766225760000,
+          "value": 0.00006657186935579675
+        },
+        {
+          "timestamp": 1766225820000,
+          "value": 0.00006885666466881343
+        },
+        {
+          "timestamp": 1766225880000,
+          "value": 0.00007302465784988394
+        },
+        {
+          "timestamp": 1766225940000,
+          "value": 0.0000747126103629476
+        },
+        {
+          "timestamp": 1766226000000,
+          "value": 0.00007837777911810144
+        },
+        {
+          "timestamp": 1766226060000,
+          "value": 0.00007573740885984416
+        },
+        {
+          "timestamp": 1766226120000,
+          "value": 0.00007789182292492322
+        },
+        {
+          "timestamp": 1766226180000,
+          "value": 0.00007895804929810721
+        },
+        {
+          "timestamp": 1766226240000,
+          "value": 0.00007952404781584646
+        },
+        {
+          "timestamp": 1766226300000,
+          "value": 0.00008305977065372018
+        },
+        {
+          "timestamp": 1766226360000,
+          "value": 0.00008240562206645216
+        },
+        {
+          "timestamp": 1766226420000,
+          "value": 0.0000831786650787947
+        },
+        {
+          "timestamp": 1766226480000,
+          "value": 0.00008513380820791158
+        },
+        {
+          "timestamp": 1766226540000,
+          "value": 0.00008484348562661058
+        },
+        {
+          "timestamp": 1766226600000,
+          "value": 0.00008582644663440654
+        },
+        {
+          "timestamp": 1766226660000,
+          "value": 0.00008566974256948944
+        },
+        {
+          "timestamp": 1766226720000,
+          "value": 0.00008923064313947783
+        },
+        {
+          "timestamp": 1766226780000,
+          "value": 0.00009335721182671609
+        },
+        {
+          "timestamp": 1766226840000,
+          "value": 0.00009832906385449706
+        },
+        {
+          "timestamp": 1766226900000,
+          "value": 0.00009705128897339615
+        },
+        {
+          "timestamp": 1766226960000,
+          "value": 0.00009924649764615831
+        },
+        {
+          "timestamp": 1766227020000,
+          "value": 0.0001005546731323201
+        },
+        {
+          "timestamp": 1766227080000,
+          "value": 0.00009996176845987366
+        },
+        {
+          "timestamp": 1766227140000,
+          "value": 0.00010871682175312646
+        },
+        {
+          "timestamp": 1766227200000,
+          "value": 0.0001050370634669066
         }
-
-        const renderTweet = () => {
-            if (window.twttr && window.twttr.widgets && containerRef) {
-                containerRef.innerHTML = '';
-                window.twttr.widgets.createTweet(
-                    props.tweetId,
-                    containerRef,
-                    {
-                        theme: 'light',
-                        lang: 'zh-cn',
-                        dnt: true,
-                        conversation: 'none',
-                        cards: 'visible',
-                        width: 'auto',
-                        align: 'center'
-                    }
-                ).then((el: any) => {
-                    if (el) setIsLoaded(true);
-                    else containerRef!.innerHTML = `<div style="color:#ccc; font-size:11px; padding:10px; text-align:center;">Tweet unavailable</div>`;
-                });
-            } else {
-                setTimeout(renderTweet, 200);
-            }
-        };
-        renderTweet();
-    });
-
-    return (
-        <div
-            class="tweet-embed-wrapper"
-            style={{
-                "min-height": isLoaded() ? "auto" : "150px",
-                "width": "100%",
-                "background": isLoaded() ? "transparent" : "#f8f9fa",
-                "border-radius": "8px",
-                "display": "flex",
-                "justify-content": "center",
-                "align-items": "center",
-                "margin-top": "8px",
-                "border": isLoaded() ? "none" : "1px dashed #e1e4e8"
-            }}
-        >
-            <div ref={containerRef} style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
-                <span style={{ color: '#aaa', fontSize: '11px' }}>Loading Tweet...</span>
-            </div>
-        </div>
-    );
-
-};
-
-// --- 卡片组件 ---
-const MemeCard: Component<MemeCardProps> = (props) => {
-    const { item } = props;
-    const cleanTwitterId = createMemo(() => extractTweetId(item.twitterId || item.twitter));
-    const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
-
-    // ✨ 计算发射耗时
-    const bondingSpeed = createMemo(() => getBondingDuration(item));
-
-    const handleCardClick = () => {
-        window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
-    };
-
-    const handleContentClick = (e: MouseEvent) => e.stopPropagation();
-
-    const formattedCap = () => {
-        if (!item.marketCap) return '-';
-        if (item.marketCap >= 1000000) return (item.marketCap / 1000000).toFixed(1) + 'M';
-        if (item.marketCap >= 1000) return (item.marketCap / 1000).toFixed(1) + 'K';
-        return item.marketCap.toString();
-    };
-
-    return (
-        <div class="meme-card" onClick={handleCardClick}>
-            {/* Header */}
-            <div class="card-header-layout">
-                <Show when={item.icon} fallback={<div style={{ width: '42px', height: '42px', background: '#eee', borderRadius: '50%' }}></div>}>
-                    <img src={iconUrl} class="card-icon" loading="lazy" onError={(e) => e.currentTarget.style.display = 'none'} />
-                </Show>
-
-                <div class="card-info-col">
-                    <div class="info-row-top">
-                        <div style={{display:'flex', alignItems:'center', gap: '6px', maxWidth: '180px'}}>
-                            <span class="card-symbol" title={item.symbol}>{item.symbol}</span>
-                            
-                            {/* ✨ 1. 付费推广金标 (强力看涨信号) */}
-                            <Show when={item.paidOnDexScreener}>
-                                <span title="Paid AD on DexScreener" style={{ fontSize: '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', borderRadius: '3px', border: '1px solid #ffeeba', fontWeight: 'bold' }}>
-                                    AD
-                                </span>
-                            </Show>
-                        </div>
-                        
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                            {/* ✨ 2. 发射速度徽章 (FOMO 指标) */}
-                            <Show when={bondingSpeed()}>
-                                <span style={{ 
-                                    fontSize: '0.7em', 
-                                    color: bondingSpeed()!.color, 
-                                    fontWeight: 'bold', 
-                                    display: 'flex', 
-                                    alignItems: 'center',
-                                    background: `${bondingSpeed()!.color}15`, // 10% opacity bg
-                                    padding: '1px 5px',
-                                    borderRadius: '4px'
-                                }} title="从发币到迁移的耗时">
-                                    {bondingSpeed()!.icon} {bondingSpeed()!.text}
-                                </span>
-                            </Show>
-                            {/* 显示具体的迁移完成时间 */}
-                            <span class="card-time">{formatTime(item.migrateTime || item.createTime || Date.now())}</span>
-                        </div>
-                    </div>
-
-                    <div class="info-row-bottom">
-                        <span class="stat-badge badge-cap">${formattedCap()}</span>
-                        
-                        {/* ✨ 3. 买卖单力度 (情绪指标) */}
-                        <Show when={item.countBuy !== undefined && item.countSell !== undefined}>
-                             <span class="stat-badge" title={`Buys: ${item.countBuy} / Sells: ${item.countSell}`}>
-                                <span style={{color: '#28a745', fontWeight: 'bold'}}>{item.countBuy}</span>
-                                <span style={{opacity: 0.3, margin: '0 2px'}}>/</span>
-                                <span style={{color: '#dc3545', fontWeight: 'bold'}}>{item.countSell}</span>
-                             </span>
-                        </Show>
-
-                        <span class="stat-badge">👥 {item.holders || '-'}</span>
-
-                        {/* ✨ 4. 狙击手警告 (风险指标) */}
-                        <Show when={(item.holdersSniperPercent || 0) > 50}>
-                             <span class="stat-badge" style={{ background: '#fff5f5', color: '#e03131', borderColor: '#ffc9c9' }} title={`Sniper Holdings: ${item.holdersSniperPercent}%`}>
-                                🎯 {Math.round(item.holdersSniperPercent!)}%
-                             </span>
-                        </Show>
-
-                        <Show when={(item.devMigrateCount || 0) > 0}>
-                            <span class="stat-badge badge-dev">Dev:{item.devMigrateCount}</span>
-                        </Show>
-                    </div>
-                </div>
-            </div>
-
-            {/* Narrative */}
-            <Show when={item.narrative}>
-                <div class="card-narrative-box" onClick={handleContentClick}>
-                    {item.narrative}
-                </div>
-            </Show>
-
-            {/* Tweet */}
-            <Show when={cleanTwitterId()}>
-                <div onClick={handleContentClick} style={{ width: '100%', overflow: 'hidden' }}>
-                    <TweetEmbed tweetId={cleanTwitterId()!} />
-                </div>
-            </Show>
-
-            {/* Bonding Curve */}
-            <div class="card-bonding-line" title={`Bonding Curve: ${item.progress?.toFixed(1)}%`}>
-                <div
-                    class="bonding-fill"
-                    style={{
-                        width: `${Math.min(item.progress || 0, 100)}%`,
-                        "background-color": (item.progress || 0) > 90 ? '#28a745' : '#007bff'
-                    }}
-                ></div>
-            </div>
-        </div>
-    );
-
-};
-
-// --- Column ---
-const MemeColumn: Component<ColumnProps> = (props) => {
-    return (
-        <div class="meme-column">
-            <div class="column-header">
-                <span>{props.title}</span>
-                <span class="column-badge" style={{ background: '#dce4ea', padding: '2px 8px', borderRadius: '10px', fontSize: '0.85em' }}>
-                    {props.count}
-                </span>
-            </div>
-            <div class="column-content">
-                <For each={props.items}>
-                    {(item) => <MemeCard item={item} />}
-                </For>
-                <Show when={props.items.length === 0}>
-                    <div style={{ textAlign: 'center', padding: '50px 0', color: '#999', fontSize: '0.9em', gridColumn: '1 / -1' }}>
-                        Waiting for data...
-                    </div>
-                </Show>
-            </div>
-        </div>
-    );
-};
-
-// --- Page ---
-const MemePage: Component = () => {
-    // 监听已迁移的 Meme 数据
-    const {
-        marketData: migratedMemeData,
-        connectionStatus: migratedStatus,
-        lastUpdate
-    } = useMarketData<MemeItem>('meme_migrated');
-
-    const migratedTokens = createMemo(() => {
-        // ✨ 按迁移时间倒序，确保最新的金狗在最上面
-        const sorted = migratedMemeData
-            .slice()
-            .sort((a, b) => (b.migrateTime || 0) - (a.migrateTime || 0));
-        
-        if (sorted.length > 0) {
-            console.log(`[MemePage] 🦋 Top Token: ${sorted[0].symbol}, Migrated At: ${new Date(sorted[0].migrateTime!).toLocaleTimeString()}`);
+      ],
+      "volume": [
+        {
+          "timestamp": 1766223900000,
+          "value": 0
+        },
+        {
+          "timestamp": 1766224200000,
+          "value": 0
+        },
+        {
+          "timestamp": 1766224500000,
+          "value": 0
+        },
+        {
+          "timestamp": 1766224800000,
+          "value": 0
+        },
+        {
+          "timestamp": 1766225100000,
+          "value": 0
+        },
+        {
+          "timestamp": 1766225400000,
+          "value": 95649.18228540986
+        },
+        {
+          "timestamp": 1766225700000,
+          "value": 91420.35782322408
+        },
+        {
+          "timestamp": 1766226000000,
+          "value": 83041.95978262277
+        },
+        {
+          "timestamp": 1766226300000,
+          "value": 91222.28996773271
+        },
+        {
+          "timestamp": 1766226600000,
+          "value": 89223.94234096729
+        },
+        {
+          "timestamp": 1766226900000,
+          "value": 94502.2913800647
+        },
+        {
+          "timestamp": 1766227200000,
+          "value": 26521.472743443825
         }
-        return sorted;
-    });
-
-    onMount(() => console.log('[MemePage] 🚀 Migrated-Only Layout Mounted.'));
-
-    return (
-        <div class="meme-board-container">
-            <header class="meme-header">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                    <h1>🐶 Meme Rush <span style={{ fontSize: '0.6em', color: '#999', fontWeight: 'normal' }}>KANBAN</span></h1>
-                    <nav class="nav-links" style={{ display: 'flex', gap: '10px' }}>
-                        <a href="/" class="nav-btn" style={{ textDecoration: 'none', color: '#666', fontSize: '0.9rem' }}>🔥 Hotlist</a>
-                        <span class="nav-btn active" style={{ fontWeight: 'bold', color: '#007bff', background: '#e7f1ff', padding: '4px 10px', borderRadius: '4px', fontSize: '0.9rem' }}>已发射看板</span>
-                    </nav>
-                </div>
-                <div style={{ display: 'flex', gap: '15px', alignItems: 'center', fontSize: '0.85em', color: '#666' }}>
-                    <div>⏱ {lastUpdate()}</div>
-                    <div class="status-indicator" title="Migrated Tokens Feed">
-                        <span style={{
-                            display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%',
-                            background: migratedStatus().includes('Connected') ? '#28a745' : '#dc3545',
-                            marginRight: '4px'
-                        }}></span>
-                        {migratedStatus()}
-                    </div>
-                </div>
-            </header>
-
-            <div class="meme-board-grid">
-                <MemeColumn title="🦋 已发射/金狗 (Migrated)" items={migratedTokens()} count={migratedTokens().length} />
-            </div>
-        </div>
-    );
-
-};
-
-export default MemePage;
+      ]
+    },
+    "chart4h": null,
+    "chart24h": null,
+    "priceChange1m": -2.71,
+    "priceChange5m": 9.01,
+    "priceChange1h": 127.07,
+    "priceChange4h": 127.07,
+    "priceChange24h": 127.07,
+    "holdersTop10Percent": 5.26,
+    "website": [
+      "https://t.co/5UY6GdhnAz"
+    ],
+    "twitter": [
+      "https://x.com/nvidianewsroom"
+    ],
+    "telegram": [],
+    "tokenTag": null,
+    "risk": 0,
+    "caution": 0,
+    "isAuditPending": false,
+    "showAiNarrative": true,
+    "inflow": null,
+    "traders": null,
+    "tokenRiskCodes": null,
+    "isLive": false,
+    "alphaInfo": null,
+    "alphaTag": null,
+    "dexScreenerAdTag": null,
+    "protocol": null,
+    "isAlphaStock": false
+  },
+  {
+    "chainId": "CT_501",
+    "contractAddress": "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+    "defaultIndex": 4,
+    "symbol": "TRUMP",
+    "icon": "https://bin.bnbstatic.com/images/web3-data/public/token/logos/add7fb22e0b2422bbacee21981ffc259.png",
+    "createTime": 1737122459000,
+    "decimal": "6",
+    "liquidity": 209756689.58,
+    "isMaxPoolBurned": false,
+    "topLiquidityBurned": null,
+    "holders": 633617,
+    "kycHolders": 10088,
+    "marketCap": 1027984326.4912803,
+    "price": 5.13993719207427,
+    "count1m": 31,
+    "count5m": 43,
+    "count1h": 370,
+    "count4h": 1414,
+    "count24h": 10307,
+    "count1mBuy": 0,
+    "count5mBuy": 0,
+    "count1hBuy": 73,
+    "count4hBuy": 932,
+    "count24hBuy": 5022,
+    "count1mSell": 31,
+    "count5mSell": 43,
+    "count1hSell": 297,
+    "count4hSell": 482,
+    "count24hSell": 5285,
+    "volume1m": 4070.67,
+    "volume5m": 27435.57,
+    "volume1h": 849703.85,
+    "volume4h": 3776792.79,
+    "volume24h": 27141803.73,
+    "chart1m": null,
+    "chart5m": null,
+    "chart1h": {
+      "price": [
+        {
+          "timestamp": 1766223660000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223720000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223780000,
+          "value": null
+        },
+        {
+          "timestamp": 1766223840000,
+          "value": 5.160147276514615
+        },
+        {
+          "timestamp": 1766223900000,
+          "value": 5.170119699421255
+        },
+        {
+          "timestamp": 1766223960000,
+          "value": 5.170098380973569
+        },
+        {
+          "timestamp": 1766224020000,
+          "value": 5.170096410832796
+        },
+        {
+          "timestamp": 1766224080000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224140000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224200000,
+          "value": 5.158227790521142
+        },
+        {
+          "timestamp": 1766224260000,
+          "value": 5.139739238416284
+        },
+        {
+          "timestamp": 1766224320000,
+          "value": 5.170142724988218
+        },
+        {
+          "timestamp": 1766224380000,
+          "value": 5.160367513332441
+        },
+        {
+          "timestamp": 1766224440000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224500000,
+          "value": 5.157826694737402
+        },
+        {
+          "timestamp": 1766224560000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224620000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224680000,
+          "value": 5.170635268089382
+        },
+        {
+          "timestamp": 1766224740000,
+          "value": null
+        },
+        {
+          "timestamp": 1766224800000,
+          "value": 5.1563483208692436
+        },
+        {
+          "timestamp": 1766224860000,
+          "value": 5.1702031761539615
+        },
+        {
+          "timestamp": 1766224920000,
+          "value": 5.157060969282722
+        },
+        {
+          "timestamp": 1766224980000,
+          "value": 5.168495032688666
+        },
+        {
+          "timestamp": 1766225040000,
+          "value": 5.157530453133574
+        },
+        {
+          "timestamp": 1766225100000,
+          "value": 5.1577689581209345
+        },
+        {
+          "timestamp": 1766225160000,
+          "value": 5.157406706338308
+        },
+        {
+          "timestamp": 1766225220000,
+          "value": 5.181316171304769
+        },
+        {
+          "timestamp": 1766225280000,
+          "value": 5.156287283930662
+        },
+        {
+          "timestamp": 1766225340000,
+          "value": 5.1666816365825285
+        },
+        {
+          "timestamp": 1766225400000,
+          "value": 5.156252159901554
+        },
+        {
+          "timestamp": 1766225460000,
+          "value": 5.160707256472307
+        },
+        {
+          "timestamp": 1766225520000,
+          "value": 5.156799523456023
+        },
+        {
+          "timestamp": 1766225580000,
+          "value": 5.167566329730362
+        },
+        {
+          "timestamp": 1766225640000,
+          "value": 5.157257326783569
+        },
+        {
+          "timestamp": 1766225700000,
+          "value": null
+        },
+        {
+          "timestamp": 1766225760000,
+          "value": 5.153831277872932
+        },
+        {
+          "timestamp": 1766225820000,
+          "value": 5.153662882720827
+        },
+        {
+          "timestamp": 1766225880000,
+          "value": 5.153977240380995
+        },
+        {
+          "timestamp": 1766225940000,
+          "value": 5.154168583327617
+        },
+        {
+          "timestamp": 1766226000000,
+          "value": 5.149856091595348
+        },
+        {
+          "timestamp": 1766226060000,
+          "value": 5.1497101859604895
+        },
+        {
+          "timestamp": 1766226120000,
+          "value": 5.15042740095529
+        },
+        {
+          "timestamp": 1766226180000,
+          "value": 5.149984481747789
+        },
+        {
+          "timestamp": 1766226240000,
+          "value": 5.144574351294481
+        },
+        {
+          "timestamp": 1766226300000,
+          "value": 5.14396013647628
+        },
+        {
+          "timestamp": 1766226360000,
+          "value": 5.143178247140687
+        },
+        {
+          "timestamp": 1766226420000,
+          "value": 5.155206159856294
+        },
+        {
+          "timestamp": 1766226480000,
+          "value": null
+        },
+        {
+          "timestamp": 1766226540000,
+          "value": null
+        },
+        {
+          "timestamp": 1766226600000,
+          "value": null
+        },
+        {
+          "timestamp": 1766226660000,
+          "value": 5.149761339945655
+        },
+        {
+          "timestamp": 1766226720000,
+          "value": 5.144991128805591
+        },
+        {
+          "timestamp": 1766226780000,
+          "value": 5.144797671103779
+        },
+        {
+          "timestamp": 1766226840000,
+          "value": 5.139573878109605
+        },
+        {
+          "timestamp": 1766226900000,
+          "value": null
+        },
+        {
+          "timestamp": 1766226960000,
+          "value": null
+        },
+        {
+          "timestamp": 1766227020000,
+          "value": null
+        },
+        {
+          "timestamp": 1766227080000,
+          "value": 5.139432963272314
+        },
+        {
+          "timestamp": 1766227140000,
+          "value": 5.1396414446369905
+        },
+        {
+          "timestamp": 1766227200000,
+          "value": 5.13993719207427
+        }
+      ],
+      "volume": [
+        {
+          "timestamp": 1766223900000,
+          "value": 85.80958008767325
+        },
+        {
+          "timestamp": 1766224200000,
+          "value": 592.4610388298622
+        },
+        {
+          "timestamp": 1766224500000,
+          "value": 0.6288267571422999
+        },
+        {
+          "timestamp": 1766224800000,
+          "value": 0.6605797833865588
+        },
+        {
+          "timestamp": 1766225100000,
+          "value": 1597.2437556148086
+        },
+        {
+          "timestamp": 1766225400000,
+          "value": 1518.0528303731771
+        },
+        {
+          "timestamp": 1766225700000,
+          "value": 386.5293286708911
+        },
+        {
+          "timestamp": 1766226000000,
+          "value": 709343.358358519
+        },
+        {
+          "timestamp": 1766226300000,
+          "value": 271.1726166567152
+        },
+        {
+          "timestamp": 1766226600000,
+          "value": 35.096967053821984
+        },
+        {
+          "timestamp": 1766226900000,
+          "value": 17351.25944999224
+        },
+        {
+          "timestamp": 1766227200000,
+          "value": 3640.247710392385
+        }
+      ]
+    },
+    "chart4h": null,
+    "chart24h": null,
+    "priceChange1m": 0.01,
+    "priceChange5m": 0.01,
+    "priceChange1h": -0.39,
+    "priceChange4h": 0,
+    "priceChange24h": 0.47,
+    "holdersTop10Percent": 90.73,
+    "website": [
+      "https://gettrumpmemes.com/"
+    ],
+    "twitter": [
+      "https://x.com/GetTrumpMemes"
+    ],
+    "telegram": [],
+    "tokenTag": {
+      "Community Recognition Level": [
+        {
+          "tagName": "Community Recognized",
+          "languageKey": "wmp-label-title-community-recognized"
+        }
+      ]
+    },
+    "risk": 0,
+    "caution": 0,
+    "isAuditPending": false,
+    "showAiNarrative": true,
+    "inflow": null,
+    "traders": null,
+    "tokenRiskCodes": null,
+    "isLive": false,
+    "alphaInfo": null,
+    "alphaTag": null,
+    "dexScreenerAdTag": null,
+    "protocol": null,
+    "isAlphaStock": false
+  }
