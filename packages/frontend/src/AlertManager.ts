@@ -17,13 +17,13 @@ const PREFERRED_VOICE_NAMES: string[] = [
     "Microsoft Xiaoni Online (Natural) - Chinese (Zhongyuan Mandarin Shaanxi)"
 ];
 const ALERT_THRESHOLDS = {
-    volume1m: 500000,
-    volume5m: 1000000,
+    volume1m: 50,
+    volume5m: 200,
     priceChange1m: 5,
     priceChange5m: 25,
     // ✨ 新增: 为价格波动提醒增加成交额门槛，避免无量波动产生的无效提醒
-    priceChangeVolume1m_min: 50000, // 1分钟价格异动所需的最小成交额
-    priceChangeVolume5m_min: 150000, // 5分钟价格异动所需的最小成交额
+    priceChangeVolume1m_min: 20, // 1分钟价格异动所需的最小成交额
+    priceChangeVolume5m_min: 100, // 5分钟价格异动所需的最小成交额
 };
 const COOLDOWN_PERIOD_MS = 1000 * 60;
 
