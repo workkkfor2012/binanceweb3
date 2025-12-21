@@ -122,6 +122,8 @@ async function setupPageForChain(
                 priceChange1m: parseFloat(item.priceChange1m) || 0,
                 volume4h: parseFloat(item.volume4h) || 0,
                 priceChange4h: parseFloat(item.priceChange4h) || 0,
+                createTime: parseInt(item.createTime) || 0,
+                liquidity: parseFloat(item.liquidity) || 0,
 
                 source: 'hotlist'
             }));

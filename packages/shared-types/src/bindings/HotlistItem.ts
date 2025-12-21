@@ -17,6 +17,8 @@ export type HotlistItem = {
   priceChange1m: number | null;
   volume4h: number | null;
   priceChange4h: number | null;
+  createTime?: number;
+  liquidity?: number;
   source?: string;
   narrative?: string;
 };

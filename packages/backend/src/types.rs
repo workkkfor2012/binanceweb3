@@ -46,6 +46,11 @@ pub struct HotlistItem {
     pub price_change1m: Option<f64>,
     pub volume4h: Option<f64>,
     pub price_change4h: Option<f64>,
+
+    #[ts(optional, type = "number")]
+    pub create_time: Option<i64>,
+    #[ts(optional)]
+    pub liquidity: Option<f64>,
     
     #[ts(optional)]
     pub source: Option<String>,

@@ -7,11 +7,8 @@ export * from './bindings/DataAction';
 export * from './bindings/DataPayload';
 export * from './bindings/KlineTick';
 
-// 2. 导出手动定义的类型 (爬虫原始 Raw Dump 等)
-export * from './meme-rush';
-
 // ----------------------------------------------------------------------------
-// 3. 核心常量定义 (用于爬虫 Dynamic Extraction)
+// 2. 核心常量定义 (用于爬虫 Dynamic Extraction)
 // ----------------------------------------------------------------------------
 export const DESIRED_FIELDS = [
     'contractAddress',
@@ -28,11 +25,13 @@ export const DESIRED_FIELDS = [
     'volume1m',
     'priceChange1m',
     'volume4h',
-    'priceChange4h'
+    'priceChange4h',
+    'createTime',
+    'liquidity'
 ];
 
 // ----------------------------------------------------------------------------
-// 4. 运行时类型 / 别名 (用于平滑过渡或前端特定逻辑)
+// 3. 运行时类型 / 别名 (用于平滑过渡或前端特定逻辑)
 // ----------------------------------------------------------------------------
 import { HotlistItem } from './bindings/HotlistItem';
 import { MemeScanItem } from './bindings/MemeScanItem';
@@ -55,8 +54,6 @@ export interface ExtractedDataPayload {
  * 我们将其定义为基础 MemeScanItem 的扩展。
  */
 export interface MemeItem extends MemeScanItem {
-    // 这里可以添加以后前端专用的扩展字段，目前先继承所有后端字段
-    // 如果后续后端增加了字段，MemeItem 会自动同步
     source: 'meme-rush';
 }
 

@@ -93,9 +93,26 @@ async fn complete_kline_data(
     s: &SocketRef,
 ) -> Result<Option<usize>> {
     let last_kline = get_last_kline_from_db(&state.db_pool, primary_key).await?;
-    // 简化逻辑：如果没有数据或数据旧了，就去拉取
+    let interval_ms = interval_to_ms(&payload.interval);
+    let now_ts = Utc::now().timestamp_millis();
+    
+    // ✨ 智能计算 Limit
     let limit = match last_kline {
-        Some(_) => 50, // 简单策略：增量拉取
+        Some(last) => {
+            let last_ts = last.time.timestamp_millis();
+            let diff_ms = now_ts - last_ts;
+            let missing_count = (diff_ms / interval_ms) + 1; // +1 以覆盖最后一根可能未完成的 K 线
+            
+            if missing_count > MAX_KLINES {
+                info!("⚠️ [KLINE STALE] 数据过旧 (缺少 {} 根). 清空缓存并重新拉取: {}", missing_count, primary_key);
+                clear_kline_cache(&state.db_pool, primary_key).await?;
+                MAX_KLINES
+            } else {
+                let final_limit = missing_count.max(2).min(MAX_KLINES); // 至少取 2 根以确保覆盖最新和前一根
+                info!("🔄 [KLINE SYNC] 缺少约 {} 根. 请求 limit={}", missing_count - 1, final_limit);
+                final_limit
+            }
+        }
         None => MAX_KLINES,
     };
 
@@ -107,7 +124,6 @@ async fn complete_kline_data(
     }
 
     // ✨ HYDRATION: Always read back the FULL updated set from DB and hydrate
-    // This ensures continuity even if we only fetched a small chunk
     let full_raw_data = get_klines_from_db(&state.db_pool, primary_key).await.unwrap_or_default();
     
     if !full_raw_data.is_empty() {
@@ -117,12 +133,10 @@ async fn complete_kline_data(
             address: payload.address.clone(),
             chain: payload.chain.clone(),
             interval: payload.interval.clone(),
-            data: hydrated_data.clone(), // Send full hydrated set
+            data: hydrated_data.clone(),
         };
         s.emit("historical_kline_completed", &resp).ok();
         
-        // Initialize current_kline for ticks (use the last REAL one or last HYDRATED one? Ticks need real price)
-        // Use the last element of hydrated (which mirrors last real close)
         let latest_candidate = hydrated_data.last().cloned();
         
         if let Some(kline) = latest_candidate {
@@ -145,6 +159,11 @@ async fn complete_kline_data(
     }
 
     Ok(Some(new_klines.len()))
+}
+
+async fn clear_kline_cache(pool: &SqlitePool, key: &str) -> Result<()> {
+    sqlx::query("DELETE FROM klines WHERE primary_key = ?").bind(key).execute(pool).await?;
+    Ok(())
 }
 
 async fn fetch_historical_data_with_pool(
@@ -271,10 +290,16 @@ fn fill_kline_gaps(mut raw_data: Vec<KlineTick>, interval_str: &str, target_coun
     let mut last_close = 0.0;
     
     // Try to find an initial close if the start of window is empty
-    // "Backfill" strategy: find the first available data point
-    let first_available = data_map.values().min_by_key(|k| k.time);
-    if let Some(first) = first_available {
-        last_close = first.open; // Use Open as the seed
+    // "Backfill" strategy: Use average of the 2nd LATEST kline's open and close
+    // to anchor the historical flat line to the recent price level.
+    let mut sorted_real_data: Vec<&KlineTick> = data_map.values().collect();
+    sorted_real_data.sort_by_key(|k| k.time);
+
+    if sorted_real_data.len() >= 2 {
+        let second_latest = &sorted_real_data[sorted_real_data.len() - 2];
+        last_close = (second_latest.open + second_latest.close) / 2.0;
+    } else if let Some(first) = sorted_real_data.first() {
+        last_close = first.close;
     }
 
     let mut curr = start_time;
