@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::{info, warn, error}; // ✨ Added error
+use chrono::Utc;
 use flate2::read::GzDecoder;
 use std::io::Read;
 
@@ -259,7 +260,16 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         // 1. 处理 Hotlist (HotlistItem 结构体)
                         DataPayload::Hotlist { r#type: _, data } => {
                             // 过滤逻辑
-                            data.retain(|item| (item.volume1h.unwrap_or(0.0) * item.price.unwrap_or(0.0)) >= MIN_HOTLIST_AMOUNT);
+                            let now = Utc::now().timestamp_millis();
+                            let thirty_mins_ms = 30 * 60 * 1000;
+                            data.retain(|item| {
+                                let amount_ok = (item.volume1h.unwrap_or(0.0) * item.price.unwrap_or(0.0)) >= MIN_HOTLIST_AMOUNT;
+                                let time_ok = match item.create_time {
+                                    Some(ct) => (now - ct) >= thirty_mins_ms,
+                                    None => true, // 如果没传创建时间，默认保留
+                                };
+                                amount_ok && time_ok
+                            });
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🔥 [HOTLIST] Act: {:?} | Count: {}", r#type, data.len());
                             
