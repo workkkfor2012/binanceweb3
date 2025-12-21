@@ -110,7 +110,7 @@ export function checkAndTriggerAlerts(
 
     // 规则 1: 1分钟成交额
     if (volume1m > ALERT_THRESHOLDS.volume1m && canAlert(contractAddress, 'volume1m')) {
-        const volumeText = `${Math.round(volume1m / 10000)}万`;
+        const volumeText = `${Math.round(volume1m)}美金`;
         message = `${symbol} 1分钟 ${volumeText}`;
         console.log(`[AlertFlow] [PASSED] 规则 "volume1m" 满足条件, 准备触发提醒。`);
         speak(message);
@@ -119,7 +119,7 @@ export function checkAndTriggerAlerts(
 
     // 规则 2: 5分钟成交额
     if (volume5m > ALERT_THRESHOLDS.volume5m && canAlert(contractAddress, 'volume5m')) {
-        const volumeText = `${Math.round(volume5m / 10000)}万`;
+        const volumeText = `${Math.round(volume5m)}美金`;
         message = `${symbol} 5分钟 ${volumeText}`;
         console.log(`[AlertFlow] [PASSED] 规则 "volume5m" 满足条件, 准备触发提醒。`);
         speak(message);
