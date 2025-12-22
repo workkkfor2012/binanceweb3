@@ -2,6 +2,7 @@
 import { Component, createMemo, For, JSX } from 'solid-js';
 import type { MarketItem } from 'shared-types';
 import type { ChartTheme } from './themes';
+import type { AlertLogEntry } from './hooks/useMarketData';
 import TokenAvatar from './components/TokenAvatar';
 
 const BACKEND_URL = 'https://localhost:3001';
@@ -99,13 +100,12 @@ interface RawDataListProps {
 
 const RawDataList: Component<RawDataListProps> = (props) => {
     const displayData = createMemo(() => {
-        // ✅ 规则: 仅过滤黑名单，不做切片，按 1h 涨幅排序
         const blocked = props.blockList;
         const filtered = props.data.filter(item => !blocked.has(item.contractAddress));
 
         return filtered.sort((a, b) => {
-            const valA = a.priceChange1h ?? -Infinity;
-            const valB = b.priceChange1h ?? -Infinity;
+            const valA = (a as any).priceChange1h ?? -Infinity;
+            const valB = (b as any).priceChange1h ?? -Infinity;
             const numA = typeof valA === 'string' ? parseFloat(valA) : valA;
             const numB = typeof valB === 'string' ? parseFloat(valB) : valB;
             return numB - numA;
@@ -113,14 +113,15 @@ const RawDataList: Component<RawDataListProps> = (props) => {
     });
 
     return (
-        <div class="compact-ranking-list">
+        <div class="compact-ranking-list" style={{ "height": "100%", "display": "flex", "flex-direction": "column" }}>
             <h3 style={{
                 color: props.theme.layout.textColor,
-                "border-bottom-color": props.theme.grid.horzLines
+                "border-bottom-color": props.theme.grid.horzLines,
+                "margin-bottom": "5px"
             }}>
                 全量监控 (按1h排序)
             </h3>
-            <div style={{ "height": "calc(100vh - 150px)", "overflow-y": "auto", "padding-right": "5px" }}>
+            <div style={{ "flex": "1", "overflow-y": "auto", "padding-right": "5px" }}>
                 <ul>
                     <For each={displayData()}>
                         {(item) => (
@@ -141,9 +142,9 @@ const RawDataList: Component<RawDataListProps> = (props) => {
                                     />
                                     <span class="symbol-compact">{item.symbol}</span>
                                 </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                                <div style={{ display: 'flex', 'flex-direction': 'column', 'align-items': 'flex-end' }}>
                                     <span class="value-compact" style={{ "font-size": "0.85em" }}>
-                                        {formatPercentage(item.priceChange1h)}
+                                        {formatPercentage((item as any).priceChange1h)}
                                     </span>
                                 </div>
                             </li>
@@ -155,8 +156,44 @@ const RawDataList: Component<RawDataListProps> = (props) => {
     );
 }
 
+// ✨ 新增：报警日志列表组件
+const AlertLogList: Component<{ logs: AlertLogEntry<MarketItem>[], theme: ChartTheme }> = (props) => {
+    return (
+        <div class="compact-ranking-list alert-log-section" style={{ "height": "100%", "display": "flex", "flex-direction": "column" }}>
+            <h3 style={{
+                color: props.theme.layout.textColor,
+                "border-bottom-color": props.theme.grid.horzLines,
+                "margin-bottom": "5px",
+                "display": "flex",
+                "justify-content": "space-between"
+            }}>
+                <span>提醒日志 (实时)</span>
+                <span style={{ "font-size": "0.7em", opacity: 0.5 }}>LIFO</span>
+            </h3>
+            <div style={{ "flex": "1", "overflow-y": "auto", "font-family": "monospace", "font-size": "11px" }}>
+                <For each={props.logs} fallback={<div style={{ padding: "10px", opacity: 0.3 }}>暂无报警...</div>}>
+                    {(log) => (
+                        <div style={{
+                            "padding": "4px 2px",
+                            "border-bottom": `1px solid ${props.theme.grid.horzLines}`,
+                            "line-height": "1.4",
+                            "color": log.type === 'price' ? '#ff9800' : '#2196f3'
+                        }}>
+                            <span style={{ opacity: 0.6 }}>[{new Date(log.timestamp).toLocaleTimeString()}] </span>
+                            <span style={{ "font-weight": "bold" }}>{log.item.symbol}</span>
+                            <br />
+                            <span>{log.message}</span>
+                        </div>
+                    )}
+                </For>
+            </div>
+        </div>
+    );
+};
+
 interface ContainerProps {
     marketData: MarketItem[];
+    alertLogs: AlertLogEntry<MarketItem>[]; // ✨ 修复：直接作为 Store 数据传入
     lastUpdate: string;
     onHeaderClick: (rankBy: keyof MarketItem) => void;
     blockList: Set<string>;
@@ -209,14 +246,22 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                     </For>
                 </div>
 
-                {/* 右侧: 全量列表 (按 1h 排序，过滤黑名单，显示所有) */}
-                <div class="ranking-section" style={{ flex: '1' }}>
-                    <RawDataList
-                        data={props.marketData}
-                        blockList={props.blockList}
-                        onItemClick={props.onItemClick}
-                        theme={props.theme}
-                    />
+                {/* 右侧: 全量列表 + 报警日志 (垂直堆叠) */}
+                <div class="ranking-section" style={{ flex: '1', display: 'flex', 'flex-direction': 'column', height: 'calc(100vh - 80px)' }}>
+                    <div style={{ flex: '6', overflow: 'hidden' }}>
+                        <RawDataList
+                            data={props.marketData}
+                            blockList={props.blockList}
+                            onItemClick={props.onItemClick}
+                            theme={props.theme}
+                        />
+                    </div>
+                    <div style={{ flex: '4', "margin-top": "15px", "border-top": `2px solid ${props.theme.grid.horzLines}`, "padding-top": "10px", overflow: 'hidden' }}>
+                        <AlertLogList
+                            logs={props.alertLogs}
+                            theme={props.theme}
+                        />
+                    </div>
                 </div>
             </div>
         </div>

@@ -1,5 +1,5 @@
 // packages/frontend/src/ChartPageLayout.tsx
-import { Component, createSignal, onMount, onCleanup, createMemo, Show, createEffect, untrack } from 'solid-js';
+import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
 import type { MarketItem } from 'shared-types';
 import CompactRankingListsContainer from './CompactRankingListsContainer';
 import MultiChartGrid from './MultiChartGrid';
@@ -38,8 +38,8 @@ const saveBlockListToStorage = (blockList: Set<string>): void => {
 };
 
 const ChartPageLayout: Component = () => {
-  // ✨ 修复：显式传入 'hotlist' 作为分类
-  const { marketData, connectionStatus, lastUpdate } = useMarketData('hotlist');
+  // ✨ 修复：显式传入 'hotlist' 作为分类，并对接详细报警日志
+  const { marketData, alertLogs, connectionStatus, lastUpdate } = useMarketData('hotlist');
 
   // UI 状态
   const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('priceChange5m');
@@ -112,7 +112,7 @@ const ChartPageLayout: Component = () => {
     const blocked = blockList();
     if (!rankBy) return [];
 
-    return [...marketData]
+    const top9 = [...marketData]
       .filter(item => !blocked.has(item.contractAddress))
       .filter(item => item[rankBy] != null && String(item[rankBy]).trim() !== '')
       .sort((a, b) => {
@@ -121,17 +121,40 @@ const ChartPageLayout: Component = () => {
         const numA = typeof valA === 'string' ? parseFloat(valA) : valA;
         const numB = typeof valB === 'string' ? parseFloat(valB) : valB;
 
-        // Primary Sort: Value Descending
-        if (numB !== numA) {
-          return numB - numA;
-        }
-
-        // Secondary Sort: Contract Address (Stable Tie-breaker)
-        // This ensures that if two tokens have the exact same price/change, 
-        // they don't swap positions randomly.
+        if (numB !== numA) return numB - numA;
         return a.contractAddress.localeCompare(b.contractAddress);
       })
       .slice(0, 9);
+
+    // ✨ 获取最近报警的前 7 名 (从 AlertLogEntry 中提取 item)
+    // 使用去重逻辑确保同一品种不占多个报警位槽
+    const alertTop7Items: MarketItem[] = [];
+    const seen = new Set<string>();
+
+    for (const log of alertLogs) {
+      const key = `${log.item.chain}-${log.item.contractAddress}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        alertTop7Items.push(log.item as MarketItem);
+        if (alertTop7Items.length >= 7) break;
+      }
+    }
+
+    // 合并为 16 个位槽
+    const final16 = [...top9];
+
+    // 填充 Top 9 的空位 (如果不足 9 个)
+    while (final16.length < 9) {
+      final16.push(undefined as any);
+    }
+
+    // 追加 7 个报警位槽
+    const alertPart = [...alertTop7Items];
+    while (alertPart.length < 7) {
+      alertPart.push(undefined as any);
+    }
+
+    return [...final16, ...alertPart];
   });
 
   const handleRankingHeaderClick = (rankBy: keyof MarketItem) => {
@@ -161,6 +184,7 @@ const ChartPageLayout: Component = () => {
       >
         <CompactRankingListsContainer
           marketData={marketData}
+          alertLogs={alertLogs} // ✨ 传入报警日志
           lastUpdate={lastUpdate()}
           onHeaderClick={handleRankingHeaderClick}
           blockList={blockList()}

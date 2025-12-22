@@ -17,11 +17,21 @@ const loadBlockListFromStorage = (): Set<string> => {
     return new Set();
 };
 
+// ✨ 新增：报警日志条目结构
+export interface AlertLogEntry<T = MarketItem> {
+    id: string; // 唯一 ID (防止 Key 重复)
+    item: T;
+    message: string;
+    timestamp: number;
+    type: 'volume' | 'price';
+}
+
 // 🌟 泛型支持：允许 hook 服务于 Hotlist 或 MemeItem
 export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
     targetCategory: 'hotlist' | 'meme_new' | 'meme_migrated'
 ) => {
     const [marketData, setMarketData] = createStore<T[]>([]);
+    const [alertLogs, setAlertLogs] = createStore<AlertLogEntry<T>[]>([]); // ✨ 升级为详细日志
     const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
     const [lastUpdate, setLastUpdate] = createSignal('N/A');
     const [blockList] = createSignal(loadBlockListFromStorage());
@@ -32,7 +42,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
 
     onMount(() => {
         console.log(`[useMarketData] 🔌 Initializing hook for category: ${targetCategory}`);
-        
+
         if (!socket.connected) {
             socket.connect();
         }
@@ -51,12 +61,11 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
         const onDataBroadcast = (payload: LocalDataPayload<T>) => {
             // 🛡️ 严格的数据隔离：防止跨频道数据污染
             if (payload.category !== targetCategory) {
-                 return;
+                return;
             }
 
             if (!payload.data || payload.data.length === 0) return;
 
-            const startTime = performance.now();
             const blocked = blockList();
 
             // 1. 报警检测 (仅针对 Hotlist 类型的 MarketItem)
@@ -64,15 +73,28 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
                 for (const newItem of payload.data) {
                     // 使用 Duck Typing 安全地转换类型以检查是否需要报警
                     // 实际项目中可以加更严谨的 Type Guard
-                    const item = newItem as unknown as MarketItem; 
-                    
+                    const item = newItem as unknown as MarketItem;
+
                     // 只有包含 source='hotlist' 且不在黑名单的数据才进行报警检查
                     if ('source' in item && item.source === 'hotlist' && !blocked.has(item.contractAddress)) {
-                        const oldItem = (marketData as unknown as MarketItem[]).find(d => 
+                        const oldItem = (marketData as unknown as MarketItem[]).find(d =>
                             d.contractAddress === item.contractAddress && d.chain === item.chain
                         );
                         if (oldItem) {
-                            checkAndTriggerAlerts(item, oldItem, handleAlertLog);
+                            checkAndTriggerAlerts(item, oldItem, (msg: string, type: 'volume' | 'price') => {
+                                handleAlertLog(msg, type);
+                                // ✨ 记录详细日志 (置顶 + 限制数量)
+                                setAlertLogs(produce((logs) => {
+                                    logs.unshift({
+                                        id: `${item.chain}-${item.contractAddress}-${Date.now()}`,
+                                        item: newItem,
+                                        message: msg,
+                                        timestamp: Date.now(),
+                                        type: type
+                                    });
+                                    if (logs.length > 50) logs.pop(); // 保留 50 条日志
+                                }));
+                            });
                         }
                     }
                 }
@@ -91,7 +113,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
                     const uniqueId = `${newItem.chain}-${newItem.contractAddress}`;
                     incomingIds.add(uniqueId);
 
-                    const index = currentData.findIndex(d => 
+                    const index = currentData.findIndex(d =>
                         d.contractAddress === newItem.contractAddress && d.chain === newItem.chain
                     );
 
@@ -110,7 +132,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
                     for (let i = currentData.length - 1; i >= 0; i--) {
                         const item = currentData[i];
                         const uniqueId = `${item.chain}-${item.contractAddress}`;
-                        
+
                         if (!incomingIds.has(uniqueId)) {
                             currentData.splice(i, 1);
                             removedCount++;
@@ -143,6 +165,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
 
     return {
         marketData,
+        alertLogs, // ✨ 返回详细日志
         connectionStatus,
         lastUpdate
     };
