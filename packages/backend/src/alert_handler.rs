@@ -8,12 +8,12 @@ use uuid::Uuid;
 use tracing::info;
 
 // ============== 报警阈值配置 ==============
-pub const ALERT_VOLUME_1M_USD: f64 = 500.0;
-pub const ALERT_VOLUME_5M_USD: f64 = 2000.0;
+pub const ALERT_VOLUME_1M_USD: f64 = 5000.0;
+pub const ALERT_VOLUME_5M_USD: f64 = 20000.0;
 pub const ALERT_PRICE_CHANGE_1M_PERCENT: f64 = 5.0;
 pub const ALERT_PRICE_CHANGE_5M_PERCENT: f64 = 25.0;
-pub const ALERT_PRICE_CHANGE_1M_MIN_VOLUME_USD: f64 = 100.0;  // 价格异动需满足的最小成交额
-pub const ALERT_PRICE_CHANGE_5M_MIN_VOLUME_USD: f64 = 500.0;
+pub const ALERT_PRICE_CHANGE_1M_MIN_VOLUME_USD: f64 = 1000.0;  // 价格异动需满足的最小成交额
+pub const ALERT_PRICE_CHANGE_5M_MIN_VOLUME_USD: f64 = 5000.0;
 pub const ALERT_COOLDOWN_MS: i64 = 60_000; // 1 分钟冷却
 pub const MAX_ALERT_HISTORY: usize = 50;
 
