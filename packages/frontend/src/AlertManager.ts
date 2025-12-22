@@ -105,12 +105,18 @@ export function checkAndTriggerAlerts(
 
     //console.log(`[AlertFlow] --- 检查提醒 for ${newItem.symbol} ---`);
 
-    const { contractAddress, symbol, volume1m, volume5m, priceChange1m, priceChange5m } = newItem;
+    // ✨ 核心修正：由于爬虫传递的是代币成交量，需要乘以价格得到美金金额
+    const item = newItem as any;
+    const { contractAddress, symbol, price, volume1m, volume5m, priceChange1m, priceChange5m } = item;
+    const currentPrice = price || 0;
+
+    const volume1mUSD = (volume1m || 0) * currentPrice;
+    const volume5mUSD = (volume5m || 0) * currentPrice;
     let message = '';
 
     // 规则 1: 1分钟成交额
-    if (volume1m > ALERT_THRESHOLDS.volume1m && canAlert(contractAddress, 'volume1m')) {
-        const volumeText = `${Math.round(volume1m)}美金`;
+    if (volume1mUSD > ALERT_THRESHOLDS.volume1m && canAlert(contractAddress, 'volume1m')) {
+        const volumeText = `${Math.round(volume1mUSD)}美金`;
         message = `${symbol} 1分钟 ${volumeText}`;
         console.log(`[AlertFlow] [PASSED] 规则 "volume1m" 满足条件, 准备触发提醒。`);
         speak(message);
@@ -118,8 +124,8 @@ export function checkAndTriggerAlerts(
     }
 
     // 规则 2: 5分钟成交额
-    if (volume5m > ALERT_THRESHOLDS.volume5m && canAlert(contractAddress, 'volume5m')) {
-        const volumeText = `${Math.round(volume5m)}美金`;
+    if (volume5mUSD > ALERT_THRESHOLDS.volume5m && canAlert(contractAddress, 'volume5m')) {
+        const volumeText = `${Math.round(volume5mUSD)}美金`;
         message = `${symbol} 5分钟 ${volumeText}`;
         console.log(`[AlertFlow] [PASSED] 规则 "volume5m" 满足条件, 准备触发提醒。`);
         speak(message);
@@ -127,10 +133,10 @@ export function checkAndTriggerAlerts(
     }
 
     // 规则 3: 1分钟价格变化 (增加成交额过滤)
-    const pc1m = parseFloat(String(priceChange1m));
+    const pc1m = parseFloat(String(priceChange1m || 0));
     if (
         Math.abs(pc1m) > ALERT_THRESHOLDS.priceChange1m &&
-        volume1m > ALERT_THRESHOLDS.priceChangeVolume1m_min && // 核心修改
+        volume1mUSD > ALERT_THRESHOLDS.priceChangeVolume1m_min &&
         canAlert(contractAddress, 'priceChange1m')
     ) {
         const direction = pc1m > 0 ? '上涨' : '下跌';
@@ -142,10 +148,10 @@ export function checkAndTriggerAlerts(
     }
 
     // 规则 4: 5分钟价格变化 (增加成交额过滤)
-    const pc5m = parseFloat(String(priceChange5m));
+    const pc5m = parseFloat(String(priceChange5m || 0));
     if (
         Math.abs(pc5m) > ALERT_THRESHOLDS.priceChange5m &&
-        volume5m > ALERT_THRESHOLDS.priceChangeVolume5m_min && // 核心修改
+        volume5mUSD > ALERT_THRESHOLDS.priceChangeVolume5m_min &&
         canAlert(contractAddress, 'priceChange5m')
     ) {
         const direction = pc5m > 0 ? '上涨' : '下跌';
