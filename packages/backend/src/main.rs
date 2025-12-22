@@ -23,7 +23,7 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::fs::File;
 use std::io::BufReader;
@@ -129,6 +129,23 @@ async fn main() {
         let state = socket_state.clone();
         async move {
             socket_handlers::on_socket_connect(s, state).await;
+        }
+    });
+
+    // 🔥 定时裁剪流动性历史数据（每小时执行）
+    let db_pool_for_prune = server_state.db_pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            match kline_handler::prune_liquidity_history(&db_pool_for_prune).await {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        info!("🧹 [流动性裁剪] 已删除 {} 条过期数据", deleted);
+                    }
+                }
+                Err(e) => warn!("⚠️ [流动性裁剪失败] {}", e),
+            }
         }
     });
 

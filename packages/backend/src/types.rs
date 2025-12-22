@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use socketioxide::socket::Sid;
 use ts_rs::TS;
+use sqlx::{sqlite::SqliteRow, Row};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -94,6 +95,27 @@ impl NarrativeEntity for HotlistItem {
     fn set_narrative(&mut self, n: String) { self.narrative = Some(n); }
     fn get_narrative(&self) -> Option<&str> { self.narrative.as_deref() }
     fn get_narrative_chain_id(&self) -> Option<String> { None }
+}
+
+/// 流动性历史数据点
+#[derive(Debug, Serialize, Deserialize, Clone, Default, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/LiquidityPoint.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct LiquidityPoint {
+    /// 秒级 Unix 时间戳（分钟对齐）
+    #[ts(type = "number")]
+    pub time: i64,
+    /// 流动性绝对值 (USD)
+    pub value: f64,
+}
+
+impl sqlx::FromRow<'_, SqliteRow> for LiquidityPoint {
+    fn from_row(row: &SqliteRow) -> sqlx::Result<Self> {
+        Ok(LiquidityPoint {
+            time: row.try_get("time_bucket")?,
+            value: row.try_get("value")?,
+        })
+    }
 }
 
 // ==============================================================================
@@ -328,6 +350,9 @@ pub struct KlineHistoryResponse {
     pub chain: String,
     pub interval: String,
     pub data: Vec<KlineTick>,
+    /// 流动性历史（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub liquidity_history: Option<Vec<LiquidityPoint>>,
 }
 pub struct Room {
     pub clients: HashSet<Sid>,
@@ -359,7 +384,10 @@ mod tests {
         MemeScanItem::export().expect("Failed to export MemeScanItem");
         DataAction::export().expect("Failed to export DataAction");
         DataPayload::export().expect("Failed to export DataPayload");
+        DataPayload::export().expect("Failed to export DataPayload");
         KlineTick::export().expect("Failed to export KlineTick");
+        LiquidityPoint::export().expect("Failed to export LiquidityPoint");
+        KlineHistoryResponse::export().expect("Failed to export KlineHistoryResponse");
         AlertType::export().expect("Failed to export AlertType");
         AlertLogEntry::export().expect("Failed to export AlertLogEntry");
     }

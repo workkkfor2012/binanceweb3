@@ -2,7 +2,7 @@
 
 use crate::{
     client_pool::ClientPool,
-    types::{HistoricalDataWrapper, KlineHistoryResponse, KlineSubscribePayload, KlineTick},
+    types::{HistoricalDataWrapper, KlineHistoryResponse, KlineSubscribePayload, KlineTick, LiquidityPoint},
     ServerState,
 };
 use anyhow::{Context, Result};
@@ -38,6 +38,19 @@ pub async fn init_db(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
     info!("🗃️ 'klines' table is ready.");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS liquidity_history_1m (
+            address TEXT NOT NULL,
+            time_bucket INTEGER NOT NULL,
+            value REAL NOT NULL,
+            PRIMARY KEY (address, time_bucket)
+        )"
+    )
+    .execute(pool)
+    .await?;
+    info!("🗃️ 'liquidity_history_1m' table is ready.");
+
     Ok(())
 }
 
@@ -70,11 +83,17 @@ pub async fn handle_kline_request(
     // ✨ HYDRATION: Fill gaps before sending
     let hydrated_data = fill_kline_gaps(initial_data, &payload.interval, MAX_KLINES as usize);
 
+    // 查询流动性历史
+    let liquidity_history = query_liquidity_history(&state.db_pool, &payload.address)
+        .await
+        .ok(); // 失败时返回 None，不阻塞主流程
+
     let initial_response = KlineHistoryResponse {
         address: payload.address.clone(),
         chain: payload.chain.clone(),
         interval: payload.interval.clone(),
         data: hydrated_data,
+        liquidity_history,
     };
     s.emit("historical_kline_initial", &initial_response).ok();
 
@@ -129,11 +148,17 @@ async fn complete_kline_data(
     if !full_raw_data.is_empty() {
         let hydrated_data = fill_kline_gaps(full_raw_data, &payload.interval, MAX_KLINES as usize);
 
+        // 查询流动性历史
+        let liquidity_history = query_liquidity_history(&state.db_pool, &payload.address)
+            .await
+            .ok();
+
         let resp = KlineHistoryResponse {
             address: payload.address.clone(),
             chain: payload.chain.clone(),
             interval: payload.interval.clone(),
             data: hydrated_data.clone(),
+            liquidity_history,
         };
         s.emit("historical_kline_completed", &resp).ok();
         
@@ -257,6 +282,58 @@ async fn save_klines_to_db(pool: &SqlitePool, key: &str, klines: &[KlineTick]) -
     }
     
     Ok(())
+}
+
+/// 记录流动性快照（1分钟桶）
+pub async fn record_liquidity_snapshot(
+    pool: &SqlitePool,
+    address: &str,
+    liquidity: f64,
+) -> Result<()> {
+    let now_secs = Utc::now().timestamp();
+    let time_bucket = (now_secs / 60) * 60; // 对齐到分钟
+    let addr_lower = address.to_lowercase();
+    sqlx::query(
+        "INSERT OR REPLACE INTO liquidity_history_1m (address, time_bucket, value) 
+         VALUES (?, ?, ?)"
+    )
+    .bind(&addr_lower)
+    .bind(time_bucket)
+    .bind(liquidity)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 查询流动性历史（最新 500 条，时间升序）
+pub async fn query_liquidity_history(
+    pool: &SqlitePool,
+    address: &str,
+) -> Result<Vec<LiquidityPoint>> {
+    let addr_lower = address.to_lowercase();
+    // 子查询：先降序取最新 500 条，再外层升序排列
+    sqlx::query_as::<_, LiquidityPoint>(
+        "SELECT time_bucket, value FROM (
+            SELECT time_bucket, value FROM liquidity_history_1m 
+            WHERE address = ? 
+            ORDER BY time_bucket DESC 
+            LIMIT 500
+        ) ORDER BY time_bucket ASC"
+    )
+    .bind(&addr_lower)
+    .fetch_all(pool)
+    .await
+    .context("查询流动性历史失败")
+}
+
+/// 清理 24 小时前的流动性历史数据
+pub async fn prune_liquidity_history(pool: &SqlitePool) -> Result<u64> {
+    let cutoff = Utc::now().timestamp() - (24 * 3600);
+    let result = sqlx::query("DELETE FROM liquidity_history_1m WHERE time_bucket < ?")
+        .bind(cutoff)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }
 
 /// ✨ Gap Filling Implementation

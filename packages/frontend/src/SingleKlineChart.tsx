@@ -15,7 +15,7 @@ import {
 } from 'lightweight-charts';
 import { socket } from './socket';
 import type { KlineUpdatePayload, KlineFetchErrorPayload, LightweightChartKline } from './types';
-import type { MarketItem } from 'shared-types';
+import type { MarketItem, HotlistItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
 import type { ChartTheme } from './themes';
 
@@ -127,6 +127,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let chart: IChartApi | null = null;
     let candlestickSeries: ISeriesApi<'Candlestick'> | null = null;
     let volumeSeries: ISeriesApi<'Histogram'> | null = null;
+    let liquiditySeries: ISeriesApi<'Line'> | null = null;
     let ghostSeries: ISeriesApi<'Line'> | null = null;
     let resizeObserver: ResizeObserver | null = null;
     const [status, setStatus] = createSignal('Initializing...');
@@ -151,13 +152,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             chart = null;
             candlestickSeries = null;
             volumeSeries = null;
+            liquiditySeries = null;
             ghostSeries = null;
         }
     };
 
     const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
         socket.off('kline_update', handleKlineUpdate);
-        
+
         // ✨ LOG: 打印取消订阅事件
         console.log(`[Socket] 📤 EMIT: unsubscribe_kline`, JSON.stringify(payload));
         socket.emit('unsubscribe_kline', payload);
@@ -324,7 +326,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                     }
                 },
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
-                leftPriceScale: { visible: false, autoScale: false },
+                leftPriceScale: {
+                    visible: true,
+                    autoScale: true,
+                    borderColor: '#9c27b0',
+                    scaleMargins: { top: 0.1, bottom: 0.1 }
+                },
                 handleScroll: true, handleScale: true,
                 crosshair: {
                     mode: 1, // Magnet mode
@@ -332,9 +339,10 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             });
 
             ghostSeries = chart.addSeries(LineSeries, {
-                color: 'rgba(0,0,0,0)', lineWidth: 1, priceScaleId: 'left',
+                color: 'rgba(0,0,0,0)', lineWidth: 1, priceScaleId: 'ghost',
                 crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
             });
+            chart.priceScale('ghost').applyOptions({ visible: false });
             ghostSeries.setData(generateGhostData(timeframe));
 
             // Volume Series
@@ -359,6 +367,17 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 borderDownColor: t.candle.borderDownColor, borderUpColor: t.candle.borderUpColor,
                 wickDownColor: t.candle.wickDownColor, wickUpColor: t.candle.wickUpColor,
                 priceScaleId: 'right'
+            });
+
+            // 流动性曲线 (紫色，左轴)
+            liquiditySeries = chart.addSeries(LineSeries, {
+                color: '#9c27b0',
+                lineWidth: 2,
+                priceScaleId: 'left',
+                crosshairMarkerVisible: true,
+                lastValueVisible: true,
+                priceLineVisible: false,
+                title: 'Liq',
             });
 
             // ✨ 核心功能: 监听十字光标移动，更新图例
@@ -409,7 +428,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
-        const processData = (data: any[], isInitial: boolean) => {
+        const processData = (data: any[], isInitial: boolean, response?: any) => {
             try {
                 const sortedData = data.map(d => ({ ...d, time: Number(d.time) })).sort((a, b) => a.time - b.time);
 
@@ -425,6 +444,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 if (isInitial) {
                     candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
                     volumeSeries?.setData(volData);
+
+                    // ✨ 处理流动性历史
+                    if (response?.liquidityHistory && liquiditySeries) {
+                        const liqData = (response.liquidityHistory as { time: number; value: number }[])
+                            .map(p => ({ time: p.time as Time, value: p.value }))
+                            .sort((a, b) => (a.time as number) - (b.time as number));
+                        liquiditySeries.setData(liqData);
+                    }
 
                     // ✨ 初始化图例显示最后一根 K 线
                     if (sortedData.length > 0) {
@@ -455,12 +482,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         const handleInitialData = (response: any) => {
             if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
-            if (response.data && response.data.length > 0) processData(response.data, true);
+            if (response.data && response.data.length > 0) processData(response.data, true, response);
             else setStatus(`No Data`);
         };
         const handleCompletedData = (response: any) => {
             if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
-            if (response.data && response.data.length > 0) processData(response.data, false);
+            if (response.data && response.data.length > 0) processData(response.data, false, response);
         };
         const handleFetchError = (err: KlineFetchErrorPayload) => {
             const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
@@ -469,7 +496,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         const handleConnect = () => {
             console.log(`[SingleKlineChart] 🔄 Reconnected. Resubscribing & Fetching history for ${info.symbol}...`);
-            
+
             // ✨ LOG: 打印重连时的发送事件
             console.log(`[Socket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
             socket.emit('request_historical_kline', payload);
@@ -483,6 +510,59 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         socket.on('kline_update', handleKlineUpdate);
         socket.on('connect', handleConnect);
 
+        // ✨ 实时监听 Hotlist，更新流动性曲线
+        const handleDataBroadcast = (rawPayload: unknown) => {
+            // console.log('[Chart] 📨 Broadcast Received:', rawPayload); // 过于嘈杂，仅在必要时开启
+
+            // 类型安全校验
+            if (typeof rawPayload !== 'object' || rawPayload === null) return;
+            const payload = rawPayload as Record<string, unknown>;
+
+            // 检查是否为 hotlist 类型
+            if (payload.category !== 'hotlist') return;
+
+            // console.log('[Chart] 🔥 Hotlist Payload:', payload);
+
+            const myAddr = props.tokenInfo?.contractAddress?.toLowerCase();
+            if (!myAddr) return;
+
+            const data = payload.data as HotlistItem[];
+            const item = data.find(d => d.contractAddress?.toLowerCase() === myAddr);
+
+            if (item) {
+                console.log(`[Chart] 🎯 matched hotlist item for ${info.symbol}:`, item.liquidity);
+            }
+
+            if (item?.liquidity !== undefined && item.liquidity !== null && liquiditySeries) {
+                // ✨ 核心修正：时间桶对齐
+                // 将当前时间向下取整到最近的 K 线周期（例如 1分钟 = 60s）
+                // 这样同一分钟内的多次推送会覆盖同一个点，而不是生成密集的噪点
+                const intervalSec = getIntervalSeconds(props.timeframe);
+                const nowSec = Math.floor(Date.now() / 1000);
+                const timeBucket = (Math.floor(nowSec / intervalSec) * intervalSec) as Time;
+
+                // ✨ 核心修正：防止 "Cannot update oldest data" 错误
+                const dataList = liquiditySeries.data();
+                if (dataList.length > 0) {
+                    const lastPoint = dataList[dataList.length - 1];
+                    const lastTime = lastPoint.time as number;
+
+                    if (timeBucket < lastTime) {
+                        // console.warn(`[Chart] ⚠️ Dropping outdated liquidity update: new=${timeBucket}, last=${lastTime}`);
+                        return;
+                    }
+                }
+
+                // console.log(`[Chart] 📈 Updating Liquidity: time=${timeBucket}, val=${item.liquidity}`);
+
+                liquiditySeries.update({
+                    time: timeBucket,
+                    value: item.liquidity
+                });
+            }
+        };
+        socket.on('data-broadcast', handleDataBroadcast);
+
         // ✨ LOG: 打印初始发送事件
         console.log(`[Socket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
         socket.emit('request_historical_kline', payload);
@@ -495,6 +575,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             socket.off('historical_kline_completed', handleCompletedData);
             socket.off('kline_fetch_error', handleFetchError);
             socket.off('connect', handleConnect);
+            socket.off('data-broadcast', handleDataBroadcast);
             cleanupChart();
         });
     });

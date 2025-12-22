@@ -8,6 +8,8 @@ export * from './bindings/DataPayload';
 export * from './bindings/KlineTick';
 export * from './bindings/AlertLogEntry';
 export * from './bindings/AlertType';
+export * from './bindings/LiquidityPoint';       // [NEW]
+export * from './bindings/KlineHistoryResponse'; // [NEW]
 
 // ----------------------------------------------------------------------------
 // 2. 核心常量定义 (用于爬虫 Dynamic Extraction)

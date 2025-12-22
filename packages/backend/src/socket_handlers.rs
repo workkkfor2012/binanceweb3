@@ -292,6 +292,19 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             // 记录 Symbol 映射
                             for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                             
+                            // 🔥 流动性历史存储
+                            for item in data.iter() {
+                                if let Some(liq) = item.liquidity {
+                                    let db_pool = state.db_pool.clone();
+                                    let addr = item.contract_address.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
+                                            warn!("⚠️ [流动性存储失败] addr={}, err={}", addr, e);
+                                        }
+                                    });
+                                }
+                            }
+
                             // 🔥 Hotlist 不需要 Narrative，直接跳过
                             // enrich_any_data(data, &state).await;
                             
