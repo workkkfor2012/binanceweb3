@@ -24,6 +24,36 @@ pub trait NarrativeEntity {
 // ==============================================================================
 // 2. 结构体 A: Hotlist (精简市场数据)
 // ==============================================================================
+
+/// 报警类型枚举
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/AlertType.ts")]
+pub enum AlertType {
+    #[serde(rename = "volume1m")]
+    Volume1m,
+    #[serde(rename = "volume5m")]
+    Volume5m,
+    #[serde(rename = "priceChange1m")]
+    PriceChange1m,
+    #[serde(rename = "priceChange5m")]
+    PriceChange5m,
+}
+
+/// 报警日志条目
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/AlertLogEntry.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct AlertLogEntry {
+    pub id: String,                // UUID v4
+    pub chain: String,
+    pub contract_address: String,
+    pub symbol: String,
+    pub message: String,           // 语音播报文本 (如 "BTC 1分钟 50美金")
+    #[ts(type = "number")]
+    pub timestamp: i64,            // 毫秒时间戳
+    pub alert_type: AlertType,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, TS)]
 #[ts(export, export_to = "../../shared-types/src/bindings/HotlistItem.ts")]
 #[serde(rename_all = "camelCase")]
@@ -330,5 +360,7 @@ mod tests {
         DataAction::export().expect("Failed to export DataAction");
         DataPayload::export().expect("Failed to export DataPayload");
         KlineTick::export().expect("Failed to export KlineTick");
+        AlertType::export().expect("Failed to export AlertType");
+        AlertLogEntry::export().expect("Failed to export AlertLogEntry");
     }
 }

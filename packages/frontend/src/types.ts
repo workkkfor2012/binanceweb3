@@ -4,7 +4,9 @@
 import type {
     MemeItem as SharedMemeItem,
     HotlistItem as SharedHotlistItem,
-    MarketItem as SharedMarketItem
+    MarketItem as SharedMarketItem,
+    AlertLogEntry as SharedAlertLogEntry,
+    AlertType as SharedAlertType
 } from 'shared-types';
 
 // ============================================================================
@@ -13,6 +15,8 @@ import type {
 export type MemeItem = SharedMemeItem;
 export type HotlistItem = SharedHotlistItem;
 export type MarketItem = SharedMarketItem;
+export type AlertLogEntry = SharedAlertLogEntry;
+export type AlertType = SharedAlertType;
 
 // ============================================================================
 // 2. 前端/UI 专用类型 (后端不关心的部分保留在这里)

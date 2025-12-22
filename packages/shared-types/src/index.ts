@@ -6,6 +6,8 @@ export * from './bindings/MemeScanItem';
 export * from './bindings/DataAction';
 export * from './bindings/DataPayload';
 export * from './bindings/KlineTick';
+export * from './bindings/AlertLogEntry';
+export * from './bindings/AlertType';
 
 // ----------------------------------------------------------------------------
 // 2. 核心常量定义 (用于爬虫 Dynamic Extraction)

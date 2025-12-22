@@ -157,7 +157,7 @@ const RawDataList: Component<RawDataListProps> = (props) => {
 }
 
 // ✨ 新增：报警日志列表组件
-const AlertLogList: Component<{ logs: AlertLogEntry<MarketItem>[], theme: ChartTheme }> = (props) => {
+const AlertLogList: Component<{ logs: AlertLogEntry[], theme: ChartTheme }> = (props) => {
     return (
         <div class="compact-ranking-list alert-log-section" style={{ "height": "100%", "display": "flex", "flex-direction": "column" }}>
             <h3 style={{
@@ -177,10 +177,10 @@ const AlertLogList: Component<{ logs: AlertLogEntry<MarketItem>[], theme: ChartT
                             "padding": "4px 2px",
                             "border-bottom": `1px solid ${props.theme.grid.horzLines}`,
                             "line-height": "1.4",
-                            "color": log.type === 'price' ? '#ff9800' : '#2196f3'
+                            "color": log.alertType?.includes('price') ? '#ff9800' : '#2196f3'
                         }}>
                             <span style={{ opacity: 0.6 }}>[{new Date(log.timestamp).toLocaleTimeString()}] </span>
-                            <span style={{ "font-weight": "bold" }}>{log.item.symbol}</span>
+                            <span style={{ "font-weight": "bold" }}>{log.symbol}</span>
                             <br />
                             <span>{log.message}</span>
                         </div>
@@ -193,7 +193,7 @@ const AlertLogList: Component<{ logs: AlertLogEntry<MarketItem>[], theme: ChartT
 
 interface ContainerProps {
     marketData: MarketItem[];
-    alertLogs: AlertLogEntry<MarketItem>[]; // ✨ 修复：直接作为 Store 数据传入
+    alertLogs: AlertLogEntry[]; // ✨ 修复：直接作为 Store 数据传入
     lastUpdate: string;
     onHeaderClick: (rankBy: keyof MarketItem) => void;
     blockList: Set<string>;

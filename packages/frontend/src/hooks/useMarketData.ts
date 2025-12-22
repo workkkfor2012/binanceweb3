@@ -3,8 +3,8 @@ import { createSignal, onMount, onCleanup } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { socket } from '../socket';
 // ✨ 引用路径统一：从 local types (其内部 re-export 了 shared-types)
-import type { MarketItem, MemeItem, LocalDataPayload } from '../types';
-import { checkAndTriggerAlerts } from '../AlertManager';
+import type { MarketItem, MemeItem, LocalDataPayload, AlertLogEntry as ServerAlertEntry } from '../types';
+import { speak } from '../AlertManager';
 
 const loadBlockListFromStorage = (): Set<string> => {
     try {
@@ -17,28 +17,17 @@ const loadBlockListFromStorage = (): Set<string> => {
     return new Set();
 };
 
-// ✨ 新增：报警日志条目结构
-export interface AlertLogEntry<T = MarketItem> {
-    id: string; // 唯一 ID (防止 Key 重复)
-    item: T;
-    message: string;
-    timestamp: number;
-    type: 'volume' | 'price';
-}
+
 
 // 🌟 泛型支持：允许 hook 服务于 Hotlist 或 MemeItem
 export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
     targetCategory: 'hotlist' | 'meme_new' | 'meme_migrated'
 ) => {
     const [marketData, setMarketData] = createStore<T[]>([]);
-    const [alertLogs, setAlertLogs] = createStore<AlertLogEntry<T>[]>([]); // ✨ 升级为详细日志
+    const [alertLogs, setAlertLogs] = createStore<ServerAlertEntry[]>([]); // ✨ 升级为详细日志
     const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
     const [lastUpdate, setLastUpdate] = createSignal('N/A');
     const [blockList] = createSignal(loadBlockListFromStorage());
-
-    const handleAlertLog = (msg: string, type: 'volume' | 'price') => {
-        console.log(`[Alert System] 🚨 [${type.toUpperCase()}] ${msg}`);
-    };
 
     onMount(() => {
         console.log(`[useMarketData] 🔌 Initializing hook for category: ${targetCategory}`);
@@ -66,39 +55,8 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
 
             if (!payload.data || payload.data.length === 0) return;
 
-            const blocked = blockList();
-
-            // 1. 报警检测 (仅针对 Hotlist 类型的 MarketItem)
-            if (targetCategory === 'hotlist') {
-                for (const newItem of payload.data) {
-                    // 使用 Duck Typing 安全地转换类型以检查是否需要报警
-                    // 实际项目中可以加更严谨的 Type Guard
-                    const item = newItem as unknown as MarketItem;
-
-                    // 只有包含 source='hotlist' 且不在黑名单的数据才进行报警检查
-                    if ('source' in item && item.source === 'hotlist' && !blocked.has(item.contractAddress)) {
-                        const oldItem = (marketData as unknown as MarketItem[]).find(d =>
-                            d.contractAddress === item.contractAddress && d.chain === item.chain
-                        );
-                        if (oldItem) {
-                            checkAndTriggerAlerts(item, oldItem, (msg: string, type: 'volume' | 'price') => {
-                                handleAlertLog(msg, type);
-                                // ✨ 记录详细日志 (置顶 + 限制数量)
-                                setAlertLogs(produce((logs) => {
-                                    logs.unshift({
-                                        id: `${item.chain}-${item.contractAddress}-${Date.now()}`,
-                                        item: newItem,
-                                        message: msg,
-                                        timestamp: Date.now(),
-                                        type: type
-                                    });
-                                    if (logs.length > 50) logs.pop(); // 保留 50 条日志
-                                }));
-                            });
-                        }
-                    }
-                }
-            }
+            // 1. 报警检测 (已移至后端)
+            // if (targetCategory === 'hotlist') { ... }
 
             // 2. 数据同步 (Upsert / Prune)
             setMarketData(produce((currentData: T[]) => {
@@ -144,9 +102,27 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
             setLastUpdate(new Date().toLocaleTimeString());
         };
 
+        // 🔥 新增：监听服务器推送的报警历史 (初始化时)
+        const onAlertHistory = (history: ServerAlertEntry[]) => {
+            console.log(`[Alert] 📜 Received ${history.length} historical alerts`);
+            setAlertLogs(history);
+        };
+
+        // 🔥 新增：监听服务器推送的新报警
+        const onAlertUpdate = (entry: ServerAlertEntry) => {
+            console.log(`[Alert] 🚨 New alert: ${entry.message}`);
+            speak(entry.message); // 语音播报
+            setAlertLogs(produce((logs) => {
+                logs.unshift(entry);
+                if (logs.length > 50) logs.pop();
+            }));
+        };
+
         socket.on('connect', onConnect);
         socket.on('disconnect', onDisconnect);
         socket.on('data-broadcast', onDataBroadcast as any);
+        socket.on('alert_history', onAlertHistory);
+        socket.on('alert_update', onAlertUpdate);
 
         if (socket.connected) {
             onConnect();
@@ -160,6 +136,8 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
             socket.off('connect', onConnect);
             socket.off('disconnect', onDisconnect);
             socket.off('data-broadcast', onDataBroadcast);
+            socket.off('alert_history', onAlertHistory);
+            socket.off('alert_update', onAlertUpdate);
         });
     });
 

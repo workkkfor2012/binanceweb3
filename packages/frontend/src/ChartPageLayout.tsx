@@ -132,11 +132,21 @@ const ChartPageLayout: Component = () => {
     const seen = new Set<string>();
 
     for (const log of alertLogs) {
-      const key = `${log.item.chain}-${log.item.contractAddress}`;
+      // ✨ 修复：AlertLogEntry 是扁平结构，直接访问属性
+      const key = `${log.chain}-${log.contractAddress}`;
       if (!seen.has(key)) {
         seen.add(key);
-        alertTop7Items.push(log.item as MarketItem);
-        if (alertTop7Items.length >= 7) break;
+        // 尝试从 marketData 中查找对应的完整 MarketItem
+        const fullItem = top9.find(item =>
+          item.chain === log.chain && item.contractAddress === log.contractAddress
+        ) || marketData.find(item =>
+          item.chain === log.chain && item.contractAddress === log.contractAddress
+        );
+
+        if (fullItem) {
+          alertTop7Items.push(fullItem);
+          if (alertTop7Items.length >= 7) break;
+        }
       }
     }
 

@@ -30,6 +30,10 @@ use rustls::ServerConfig;
 
 // ✨ 引入新类型
 use crate::state::{TokenManagerMap, SubscriptionCommand}; // 修改引用
+// 🔥 新增引用
+use std::collections::VecDeque;
+use tokio::sync::Mutex;
+
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -44,6 +48,12 @@ pub struct ServerState {
     pub narrative_proxy_pool: ClientPool,
     pub image_proxy_pool: ClientPool,
     pub token_managers: TokenManagerMap, // ✨ 替换为 Token Managers
+    /// 报警历史队列 (最多保留 50 条，后进先出)
+    pub alert_history: Arc<Mutex<VecDeque<types::AlertLogEntry>>>,
+    /// 报警冷却映射
+    /// Key: "{chain}:{contractAddress}:{alertType}" (如 "bsc:0x123:volume1m")
+    /// Value: 上次报警的毫秒时间戳
+    pub alert_cooldowns: Arc<DashMap<String, i64>>,
 }
 
 #[tokio::main]
@@ -95,6 +105,10 @@ async fn main() {
     let room_index = state::new_room_index();
     let token_managers = state::new_token_manager_map();
 
+    // 🔥 初始化报警状态
+    let alert_history = Arc::new(Mutex::new(VecDeque::with_capacity(50)));
+    let alert_cooldowns = Arc::new(DashMap::new());
+
     let server_state = ServerState {
         app_state,
         room_index,
@@ -107,6 +121,8 @@ async fn main() {
         narrative_proxy_pool,
         image_proxy_pool,
         token_managers,
+        alert_history,
+        alert_cooldowns,
     };
 
     let socket_state = server_state.clone();
