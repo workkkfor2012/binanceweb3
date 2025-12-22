@@ -19,6 +19,7 @@ use std::io::Read;
 use uuid::Uuid;
 
 const MIN_HOTLIST_AMOUNT: f64 = 10000.0;
+const MIN_HOTLIST_LIQUIDITY: f64 = 30000.0;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
 const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
 // Helper to normalize address based on chain/pool_id
@@ -282,7 +283,8 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     Some(ct) => (now - ct) >= thirty_mins_ms,
                                     None => true, // 如果没传创建时间，默认保留
                                 };
-                                amount_ok && time_ok
+                                let liquidity_ok = item.liquidity.unwrap_or(0.0) > MIN_HOTLIST_LIQUIDITY;
+                                amount_ok && time_ok && liquidity_ok
                             });
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🔥 [HOTLIST] Act: {:?} | Count: {}", r#type, data.len());
