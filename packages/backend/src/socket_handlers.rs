@@ -21,16 +21,6 @@ use uuid::Uuid;
 const MIN_HOTLIST_AMOUNT: f64 = 10000.0;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
 const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
-
-// ============== 报警阈值配置 ==============
-const ALERT_VOLUME_1M_USD: f64 = 50.0;
-const ALERT_VOLUME_5M_USD: f64 = 200.0;
-const ALERT_PRICE_CHANGE_1M_PERCENT: f64 = 5.0;
-const ALERT_PRICE_CHANGE_5M_PERCENT: f64 = 25.0;
-const ALERT_PRICE_CHANGE_1M_MIN_VOLUME_USD: f64 = 20.0;  // 价格异动需满足的最小成交额
-const ALERT_PRICE_CHANGE_5M_MIN_VOLUME_USD: f64 = 100.0;
-const ALERT_COOLDOWN_MS: i64 = 60_000; // 1 分钟冷却
-const MAX_ALERT_HISTORY: usize = 50;
 // Helper to normalize address based on chain/pool_id
 // EVM (BSC/ETH/Base) -> Lowercase
 // Solana (PoolId 16) -> Case Sensitive (Keep Original)
@@ -304,7 +294,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             // enrich_any_data(data, &state).await;
                             
                             // 🔥 新增：报警检测
-                            check_and_trigger_alerts(data, &state, &state.io).await;
+                            crate::alert_handler::check_and_trigger_alerts(data, &state, &state.io).await;
                             should_broadcast = !data.is_empty();  // 再判断一次，虽然通常 check 不会修改 data
                         }
                         
@@ -498,128 +488,3 @@ fn get_chain_id(chain: &str) -> Option<u64> {
     }
 }
 
-async fn check_and_trigger_alerts(
-    items: &[HotlistItem],
-    state: &ServerState,
-    io: &SocketIo,
-) {
-    let now = Utc::now().timestamp_millis();
-    for item in items {
-        let chain = &item.chain;
-        let addr = &item.contract_address;
-        let symbol = &item.symbol;
-        let price = item.price.unwrap_or(0.0);
-        
-        // 计算成交额 (原始数据是 volume，需乘以价格得到 USD)
-        let volume_1m_usd = item.volume1m.unwrap_or(0.0) * price;
-        let volume_5m_usd = item.volume5m.unwrap_or(0.0) * price;
-
-        // --- 规则 1: 1 分钟成交额 ---
-        if volume_1m_usd > ALERT_VOLUME_1M_USD {
-            try_trigger_alert(
-                state, io, chain, addr, symbol,
-                AlertType::Volume1m,
-                format!("{} 1分钟 {}美金", symbol, volume_1m_usd.round() as i64),
-                now,
-            ).await;
-        }
-
-        // --- 规则 2: 5 分钟成交额 ---
-        if volume_5m_usd > ALERT_VOLUME_5M_USD {
-            try_trigger_alert(
-                state, io, chain, addr, symbol,
-                AlertType::Volume5m,
-                format!("{} 5分钟 {}美金", symbol, volume_5m_usd.round() as i64),
-                now,
-            ).await;
-        }
-
-        // --- 规则 3: 1 分钟涨跌幅 (需满足最小成交额) ---
-        let pc_1m = item.price_change1m.unwrap_or(0.0);
-        if pc_1m.abs() > ALERT_PRICE_CHANGE_1M_PERCENT
-            && volume_1m_usd > ALERT_PRICE_CHANGE_1M_MIN_VOLUME_USD
-        {
-            let direction = if pc_1m > 0.0 { "上涨" } else { "下跌" };
-            try_trigger_alert(
-                state, io, chain, addr, symbol,
-                AlertType::PriceChange1m,
-                format!("{} 1分钟{}{:.1}%", symbol, direction, pc_1m.abs()),
-                now,
-            ).await;
-        }
-
-        // --- 规则 4: 5 分钟涨跌幅 (需满足最小成交额) ---
-        let pc_5m = item.price_change5m.unwrap_or(0.0);
-        if pc_5m.abs() > ALERT_PRICE_CHANGE_5M_PERCENT
-            && volume_5m_usd > ALERT_PRICE_CHANGE_5M_MIN_VOLUME_USD
-        {
-            let direction = if pc_5m > 0.0 { "上涨" } else { "下跌" };
-            try_trigger_alert(
-                state, io, chain, addr, symbol,
-                AlertType::PriceChange5m,
-                format!("{} 5分钟{}{:.1}%", symbol, direction, pc_5m.abs()),
-                now,
-            ).await;
-        }
-    }
-}
-
-async fn try_trigger_alert(
-    state: &ServerState,
-    io: &SocketIo,
-    chain: &str,
-    addr: &str,
-    symbol: &str,
-    alert_type: AlertType,
-    message: String,
-    now: i64,
-) {
-    let type_str = match alert_type {
-        AlertType::Volume1m => "volume1m",
-        AlertType::Volume5m => "volume5m",
-        AlertType::PriceChange1m => "priceChange1m",
-        AlertType::PriceChange5m => "priceChange5m",
-    };
-    
-    let cooldown_key = format!("{}:{}:{}", chain, addr.to_lowercase(), type_str);
-
-    // 检查冷却
-    let should_alert = {
-        if let Some(last_time) = state.alert_cooldowns.get(&cooldown_key) {
-            now - *last_time > ALERT_COOLDOWN_MS
-        } else {
-            true
-        }
-    };
-
-    if !should_alert {
-        return;
-    }
-
-    // 更新冷却
-    state.alert_cooldowns.insert(cooldown_key, now);
-
-    // 创建日志条目
-    let entry = AlertLogEntry {
-        id: Uuid::new_v4().to_string(),
-        chain: chain.to_string(),
-        contract_address: addr.to_string(),
-        symbol: symbol.to_string(),
-        message: message.clone(),
-        timestamp: now,
-        alert_type: alert_type.clone(),
-    };
-
-    // 更新历史队列
-    {
-        let mut history = state.alert_history.lock().await;
-        history.push_front(entry.clone());
-        if history.len() > MAX_ALERT_HISTORY {
-            history.pop_back();
-        }
-    }
-
-    // 广播给所有订阅者
-    info!("🚨 [Alert] Broadcasting: {}", message);
-    io.emit("alert_update", &entry).await.ok();
-}
