@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [solidPlugin()],
   server: {
     port: 15173,
+    host: '0.0.0.0',
     strictPort: true,
   },
   // ✨ 核心修正: 强制 Vite 预打包 lightweight-charts
