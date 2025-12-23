@@ -157,7 +157,7 @@ async fn main() {
         .with_state(server_state)
         .layer(
             CorsLayer::new()
-                .allow_origin("http://localhost:15173".parse::<HeaderValue>().unwrap())
+                .allow_origin(Any)
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
