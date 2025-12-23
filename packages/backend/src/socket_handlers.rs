@@ -274,6 +274,21 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                     match &mut parsed_payload {
                         // 1. 处理 Hotlist (HotlistItem 结构体)
                         DataPayload::Hotlist { r#type: _, data } => {
+                            // 记录 Symbol 映射以及流动性历史存储 (在过滤之前执行，确保数据连续性)
+                            for item in data.iter() {
+                                state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
+                                
+                                if let Some(liq) = item.liquidity {
+                                    let db_pool = state.db_pool.clone();
+                                    let addr = item.contract_address.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
+                                            warn!("⚠️ [流动性存储失败] addr={}, err={}", addr, e);
+                                        }
+                                    });
+                                }
+                            }
+
                             // 过滤逻辑
                             let now = Utc::now().timestamp_millis();
                             let thirty_mins_ms = 60 * 60 * 1000;
@@ -289,11 +304,20 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🔥 [HOTLIST] Act: {:?} | Count: {}", r#type, data.len());
                             
-                            // 记录 Symbol 映射
-                            for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
+                            // 🔥 Hotlist 不需要 Narrative，直接跳过
+                            // enrich_any_data(data, &state).await;
                             
-                            // 🔥 流动性历史存储
+                            // 🔥 新增：报警检测
+                            crate::alert_handler::check_and_trigger_alerts(data, &state, &state.io).await;
+                            should_broadcast = !data.is_empty();
+                        }
+                        
+                        // 2. 处理 New Meme (MemeScanItem 结构体)
+                        DataPayload::MemeNew { r#type: _, data } => {
+                            // 记录 Symbol 映射以及流动性历史存储
                             for item in data.iter() {
+                                state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
+
                                 if let Some(liq) = item.liquidity {
                                     let db_pool = state.db_pool.clone();
                                     let addr = item.contract_address.clone();
@@ -305,16 +329,6 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                 }
                             }
 
-                            // 🔥 Hotlist 不需要 Narrative，直接跳过
-                            // enrich_any_data(data, &state).await;
-                            
-                            // 🔥 新增：报警检测
-                            crate::alert_handler::check_and_trigger_alerts(data, &state, &state.io).await;
-                            should_broadcast = !data.is_empty();  // 再判断一次，虽然通常 check 不会修改 data
-                        }
-                        
-                        // 2. 处理 New Meme (MemeScanItem 结构体)
-                        DataPayload::MemeNew { r#type: _, data } => {
                             data.retain(|item| !item.symbol.is_empty());
                             
                             
@@ -328,11 +342,25 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🐶 [MEME RUSH] Act: {:?} | Count: {}", r#type, data.len());
-                            for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                         }
                         
                         // 3. 处理 Migrated Meme (MemeScanItem 结构体)
                         DataPayload::MemeMigrated { r#type: _, data } => {
+                            // 记录 Symbol 映射以及流动性历史存储
+                            for item in data.iter() {
+                                state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
+
+                                if let Some(liq) = item.liquidity {
+                                    let db_pool = state.db_pool.clone();
+                                    let addr = item.contract_address.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
+                                            warn!("⚠️ [流动性存储失败] addr={}, err={}", addr, e);
+                                        }
+                                    });
+                                }
+                            }
+
                             data.retain(|item| !item.symbol.is_empty());
                             
                             
@@ -346,7 +374,6 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🚀 [MEME MIGRATED] Act: {:?} | Count: {}", r#type, data.len());
-                            for item in data.iter() { state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone()); }
                         }
                         _ => {}
                     }
