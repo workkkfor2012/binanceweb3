@@ -1,7 +1,7 @@
 // packages/frontend/src/socket.ts
 import { io, Socket } from 'socket.io-client';
 
-const BACKEND_URL = 'https://localhost:3001';
+const BACKEND_URL = 'https://localhost:30001';
 
 // 创建并导出一个单例的 socket 实例
 export const socket: Socket = io(BACKEND_URL, {

@@ -191,21 +191,21 @@ async fn main() {
     let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls_config));
 
     // 🚀 启动两个服务器（并发运行）
-    info!("🔒 Starting HTTPS server on port 3001 (HTTP/2 for frontend)");
-    info!("🌐 Starting HTTP server on port 3002 (HTTP/1.1 for crawler)");
+    info!("🔒 Starting HTTPS server on port 30001 (HTTP/2 for frontend)");
+    info!("🌐 Starting HTTP server on port 30002 (HTTP/1.1 for crawler)");
     
     let https_app = app.clone();
     let http_app = app;
     
     let https_server = tokio::spawn(async move {
-        axum_server::bind_rustls("0.0.0.0:3001".parse::<std::net::SocketAddr>().unwrap(), rustls_config)
+        axum_server::bind_rustls("0.0.0.0:30001".parse::<std::net::SocketAddr>().unwrap(), rustls_config)
             .serve(https_app.into_make_service())
             .await
             .unwrap();
     });
     
     let http_server = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:3002").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:30002").await.unwrap();
         axum::serve(listener, http_app).await.unwrap();
     });
     

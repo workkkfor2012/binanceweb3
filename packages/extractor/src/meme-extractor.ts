@@ -12,7 +12,7 @@ chromium.use(stealth());
 // ==============================================================================
 // --- ⚙️ 配置区域 ---
 // ==============================================================================
-const SERVER_URL = 'http://localhost:3002';
+const SERVER_URL = 'http://localhost:30002';
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
 const urlParams = new URL(TARGET_URL).searchParams;
@@ -529,7 +529,9 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
 
 async function main() {
     logger.init();
-    const socket: Socket = io(SERVER_URL);
+    const socket: Socket = io(SERVER_URL, {
+        transports: ['websocket'], // ✨ 强制直连 websocket，避免云服务器环境下的 xhr 轮询成功率低问题
+    });
     let browser: Browser | undefined;
 
     try {

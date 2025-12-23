@@ -21,7 +21,7 @@ chromium.use(stealth());
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const EXTRACTION_INTERVAL_MS = 500; // 抓取频率
 const EMIT_INTERVAL_MS = 500;       // 聚合发送频率
-const SERVER_URL = 'http://localhost:3002';
+const SERVER_URL = 'http://localhost:30002';
 
 // ✨ 配置分类：全是 hotlist
 const TARGETS = [
@@ -173,7 +173,9 @@ class DataAggregator {
 async function main(): Promise<void> {
     logger.init();
     let browser: Browser | undefined;
-    const socket: Socket = io(SERVER_URL);
+    const socket: Socket = io(SERVER_URL, {
+        transports: ['websocket'], // ✨ 强制直连 websocket，跳过可能在云服务器被拦截的 xhr 轮询
+    });
 
     // 初始化聚合器
     const aggregator = new DataAggregator();
