@@ -343,7 +343,8 @@ pub struct KlineTick {
     pub close: f64,
     pub volume: f64,
 }
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, TS)]
+#[ts(export, export_to = "../../shared-types/src/bindings/KlineHistoryResponse.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct KlineHistoryResponse {
     pub address: String,
