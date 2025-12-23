@@ -1,7 +1,7 @@
-// packages/extractor/src/meme-extractor.ts
 import { chromium } from 'playwright-extra';
 import type { Browser, Page } from 'playwright';
 import stealth from 'puppeteer-extra-plugin-stealth';
+import * as fs from 'fs';
 import { handleGuidePopup, checkAndClickCookieBanner } from './pageInitializer';
 import * as logger from './logger';
 import { io, Socket } from 'socket.io-client';
@@ -533,8 +533,15 @@ async function main() {
     let browser: Browser | undefined;
 
     try {
+        // ✨ 智能浏览器启动逻辑
+        const hasChromePath = fs.existsSync(MY_CHROME_PATH);
+        if (!hasChromePath) {
+            logger.log(`⚠️ 指定的 Chrome 路径不存在: ${MY_CHROME_PATH}, 自动回退至系统 Edge 浏览器`, logger.LOG_LEVELS.INFO);
+        }
+
         browser = await chromium.launch({
-            executablePath: MY_CHROME_PATH,
+            executablePath: hasChromePath ? MY_CHROME_PATH : undefined,
+            channel: hasChromePath ? undefined : 'msedge',
             headless: true,
             args: [
                 '--start-maximized',

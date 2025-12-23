@@ -1,5 +1,6 @@
 // packages/extractor/src/extractor.ts
-import * as fs from 'fs/promises';
+import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { chromium } from 'playwright-extra';
 import type { Browser, Page } from 'playwright';
@@ -183,10 +184,17 @@ async function main(): Promise<void> {
     logger.log('🚀 [HotlistExtractor] 脚本启动 (聚合模式)...', logger.LOG_LEVELS.INFO);
 
     try {
-        const browserScript = await fs.readFile(path.join(__dirname, '..', 'src', 'browser-script.js'), 'utf-8');
+        const browserScript = await fsp.readFile(path.join(__dirname, '..', 'src', 'browser-script.js'), 'utf-8');
+
+        // ✨ 智能浏览器启动逻辑
+        const hasChromePath = fs.existsSync(MY_CHROME_PATH);
+        if (!hasChromePath) {
+            logger.log(`⚠️ 指定的 Chrome 路径不存在: ${MY_CHROME_PATH}, 自动回退至系统 Edge 浏览器`, logger.LOG_LEVELS.INFO);
+        }
 
         browser = await chromium.launch({
-            executablePath: MY_CHROME_PATH,
+            executablePath: hasChromePath ? MY_CHROME_PATH : undefined,
+            channel: hasChromePath ? undefined : 'msedge',
             headless: true,
             proxy: { server: 'socks5://127.0.0.1:1080' },
             args: ['--start-maximized']
