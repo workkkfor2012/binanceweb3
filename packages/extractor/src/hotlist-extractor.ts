@@ -19,6 +19,7 @@ chromium.use(stealth());
 // --- ⚙️ 配置区 ---
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const IS_HEADLESS = true;           // ✨ 极致性能开关：若为 true，则启用“视觉毁灭”模式降低 CPU
 const EXTRACTION_INTERVAL_MS = 2000; // 抓取频率
 const EMIT_INTERVAL_MS = 2000;       // 聚合发送频率
 const SERVER_URL = 'http://localhost:30002';
@@ -48,7 +49,8 @@ async function gotoWithRetry(page: Page, url: string, criticalSelector: string, 
         try {
             logger.log(`[Navi][${chainName}] 尝试第 ${attempt}/${maxRetries} 次访问: ${url}`, logger.LOG_LEVELS.INFO);
             await page.goto(url, { waitUntil: 'load', timeout: 90000 });
-            await page.waitForSelector(criticalSelector, { state: 'visible', timeout: 45000 });
+            // ✨ 如果是极致优化模式，不等待 visible，因为 DOM 可能被隐藏
+            await page.waitForSelector(criticalSelector, { state: IS_HEADLESS ? 'attached' : 'visible', timeout: 45000 });
             logger.log(`[Navi][${chainName}] 页面就绪!`, logger.LOG_LEVELS.INFO);
             return;
         } catch (error: any) {
@@ -68,17 +70,37 @@ async function setupPageForChain(
     const { name: chainName, url, category } = target;
     const context = await browser.newContext({ viewport: null });
 
-    // ✨ 性能优化：拦截不必要的资源请求 (图片、字体、媒体) ✨
+    // ✨ 性能优化：根据 Headless 状态决定拦截粒度 ✨
     await context.route('**/*', (route) => {
         const type = route.request().resourceType();
-        if (['image', 'font', 'media'].includes(type)) {
-            route.abort();
+        const url = route.request().url();
+
+        if (IS_HEADLESS) {
+            // 1. 极致模式：拦截 图片、字体、媒体、CSS (不需要渲染)
+            if (['image', 'font', 'media', 'stylesheet'].includes(type)) return route.abort();
+
+            // 2. 拦截 统计/日志/传感器 (降 CPU 关键)
+            const blockList = [/analytics/, /log-/, /sensors/, /monitor/, /telemetry/];
+            if (blockList.some(re => re.test(url))) return route.abort();
         } else {
-            route.continue();
+            // 调试模式：仅拦截基础多媒体，保留 CSS
+            if (['image', 'font', 'media'].includes(type)) return route.abort();
         }
+
+        route.continue();
     });
 
     const page = await context.newPage();
+
+    if (IS_HEADLESS) {
+        // ✨ UI 静默：彻底隐藏 HTML，让 Chromium 停止布局和绘制任务
+        await page.addInitScript(() => {
+            const style = document.createElement('style');
+            style.innerHTML = 'html { display: none !important; }';
+            document.documentElement.appendChild(style);
+        });
+    }
+
     logger.log(`[Setup][${chainName}] 初始化页面 (Category: ${category})...`, logger.LOG_LEVELS.INFO);
 
     const options = {
@@ -208,7 +230,7 @@ async function main(): Promise<void> {
         browser = await chromium.launch({
             executablePath: hasChromePath ? MY_CHROME_PATH : undefined,
             channel: hasChromePath ? undefined : 'msedge',
-            headless: true,
+            headless: IS_HEADLESS,
             proxy: { server: 'socks5://127.0.0.1:1080' },
             args: [
                 '--start-maximized',

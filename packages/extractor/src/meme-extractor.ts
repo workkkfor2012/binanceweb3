@@ -14,6 +14,7 @@ chromium.use(stealth());
 // ==============================================================================
 const SERVER_URL = 'http://localhost:30002';
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const IS_HEADLESS = true; // ✨ 性能开关：Headless 模式下开启极致“视觉毁灭”降 CPU
 const TARGET_URL = 'https://web3.binance.com/zh-CN/meme-rush?chain=bsc';
 const urlParams = new URL(TARGET_URL).searchParams;
 const TARGET_CHAIN = (urlParams.get('chain') || 'BSC').toUpperCase();
@@ -376,17 +377,34 @@ async function ensurePageReady(page: Page): Promise<boolean> {
 async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
     const context = await browser.newContext({ viewport: null });
 
-    // ✨ 性能优化：拦截不必要的资源请求 (图片、字体、媒体) ✨
+    // ✨ 性能优化：根据 Headless 状态决定拦截粒度 ✨
     await context.route('**/*', (route) => {
         const type = route.request().resourceType();
-        if (['image', 'font', 'media'].includes(type)) {
-            route.abort();
+        const url = route.request().url();
+
+        if (IS_HEADLESS) {
+            // 极致模式：拦截 图片、字体、媒体、CSS
+            if (['image', 'font', 'media', 'stylesheet'].includes(type)) return route.abort();
+            // 拦截 无关脚本
+            const blockList = [/analytics/, /log-/, /sensors/, /monitor/];
+            if (blockList.some(re => re.test(url))) return route.abort();
         } else {
-            route.continue();
+            // 调试模式
+            if (['image', 'font', 'media'].includes(type)) return route.abort();
         }
+        route.continue();
     });
 
     const page = await context.newPage();
+
+    if (IS_HEADLESS) {
+        // UI 静默：彻底隐藏 HTML
+        await page.addInitScript(() => {
+            const style = document.createElement('style');
+            style.innerHTML = 'html { display: none !important; }';
+            document.documentElement.appendChild(style);
+        });
+    }
 
     // ✨ 初始化数据清洗器
     const sanitizer = new AdvancedDataSanitizer();
@@ -555,7 +573,7 @@ async function main() {
         browser = await chromium.launch({
             executablePath: hasChromePath ? MY_CHROME_PATH : undefined,
             channel: hasChromePath ? undefined : 'msedge',
-            headless: true,
+            headless: IS_HEADLESS,
             args: [
                 '--start-maximized',
                 '--no-sandbox',
