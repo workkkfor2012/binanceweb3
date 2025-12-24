@@ -281,19 +281,23 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                     match &mut parsed_payload {
                         // 1. 处理 Hotlist (HotlistItem 结构体)
                         DataPayload::Hotlist { r#type: _, data } => {
+                            let mut liquidity_items = Vec::new();
                             // 记录 Symbol 映射以及流动性历史存储 (在过滤之前执行，确保数据连续性)
                             for item in data.iter() {
                                 state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
                                 
                                 if let Some(liq) = item.liquidity {
-                                    let db_pool = state.db_pool.clone();
-                                    let addr = item.contract_address.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
-                                            warn!("⚠️ [DB WRITE ERR] Event=Hotlist, addr={}, err={}", addr, e);
-                                        }
-                                    });
+                                    liquidity_items.push((item.contract_address.clone(), liq));
                                 }
+                            }
+
+                            if !liquidity_items.is_empty() {
+                                let db_pool = state.db_pool.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = kline_handler::record_liquidity_batch(&db_pool, liquidity_items).await {
+                                        warn!("⚠️ [DB BATCH ERR] Event=Hotlist, err={}", e);
+                                    }
+                                });
                             }
 
                             if ENABLE_FILTERING {
@@ -323,19 +327,23 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         
                         // 2. 处理 New Meme (MemeScanItem 结构体)
                         DataPayload::MemeNew { r#type: _, data } => {
+                            let mut liquidity_items = Vec::new();
                             // 记录 Symbol 映射以及流动性历史存储
                             for item in data.iter() {
                                 state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
 
                                 if let Some(liq) = item.liquidity {
-                                    let db_pool = state.db_pool.clone();
-                                    let addr = item.contract_address.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
-                                            warn!("⚠️ [DB WRITE ERR] Event=MemeNew, addr={}, err={}", addr, e);
-                                        }
-                                    });
+                                    liquidity_items.push((item.contract_address.clone(), liq));
                                 }
+                            }
+
+                            if !liquidity_items.is_empty() {
+                                let db_pool = state.db_pool.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = kline_handler::record_liquidity_batch(&db_pool, liquidity_items).await {
+                                        warn!("⚠️ [DB BATCH ERR] Event=MemeNew, err={}", e);
+                                    }
+                                });
                             }
 
                             data.retain(|item| !item.symbol.is_empty());
@@ -355,19 +363,23 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                         
                         // 3. 处理 Migrated Meme (MemeScanItem 结构体)
                         DataPayload::MemeMigrated { r#type: _, data } => {
+                            let mut liquidity_items = Vec::new();
                             // 记录 Symbol 映射以及流动性历史存储
                             for item in data.iter() {
                                 state.token_symbols.insert(item.contract_address.to_lowercase(), item.symbol.clone());
 
                                 if let Some(liq) = item.liquidity {
-                                    let db_pool = state.db_pool.clone();
-                                    let addr = item.contract_address.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
-                                            warn!("⚠️ [DB WRITE ERR] Event=MemeMigrated, addr={}, err={}", addr, e);
-                                        }
-                                    });
+                                    liquidity_items.push((item.contract_address.clone(), liq));
                                 }
+                            }
+
+                            if !liquidity_items.is_empty() {
+                                let db_pool = state.db_pool.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = kline_handler::record_liquidity_batch(&db_pool, liquidity_items).await {
+                                        warn!("⚠️ [DB BATCH ERR] Event=MemeMigrated, err={}", e);
+                                    }
+                                });
                             }
 
                             data.retain(|item| !item.symbol.is_empty());

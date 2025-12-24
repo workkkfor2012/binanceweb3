@@ -70,7 +70,7 @@ pub async fn setup_shared_state(config: Arc<Config>, io: SocketIo) -> ServerStat
         .pragma("busy_timeout", "5000");
 
     let db_pool = SqlitePoolOptions::new()
-        .max_connections(10)
+        .max_connections(50)
         .connect_with(db_opts)
         .await
         .expect("Failed to connect to SQLite database");

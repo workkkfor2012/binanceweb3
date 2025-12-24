@@ -336,6 +336,41 @@ pub async fn record_liquidity_snapshot(
     Ok(())
 }
 
+/// 批量记录流动性快照（显著减少连接获取压力）
+pub async fn record_liquidity_batch(
+    pool: &SqlitePool,
+    items: Vec<(String, f64)>,
+) -> Result<()> {
+    if items.is_empty() { return Ok(()); }
+    
+    let start = Instant::now();
+    let now_secs = Utc::now().timestamp();
+    let time_bucket = (now_secs / 60) * 60;
+    
+    let mut tx = pool.begin().await.context("Failed to begin transaction for batch liquidity")?;
+    let tx_time = start.elapsed().as_millis();
+    
+    for (address, liquidity) in &items {
+        let addr_lower = address.to_lowercase();
+        sqlx::query(
+            "INSERT OR REPLACE INTO liquidity_history_1m (address, time_bucket, value) 
+             VALUES (?, ?, ?)"
+        )
+        .bind(&addr_lower)
+        .bind(time_bucket)
+        .bind(*liquidity)
+        .execute(&mut *tx)
+        .await?;
+    }
+    
+    tx.commit().await.context("Failed to commit transaction for batch liquidity")?;
+    let total_time = start.elapsed().as_millis();
+    
+    info!("💾 [DB BATCH: LIQUIDITY] Saved {} items. (Total: {}ms, TxBegin: {}ms)", items.len(), total_time, tx_time);
+    
+    Ok(())
+}
+
 /// 查询流动性历史（最新 500 条，时间升序）
 pub async fn query_liquidity_history(
     pool: &SqlitePool,
