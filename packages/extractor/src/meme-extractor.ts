@@ -566,6 +566,8 @@ async function main() {
                 '--disable-dev-shm-usage',
                 '--disable-software-rasterizer',
                 '--disable-extensions',
+                '--no-sandbox',
+                '--no-zygote',
                 '--js-flags="--max-old-space-size=512"'
             ],
         });

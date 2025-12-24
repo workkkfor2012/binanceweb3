@@ -218,7 +218,6 @@ async function main(): Promise<void> {
                 '--no-first-run',
                 '--no-sandbox',
                 '--no-zygote',
-                '--single-process', // 在云服务器单进程模式往往更省内存
                 '--disable-extensions',
                 '--disable-software-rasterizer',
                 '--js-flags="--max-old-space-size=512"'
