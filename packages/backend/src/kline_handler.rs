@@ -271,7 +271,9 @@ async fn get_last_kline_from_db(pool: &SqlitePool, key: &str) -> Result<Option<K
 async fn save_klines_to_db(pool: &SqlitePool, key: &str, klines: &[KlineTick]) -> Result<()> {
     if klines.is_empty() { return Ok(()); }
     
-    let mut tx = pool.begin().await?;
+    let start = Instant::now();
+    let mut tx = pool.begin().await.context("Failed to begin transaction for save_klines")?;
+    let tx_time = start.elapsed().as_millis();
     
     // 1. 插入/更新新数据
     for k in klines {
@@ -292,7 +294,10 @@ async fn save_klines_to_db(pool: &SqlitePool, key: &str, klines: &[KlineTick]) -
     .execute(&mut *tx)
     .await?;
     
-    tx.commit().await?;
+    tx.commit().await.context("Failed to commit transaction for save_klines")?;
+    let total_time = start.elapsed().as_millis();
+    
+    info!("💾 [DB WRITE: KLINE] {} records saved for {}. (Total: {}ms, TxBegin: {}ms)", klines.len(), key, total_time, tx_time);
     
     if deleted.rows_affected() > 0 {
         info!("🧹 [PRUNE] {} 删除了 {} 条旧K线数据", key, deleted.rows_affected());
@@ -307,9 +312,11 @@ pub async fn record_liquidity_snapshot(
     address: &str,
     liquidity: f64,
 ) -> Result<()> {
+    let start = Instant::now();
     let now_secs = Utc::now().timestamp();
     let time_bucket = (now_secs / 60) * 60; // 对齐到分钟
     let addr_lower = address.to_lowercase();
+    
     sqlx::query(
         "INSERT OR REPLACE INTO liquidity_history_1m (address, time_bucket, value) 
          VALUES (?, ?, ?)"
@@ -319,6 +326,13 @@ pub async fn record_liquidity_snapshot(
     .bind(liquidity)
     .execute(pool)
     .await?;
+    
+    let elapsed = start.elapsed().as_millis();
+    if elapsed > 100 {
+        warn!("⏳ [DB SLOW: LIQUIDITY] addr={}, value={}, {}ms", addr_lower, liquidity, elapsed);
+    } else {
+        info!("💾 [DB WRITE: LIQUIDITY] addr={}, value={}, {}ms", addr_lower, liquidity, elapsed);
+    }
     Ok(())
 }
 

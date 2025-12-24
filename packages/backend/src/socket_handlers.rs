@@ -290,7 +290,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     let addr = item.contract_address.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
-                                            warn!("⚠️ [流动性存储失败] addr={}, err={}", addr, e);
+                                            warn!("⚠️ [DB WRITE ERR] Event=Hotlist, addr={}, err={}", addr, e);
                                         }
                                     });
                                 }
@@ -332,7 +332,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     let addr = item.contract_address.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
-                                            warn!("⚠️ [流动性存储失败] addr={}, err={}", addr, e);
+                                            warn!("⚠️ [DB WRITE ERR] Event=MemeNew, addr={}, err={}", addr, e);
                                         }
                                     });
                                 }
@@ -364,7 +364,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     let addr = item.contract_address.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = kline_handler::record_liquidity_snapshot(&db_pool, &addr, liq).await {
-                                            warn!("⚠️ [流动性存储失败] addr={}, err={}", addr, e);
+                                            warn!("⚠️ [DB WRITE ERR] Event=MemeMigrated, addr={}, err={}", addr, e);
                                         }
                                     });
                                 }
