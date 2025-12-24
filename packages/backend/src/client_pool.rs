@@ -8,9 +8,6 @@ use std::sync::{
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-// 健康检查地址，用于验证代理连接是否真正可用
-const HEALTH_CHECK_URL: &str = "https://web3.binance.com";
-
 #[derive(Clone)]
 pub struct ClientPool {
     clients: Arc<RwLock<Vec<Client>>>,

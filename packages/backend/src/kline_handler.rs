@@ -103,6 +103,23 @@ pub async fn handle_kline_request(
     });
 }
 
+pub async fn handle_liquidity_request(
+    s: SocketRef,
+    Data(payload): Data<KlineSubscribePayload>,
+    state: ServerState,
+) {
+    if let Ok(history) = query_liquidity_history(&state.db_pool, &payload.address).await {
+        let resp = KlineHistoryResponse {
+            address: payload.address.clone(),
+            chain: payload.chain.clone(),
+            interval: payload.interval.clone(),
+            data: vec![],
+            liquidity_history: Some(history),
+        };
+        s.emit("historical_liquidity_initial", &resp).ok();
+    }
+}
+
 // 请保留原文件中 complete_kline_data, fetch_historical_data_with_pool, DB操作函数 等
 // 确保 fetch_historical_data_with_pool 使用 state.client_pool
 async fn complete_kline_data(

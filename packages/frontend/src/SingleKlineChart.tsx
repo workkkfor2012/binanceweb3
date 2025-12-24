@@ -1,5 +1,5 @@
 import { Component, onMount, onCleanup, createEffect, Show, createSignal } from 'solid-js';
-import TokenAvatar from './components/TokenAvatar';
+import TokenAvatar from "./components/TokenAvatar.jsx";
 import {
     createChart,
     ColorType,
@@ -11,15 +11,18 @@ import {
     LineSeries,
     PriceFormat,
     HistogramSeries,
-    MouseEventParams
+    MouseEventParams,
+    HistogramData,
+    LineData
 } from 'lightweight-charts';
-import { coreSocket, marketSocket } from './socket';
-import type { KlineUpdatePayload, KlineFetchErrorPayload, LightweightChartKline } from './types';
+import { coreSocket, marketSocket } from "./socket.js";
+import type { KlineUpdatePayload, KlineFetchErrorPayload, KlineTick } from './types.js';
 import type { MarketItem, HotlistItem } from 'shared-types';
-import type { ViewportState } from './ChartPageLayout';
-import type { ChartTheme } from './themes';
+import { ViewportState } from './ChartPageLayout.jsx';
+import { chartThemes, ChartTheme } from './themes.js';
+import { getIntervalSeconds } from "./utils.js";
 
-const BACKEND_URL = 'https://localhost:3001';
+const BACKEND_URL = 'http://localhost:3001';
 
 // --- 配置区 ---
 const FORCE_GHOST_CANDLE_COUNT = 1000;
@@ -37,19 +40,17 @@ interface SingleKlineChartProps {
     simpleMode?: boolean;
 }
 
-// --- ✨ 新增: 图例数据接口 ---
 interface LegendData {
-    time: string; // ✨ 新增时间字段
+    time: string;
     open: string;
     high: string;
     low: string;
     close: string;
     amount: string;
     changePercent: string;
-    color: string; // 用于涨跌幅颜色
+    color: string;
 }
 
-// ✨ 核心工具: 强制格式化为中国东八区时间
 const formatTimeInChina = (timeInSeconds: number): string => {
     try {
         const date = new Date(timeInSeconds * 1000);
@@ -60,38 +61,31 @@ const formatTimeInChina = (timeInSeconds: number): string => {
             day: '2-digit',
             hour: '2-digit',
             minute: '2-digit',
-            hour12: false, // 24小时制
+            hour12: false,
         });
     } catch (e) {
-        console.error('[TimeFormat] Error formatting time:', e);
         return new Date(timeInSeconds * 1000).toLocaleTimeString();
     }
 };
 
-// 自适应精度计算
 const getAdaptivePriceFormat = (price: number): PriceFormat => {
     if (!price || price <= 0) {
         return { type: 'price', precision: 4, minMove: 0.0001 };
     }
-
     let precision: number;
-
     if (price >= 1) {
         precision = 2;
     } else {
         const firstSignificantDigitPosition = Math.ceil(-Math.log10(price));
         precision = firstSignificantDigitPosition + 3;
     }
-
     const finalPrecision = Math.min(Math.max(precision, 2), 10);
     const minMove = 1 / Math.pow(10, finalPrecision);
-
     return {
         type: 'price',
         precision: finalPrecision,
         minMove: minMove,
     };
-
 };
 
 const customPriceFormatter = (price: number): string => {
@@ -99,27 +93,16 @@ const customPriceFormatter = (price: number): string => {
         maximumFractionDigits: 10,
         useGrouping: false
     }).format(price);
-
     if (s.includes('.')) {
         return s.replace(/\.?0+$/, '');
     }
     return s;
-
 };
 
-// ✨ 辅助: 格式化大额数字 (1.2M, 500K)
 const formatBigNumber = (num: number): string => {
     if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + 'M';
     if (num >= 1_000) return (num / 1_000).toFixed(2) + 'K';
     return num.toFixed(2);
-};
-
-const getIntervalSeconds = (timeframe: string): number => {
-    const val = parseInt(timeframe);
-    if (timeframe.endsWith('m')) return val * 60;
-    if (timeframe.endsWith('h')) return val * 3600;
-    if (timeframe.endsWith('d')) return val * 86400;
-    return 60; // default 1m
 };
 
 const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
@@ -131,23 +114,15 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let ghostSeries: ISeriesApi<'Line'> | null = null;
     let resizeObserver: ResizeObserver | null = null;
     const [status, setStatus] = createSignal('Initializing...');
-
-    // ✨ 新增: 图例数据 Signal
     const [legendData, setLegendData] = createSignal<LegendData | null>(null);
 
-    // 🔒 状态锁
     let isProgrammaticUpdate = false;
     let isSyncPending = false;
 
     const getMyId = () => props.tokenInfo?.contractAddress || '';
 
-    const log = (msg: string, ...args: any[]) => {
-        // console.log(`[Chart ${props.tokenInfo?.symbol || 'Wait'}] ${msg}`, ...args);
-    };
-
     const cleanupChart = () => {
         if (chart) {
-            log('Cleaning up chart instance.');
             chart.remove();
             chart = null;
             candlestickSeries = null;
@@ -159,29 +134,19 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
     const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
         marketSocket.off('kline_update', handleKlineUpdate);
-
-        // ✨ LOG: 打印取消订阅事件
-        console.log(`[MarketSocket] 📤 EMIT: unsubscribe_kline`, JSON.stringify(payload));
         marketSocket.emit('unsubscribe_kline', payload);
     };
 
-    // ✨ 辅助: 更新图例逻辑 (复用代码)
-    const updateLegend = (candle: CandlestickData<number> | undefined, vol: any | undefined) => {
-        if (!candle) {
-            return;
-        }
+    const updateLegend = (candle: CandlestickData<Time> | undefined, vol: HistogramData<Time> | undefined) => {
+        if (!candle) return;
         const open = candle.open;
         const close = candle.close;
         const high = candle.high;
         const low = candle.low;
-        // 上一轮我们将 value 存为了 amount
         const amount = vol?.value || 0;
-
         const change = ((close - open) / open) * 100;
         const isUp = close >= open;
         const color = isUp ? props.theme.candle.upColor : props.theme.candle.downColor;
-
-        // ✨ 计算时间字符串
         const timeStr = formatTimeInChina(Number(candle.time));
 
         setLegendData({
@@ -196,34 +161,27 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
     };
 
-    // 实时数据更新处理函数
     const handleKlineUpdate = (update: KlineUpdatePayload) => {
         const info = props.tokenInfo;
         if (!info || !candlestickSeries) return;
-
         const chainToPoolId: Record<string, number> = { bsc: 14, sol: 16, solana: 16, base: 199 };
         const poolId = chainToPoolId[info.chain.toLowerCase()];
         if (!poolId) return;
 
         const expectedRoom = `kl@${poolId}@${info.contractAddress}@${props.timeframe}`;
-
         if (update.room === expectedRoom) {
-            const newCandle = update.data as LightweightChartKline;
+            const newCandle = update.data as KlineTick;
             const currentData = candlestickSeries.data();
             if (currentData.length > 0) {
-                const lastCandle = currentData[currentData.length - 1] as CandlestickData<number>;
-                if (newCandle.time < lastCandle.time) {
-                    return;
-                }
+                const lastCandle = currentData[currentData.length - 1] as CandlestickData<Time>;
+                if (newCandle.time < (lastCandle.time as number)) return;
             }
-            candlestickSeries.update(newCandle as CandlestickData<number>);
+            candlestickSeries.update(newCandle as CandlestickData<Time>);
 
-            // Update Volume (Approximate Turnover)
             if (volumeSeries && newCandle.volume !== undefined) {
                 const isUp = newCandle.close >= newCandle.open;
                 const avgPrice = (newCandle.open + newCandle.high + newCandle.low + newCandle.close) / 4;
                 const amount = newCandle.volume * avgPrice;
-
                 volumeSeries.update({
                     time: newCandle.time as Time,
                     value: amount,
@@ -243,7 +201,6 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         return data;
     };
 
-    // Theme Application Effect
     createEffect(() => {
         if (chart && props.theme) {
             const t = props.theme;
@@ -251,175 +208,87 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
                 grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
             });
-
             if (candlestickSeries) {
                 candlestickSeries.applyOptions({
                     upColor: t.candle.upColor, downColor: t.candle.downColor,
                     borderUpColor: t.candle.borderUpColor, borderDownColor: t.candle.borderDownColor,
                     wickUpColor: t.candle.wickUpColor, wickDownColor: t.candle.wickDownColor,
                 });
-
-                // Sync Volume Colors with Theme
-                if (volumeSeries) {
-                    const candles = candlestickSeries.data() as CandlestickData<number>[];
-                    const volumes = volumeSeries.data() as any[];
-
-                    if (candles.length === volumes.length && candles.length > 0) {
-                        const newVolData = volumes.map((v, i) => {
-                            const c = candles[i];
-                            const isUp = c.close >= c.open;
-                            return {
-                                time: v.time,
-                                value: v.value,
-                                color: isUp ? t.candle.upColor : t.candle.downColor
-                            };
-                        });
-                        volumeSeries.setData(newVolData);
-                    }
-                }
             }
         }
     });
 
-    // 主副作用：图表创建与数据订阅
     createEffect(() => {
         const info = props.tokenInfo;
         const timeframe = props.timeframe;
         const t = props.theme;
 
-        if (!info || !timeframe) {
-            cleanupChart(); setStatus('No token selected.'); return;
-        }
-
+        if (!info || !timeframe) { cleanupChart(); setStatus('No token selected.'); return; }
         cleanupChart(); setStatus(`Loading ${info.symbol}...`);
-
         if (!chartContainer) return;
 
         try {
-            console.log(`[SingleKlineChart] 🌏 Creating Chart for ${info.symbol} with Timezone: Asia/Shanghai`);
-
             chart = createChart(chartContainer, {
                 width: chartContainer.clientWidth, height: chartContainer.clientHeight,
                 layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
                 grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
-                // ✨ 核心配置: 本地化设置
                 localization: {
                     locale: 'zh-CN',
-                    // 强制十字光标提示显示为中国时间
-                    timeFormatter: (time: number) => {
-                        return formatTimeInChina(time);
-                    }
+                    timeFormatter: (time: number) => formatTimeInChina(time)
                 },
                 timeScale: {
                     visible: !!props.showAxes, borderColor: '#cccccc', timeVisible: true, secondsVisible: false,
-                    rightOffset: 12, shiftVisibleRangeOnNewBar: true, fixLeftEdge: false, fixRightEdge: false,
-                    // ✨ 核心配置: X轴刻度也尝试使用中国时间（虽然库会自动处理，但我们可以强制显示逻辑）
-                    tickMarkFormatter: (time: number, tickMarkType: any, locale: string) => {
+                    rightOffset: 12, shiftVisibleRangeOnNewBar: true,
+                    tickMarkFormatter: (time: number) => {
                         const date = new Date(time * 1000);
-                        // 简单的时分显示，确保是东八区
-                        return date.toLocaleTimeString('zh-CN', {
-                            timeZone: 'Asia/Shanghai',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            hour12: false
-                        });
+                        return date.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false });
                     }
                 },
                 rightPriceScale: { visible: !!props.showAxes, borderColor: '#cccccc', autoScale: true },
-                leftPriceScale: {
-                    visible: true,
-                    autoScale: true,
-                    borderColor: '#9c27b0',
-                    scaleMargins: { top: 0.1, bottom: 0.1 }
-                },
+                leftPriceScale: { visible: true, autoScale: true, borderColor: '#9c27b0', scaleMargins: { top: 0.1, bottom: 0.1 } },
                 handleScroll: true, handleScale: true,
-                crosshair: {
-                    mode: 1, // Magnet mode
-                }
+                crosshair: { mode: 1 },
             });
 
-            ghostSeries = chart.addSeries(LineSeries, {
-                color: 'rgba(0,0,0,0)', lineWidth: 1, priceScaleId: 'ghost',
-                crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
-            });
+            ghostSeries = chart.addSeries(LineSeries, { color: 'transparent', lineWidth: 0, priceScaleId: 'ghost', crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
             chart.priceScale('ghost').applyOptions({ visible: false });
             ghostSeries.setData(generateGhostData(timeframe));
 
-            // Volume Series
-            volumeSeries = chart.addSeries(HistogramSeries, {
-                priceFormat: { type: 'volume', precision: 2 },
-                priceScaleId: 'volume',
-            });
+            volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume', precision: 2 }, priceScaleId: 'volume' });
+            chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 }, visible: false });
 
-            chart.priceScale('volume').applyOptions({
-                scaleMargins: { top: 0.8, bottom: 0 },
-                visible: false,
-            });
+            const priceFormatWithFormatter = { ...getAdaptivePriceFormat((info as any).price || 0), formatter: customPriceFormatter };
+            candlestickSeries = chart.addSeries(CandlestickSeries, { priceFormat: priceFormatWithFormatter, upColor: t.candle.upColor, downColor: t.candle.downColor, borderDownColor: t.candle.borderDownColor, borderUpColor: t.candle.borderUpColor, wickDownColor: t.candle.wickDownColor, wickUpColor: t.candle.wickUpColor, priceScaleId: 'right' });
 
-            const priceFormatWithFormatter = {
-                ...getAdaptivePriceFormat(info.price || 0),
-                formatter: customPriceFormatter,
-            };
+            liquiditySeries = chart.addSeries(LineSeries, { color: '#9c27b0', lineWidth: 2, priceScaleId: 'left', crosshairMarkerVisible: true, lastValueVisible: true, priceLineVisible: false, title: 'Liq' });
 
-            candlestickSeries = chart.addSeries(CandlestickSeries, {
-                priceFormat: priceFormatWithFormatter,
-                upColor: t.candle.upColor, downColor: t.candle.downColor,
-                borderDownColor: t.candle.borderDownColor, borderUpColor: t.candle.borderUpColor,
-                wickDownColor: t.candle.wickDownColor, wickUpColor: t.candle.wickUpColor,
-                priceScaleId: 'right'
-            });
-
-            // 流动性曲线 (紫色，左轴)
-            liquiditySeries = chart.addSeries(LineSeries, {
-                color: '#9c27b0',
-                lineWidth: 2,
-                priceScaleId: 'left',
-                crosshairMarkerVisible: true,
-                lastValueVisible: true,
-                priceLineVisible: false,
-                title: 'Liq',
-            });
-
-            // ✨ 核心功能: 监听十字光标移动，更新图例
             chart.subscribeCrosshairMove((param: MouseEventParams) => {
                 if (!candlestickSeries || !volumeSeries) return;
-
-                // 如果鼠标在有效区域
                 if (param.time) {
-                    const candleData = param.seriesData.get(candlestickSeries) as CandlestickData<number>;
-                    const volumeData = param.seriesData.get(volumeSeries) as any;
-                    if (candleData) {
-                        updateLegend(candleData, volumeData);
-                    }
+                    const candleData = param.seriesData.get(candlestickSeries) as CandlestickData<Time>;
+                    const volumeData = param.seriesData.get(volumeSeries) as HistogramData<Time>;
+                    if (candleData) updateLegend(candleData, volumeData);
                 } else {
-                    // 鼠标移出，显示最后一根 K 线的数据
                     const candleData = candlestickSeries.data();
                     const volData = volumeSeries.data();
                     if (candleData.length > 0) {
-                        const lastCandle = candleData[candleData.length - 1] as CandlestickData<number>;
-                        const lastVol = volData[volData.length - 1];
-                        updateLegend(lastCandle, lastVol);
+                        updateLegend(candleData[candleData.length - 1] as CandlestickData<Time>, volData[volData.length - 1] as HistogramData<Time>);
                     }
                 }
             });
-
         } catch (e) {
-            console.error(`[Chart:${info.symbol}] ❌ Fatal Error creating chart:`, e);
+            console.error(`[Chart:${info.symbol}] Error:`, e);
             setStatus(`Chart Error`); return;
         }
 
         chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
             if (isProgrammaticUpdate) return;
-            const myId = getMyId().toLowerCase();
-            const activeId = props.activeChartId?.toLowerCase();
-            if (myId === activeId) {
+            if (getMyId().toLowerCase() === props.activeChartId?.toLowerCase()) {
                 if (!isSyncPending) {
                     isSyncPending = true;
                     requestAnimationFrame(() => {
-                        const logicalRange = chart?.timeScale().getVisibleLogicalRange();
-                        if (logicalRange && props.onViewportChange) {
-                            props.onViewportChange({ from: logicalRange.from, to: logicalRange.to });
-                        }
+                        const lr = chart?.timeScale().getVisibleLogicalRange();
+                        if (lr && props.onViewportChange) props.onViewportChange({ from: lr.from, to: lr.to });
                         isSyncPending = false;
                     });
                 }
@@ -428,169 +297,113 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         const payload = { address: info.contractAddress, chain: info.chain, interval: timeframe };
 
-        const processData = (data: any[], isInitial: boolean, response?: any) => {
+        const processData = (data: any[], isInitial: boolean, response?: any, isNew?: boolean) => {
             try {
-                const sortedData = data.map(d => ({ ...d, time: Number(d.time) })).sort((a, b) => a.time - b.time);
-
+                const sortedData = data.map(d => ({ ...d, time: Number(d.time) as Time })).sort((a, b) => (a.time as number) - (b.time as number));
                 const volData = sortedData.map(d => {
                     const avgPrice = (d.open + d.high + d.low + d.close) / 4;
-                    return {
-                        time: d.time,
-                        value: d.volume * avgPrice,
-                        color: (d.close >= d.open) ? t.candle.upColor : t.candle.downColor
-                    };
+                    return { time: d.time, value: d.volume * avgPrice, color: (d.close >= d.open) ? t.candle.upColor : t.candle.downColor };
                 });
 
                 if (isInitial) {
-                    candlestickSeries?.setData(sortedData as CandlestickData<number>[]);
-                    volumeSeries?.setData(volData);
-
-                    // ✨ 处理流动性历史
+                    if (isNew) liquiditySeries?.setData([]);
+                    candlestickSeries?.setData(sortedData as CandlestickData<Time>[]);
+                    volumeSeries?.setData(volData as HistogramData<Time>[]);
                     if (response?.liquidityHistory && liquiditySeries) {
-                        const liqData = (response.liquidityHistory as { time: number; value: number }[])
-                            .map(p => ({ time: p.time as Time, value: p.value }))
-                            .sort((a, b) => (a.time as number) - (b.time as number));
+                        const liqData = (response.liquidityHistory as { time: number; value: number }[]).map(p => ({ time: p.time as Time, value: p.value })).sort((a, b) => (a.time as number) - (b.time as number));
                         liquiditySeries.setData(liqData);
                     }
-
-                    // ✨ 初始化图例显示最后一根 K 线
-                    if (sortedData.length > 0) {
-                        const lastCandle = sortedData[sortedData.length - 1] as CandlestickData<number>;
-                        const lastVol = volData[volData.length - 1];
-                        updateLegend(lastCandle, lastVol);
-                    }
-
-                    if (props.viewportState) {
-                        chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
-                    } else { chart?.timeScale().scrollToRealTime(); }
+                    if (sortedData.length > 0) updateLegend(sortedData[sortedData.length - 1] as CandlestickData<Time>, volData[volData.length - 1] as HistogramData<Time>);
+                    if (props.viewportState) chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
+                    else chart?.timeScale().scrollToRealTime();
                 } else {
-                    const currentData = (candlestickSeries?.data() as CandlestickData<number>[] || []);
+                    const currentData = (candlestickSeries?.data() as CandlestickData<Time>[] || []);
                     const newDataMap = new Map(currentData.map(d => [d.time, d]));
-                    sortedData.forEach(d => newDataMap.set(d.time as number, d as CandlestickData<number>));
-                    const merged = Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number));
-                    candlestickSeries?.setData(merged);
+                    sortedData.forEach(d => newDataMap.set(d.time, d as CandlestickData<Time>));
+                    candlestickSeries?.setData(Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number)));
 
-                    const currentVolData = (volumeSeries?.data() as any[] || []);
+                    const currentVolData = (volumeSeries?.data() as HistogramData<Time>[] || []);
                     const newVolMap = new Map(currentVolData.map(d => [d.time, d]));
-                    volData.forEach(d => newVolMap.set(d.time as number, d));
-                    const mergedVol = Array.from(newVolMap.values()).sort((a: any, b: any) => a.time - b.time);
-                    volumeSeries?.setData(mergedVol);
+                    volData.forEach(d => newVolMap.set(d.time, d));
+                    volumeSeries?.setData(Array.from(newVolMap.values()).sort((a, b) => (a.time as number) - (b.time as number)));
                 }
                 setStatus(`Live`);
-            } catch (e) { console.error(`[Chart:${info.symbol}] ❌ Failed to process data:`, e); }
+            } catch (e) { console.error(`[Chart:${info.symbol}] Data Error:`, e); }
         };
 
-        const handleInitialData = (response: any) => {
-            if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
-            if (response.data && response.data.length > 0) processData(response.data, true, response);
-            else setStatus(`No Data`);
+        const handleHistoricalKlineInitial = (response: any) => {
+            if (response.interval === timeframe && response.address.toLowerCase() === info.contractAddress.toLowerCase()) {
+                if (response.data && response.data.length > 0) processData(response.data, true, response, true);
+                else setStatus(`No Data`);
+            }
         };
         const handleCompletedData = (response: any) => {
-            if (response.interval !== timeframe || response.address.toLowerCase() !== info.contractAddress.toLowerCase()) return;
-            if (response.data && response.data.length > 0) processData(response.data, false, response);
+            if (response.interval === timeframe && response.address.toLowerCase() === info.contractAddress.toLowerCase()) {
+                if (response.data && response.data.length > 0) processData(response.data, false, response);
+            }
         };
         const handleFetchError = (err: KlineFetchErrorPayload) => {
             const key = `${info.contractAddress.toLowerCase()}@${info.chain.toLowerCase()}@${timeframe}`;
-            if (err.key === key) { log(`❌ Fetch error: ${err.error}`); setStatus(`Error`); }
+            if (err.key === key) setStatus(`Error`);
         };
-
+        const handleLiquidityHistory = (response: any) => {
+            if (response.address.toLowerCase() === info.contractAddress.toLowerCase() && response.liquidityHistory && liquiditySeries) {
+                const liqData = (response.liquidityHistory as { time: number; value: number }[]).map(p => ({ time: p.time as Time, value: p.value })).sort((a, b) => (a.time as number) - (b.time as number));
+                liquiditySeries.setData(liqData);
+            }
+        };
         const handleConnect = () => {
-            console.log(`[SingleKlineChart] 🔄 Reconnected. Resubscribing & Fetching history for ${info.symbol}...`);
-
-            // ✨ LOG: 打印重连时的发送事件
-            console.log(`[MarketSocket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
             marketSocket.emit('request_historical_kline', payload);
-            console.log(`[MarketSocket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
             marketSocket.emit('subscribe_kline', payload);
+            coreSocket.emit('request_historical_liquidity', payload);
         };
 
-        marketSocket.on('historical_kline_initial', handleInitialData);
+        marketSocket.on('historical_kline_initial', handleHistoricalKlineInitial);
         marketSocket.on('historical_kline_completed', handleCompletedData);
         marketSocket.on('kline_fetch_error', handleFetchError);
         marketSocket.on('kline_update', handleKlineUpdate);
         marketSocket.on('connect', handleConnect);
+        coreSocket.on('historical_liquidity_initial', handleLiquidityHistory);
 
-        // ✨ 实时监听 Hotlist，更新流动性曲线
         const handleDataBroadcast = (rawPayload: unknown) => {
-            // console.log('[Chart] 📨 Broadcast Received:', rawPayload); // 过于嘈杂，仅在必要时开启
-
-            // 类型安全校验
             if (typeof rawPayload !== 'object' || rawPayload === null) return;
-            const payload = rawPayload as Record<string, unknown>;
-
-            // 检查是否为 hotlist 类型
-            if (payload.category !== 'hotlist') return;
-
-            // console.log('[Chart] 🔥 Hotlist Payload:', payload);
-
+            const p = rawPayload as any;
+            if (p.category !== 'hotlist') return;
             const myAddr = props.tokenInfo?.contractAddress?.toLowerCase();
             if (!myAddr) return;
-
-            const data = payload.data as HotlistItem[];
-            const item = data.find(d => d.contractAddress?.toLowerCase() === myAddr);
-
-            if (item) {
-                console.log(`[Chart] 🎯 matched hotlist item for ${info.symbol}:`, item.liquidity);
-            }
-
+            const item = (p.data as HotlistItem[]).find(d => d.contractAddress?.toLowerCase() === myAddr);
             if (item?.liquidity !== undefined && item.liquidity !== null && liquiditySeries) {
-                // ✨ 核心修正：时间桶对齐
-                // 将当前时间向下取整到最近的 K 线周期（例如 1分钟 = 60s）
-                // 这样同一分钟内的多次推送会覆盖同一个点，而不是生成密集的噪点
                 const intervalSec = getIntervalSeconds(props.timeframe);
-                const nowSec = Math.floor(Date.now() / 1000);
-                const timeBucket = (Math.floor(nowSec / intervalSec) * intervalSec) as Time;
-
-                // ✨ 核心修正：防止 "Cannot update oldest data" 错误
+                const timeBucket = (Math.floor(Date.now() / 1000 / intervalSec) * intervalSec) as Time;
                 const dataList = liquiditySeries.data();
-                if (dataList.length > 0) {
-                    const lastPoint = dataList[dataList.length - 1];
-                    const lastTime = lastPoint.time as number;
-
-                    if (timeBucket < lastTime) {
-                        // console.warn(`[Chart] ⚠️ Dropping outdated liquidity update: new=${timeBucket}, last=${lastTime}`);
-                        return;
-                    }
-                }
-
-                // console.log(`[Chart] 📈 Updating Liquidity: time=${timeBucket}, val=${item.liquidity}`);
-
-                liquiditySeries.update({
-                    time: timeBucket,
-                    value: item.liquidity
-                });
+                if (dataList.length > 0 && timeBucket < (dataList[dataList.length - 1].time as number)) return;
+                liquiditySeries.update({ time: timeBucket, value: item.liquidity });
             }
         };
         coreSocket.on('data-broadcast', handleDataBroadcast);
 
-        // ✨ LOG: 打印初始发送事件
-        console.log(`[MarketSocket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
         marketSocket.emit('request_historical_kline', payload);
-        console.log(`[MarketSocket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
         marketSocket.emit('subscribe_kline', payload);
+        coreSocket.emit('request_historical_liquidity', payload);
 
         onCleanup(() => {
             unsubscribeRealtime(payload);
-            marketSocket.off('historical_kline_initial', handleInitialData);
+            marketSocket.off('historical_kline_initial', handleHistoricalKlineInitial);
             marketSocket.off('historical_kline_completed', handleCompletedData);
             marketSocket.off('kline_fetch_error', handleFetchError);
+            marketSocket.off('kline_update', handleKlineUpdate);
             marketSocket.off('connect', handleConnect);
+            coreSocket.off('historical_liquidity_initial', handleLiquidityHistory);
             coreSocket.off('data-broadcast', handleDataBroadcast);
             cleanupChart();
         });
     });
 
-    // [RECEIVER] 接收逻辑索引同步
     createEffect(() => {
         const vs = props.viewportState;
-        if (!chart || !vs || !props.tokenInfo) return;
-        const myId = getMyId().toLowerCase();
-        const activeId = props.activeChartId?.toLowerCase();
-        if (myId === activeId) return;
+        if (!chart || !vs || getMyId().toLowerCase() === props.activeChartId?.toLowerCase()) return;
         isProgrammaticUpdate = true;
-        try {
-            chart.timeScale().setVisibleLogicalRange({ from: vs.from, to: vs.to });
-        } catch (e) { }
+        try { chart.timeScale().setVisibleLogicalRange({ from: vs.from, to: vs.to }); } catch (e) { }
         setTimeout(() => { isProgrammaticUpdate = false; }, 0);
     });
 
@@ -603,79 +416,37 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         });
         if (chartContainer) resizeObserver.observe(chartContainer);
     });
-
     onCleanup(() => resizeObserver?.disconnect());
 
     return (
-        <div
-            class="single-chart-wrapper"
-            style={{ background: props.theme.layout.background, position: 'relative', width: '100%', height: '100%' }}
-            onMouseEnter={() => props.onSetActiveChart?.(props.tokenInfo?.contractAddress || '')}
-        >
-            {/* 头部信息栏: simpleMode 下隐藏 */}
+        <div class="single-chart-wrapper" style={{ background: props.theme.layout.background, position: 'relative', width: '100%', height: '100%' }} onMouseEnter={() => props.onSetActiveChart?.(props.tokenInfo?.contractAddress || '')}>
             <Show when={!props.simpleMode}>
-                <div
-                    class="chart-header"
-                    style={{
-                        "background-color": props.theme.layout.background,
-                        "color": props.theme.layout.textColor,
-                        "border-bottom": `1px solid ${props.theme.grid.horzLines}`
-                    }}
-                >
-                    <Show when={props.tokenInfo} fallback={<span class="placeholder" style={{ color: props.theme.layout.textColor }}>{status()}</span>}>
-                        <TokenAvatar
-                            symbol={props.tokenInfo!.symbol}
-                            src={props.tokenInfo!.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}&symbol=${props.tokenInfo!.symbol}` : null}
-                            class="icon-small"
-                            size={20}
-                        />
-                        <span class="symbol-title" style={{ color: props.theme.layout.textColor }}>{props.tokenInfo!.symbol}</span>
+                <div class="chart-header" style={{ "background-color": props.theme.layout.background, "color": props.theme.layout.textColor, "border-bottom": `1px solid ${props.theme.grid.horzLines}` }}>
+                    <Show when={props.tokenInfo} fallback={<span class="placeholder">{status()}</span>}>
+                        <TokenAvatar symbol={props.tokenInfo!.symbol} src={props.tokenInfo!.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.tokenInfo!.icon!)}&symbol=${props.tokenInfo!.symbol}` : null} />
+                        <span class="symbol-title">{props.tokenInfo!.symbol}</span>
                         <span class="chain-badge">{props.tokenInfo!.chain.toUpperCase()}</span>
-                        <button
-                            class="block-button"
-                            title={`屏蔽 ${props.tokenInfo!.symbol}`}
-                            onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}
-                            style={{ color: props.theme.layout.textColor }}
-                        >
-                            🚫
-                        </button>
+                        <button class="block-button" title={`屏蔽 ${props.tokenInfo!.symbol}`} onClick={() => props.onBlock?.(props.tokenInfo!.contractAddress)}>🚫</button>
                     </Show>
                 </div>
             </Show>
 
-            {/* ✨ 新增: 悬浮图例 UI (增加了时间显示) */}
-            <div
-                class="chart-legend"
-                style={{
-                    position: 'absolute',
-                    top: props.simpleMode ? '4px' : '38px', // ✨ simpleMode 下往上移
-                    left: '12px',
-                    "z-index": 10,
-                    "font-family": "'Courier New', monospace", // 等宽字体对齐数字
-                    "font-size": "11px",
-                    "pointer-events": "none", // 确保鼠标事件穿透到图表
-                    "background-color": "rgba(255, 255, 255, 0.0)", // 透明背景
-                    color: props.theme.layout.textColor
-                }}
-            >
+            <div class="chart-legend" style={{ position: 'absolute', top: props.simpleMode ? '4px' : '38px', left: '12px', "z-index": 10, "font-family": "monospace", "font-size": "11px", "pointer-events": "none", color: props.theme.layout.textColor }}>
                 <Show when={legendData()}>
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        {/* 时间显示 */}
+                    <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
                         <span style={{ "font-weight": "bold", opacity: 0.8 }}>{legendData()!.time}</span>
                         <span>O:<span style={{ color: legendData()!.color }}>{legendData()!.open}</span></span>
                         <span>H:<span style={{ color: legendData()!.color }}>{legendData()!.high}</span></span>
                         <span>L:<span style={{ color: legendData()!.color }}>{legendData()!.low}</span></span>
                         <span>C:<span style={{ color: legendData()!.color }}>{legendData()!.close}</span></span>
-                        <span>Amt:<span style={{ color: props.theme.layout.textColor }}>{legendData()!.amount}</span></span>
+                        <span>Amt:<span>{legendData()!.amount}</span></span>
                         <span style={{ color: legendData()!.color }}>({legendData()!.changePercent})</span>
                     </div>
                 </Show>
             </div>
-
             <div ref={chartContainer!} class="chart-container" style={{ width: '100%', height: '100%' }} />
         </div>
     );
-
 };
 
 export default SingleKlineChart;

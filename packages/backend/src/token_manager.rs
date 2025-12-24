@@ -4,7 +4,7 @@ use crate::types::{
     BinanceKlineDataWrapper, BinanceStreamWrapper, BinanceTickDataWrapper, KlineBroadcastData,
     KlineTick,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use socketioxide::SocketIo;

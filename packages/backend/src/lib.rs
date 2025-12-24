@@ -65,14 +65,9 @@ pub async fn setup_shared_state(config: Arc<Config>, io: SocketIo) -> ServerStat
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
-        .on_before_connect(|conn| {
-            Box::pin(async move {
-                sqlx::query("PRAGMA cache_size = -50000;").execute(conn).await?;
-                sqlx::query("PRAGMA mmap_size = 104857600;").execute(conn).await?;
-                sqlx::query("PRAGMA busy_timeout = 5000;").execute(conn).await?;
-                Ok(())
-            })
-        });
+        .pragma("cache_size", "-50000")
+        .pragma("mmap_size", "104857600")
+        .pragma("busy_timeout", "5000");
 
     let db_pool = SqlitePoolOptions::new()
         .max_connections(10)

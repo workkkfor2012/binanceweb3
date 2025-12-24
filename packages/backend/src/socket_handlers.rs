@@ -7,7 +7,6 @@ use super::{
     ServerState,
 };
 use socketioxide::extract::{Data, SocketRef};
-use socketioxide::SocketIo;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -16,7 +15,6 @@ use tracing::{info, warn, error}; // ✨ Added error
 use chrono::Utc;
 use flate2::read::GzDecoder;
 use std::io::Read;
-use uuid::Uuid;
 
 const ENABLE_FILTERING: bool = true;
 const MIN_HOTLIST_AMOUNT: f64 = 10000.0;
@@ -52,7 +50,8 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     register_kline_subscribe_handler(&s, state.clone());
     register_kline_unsubscribe_handler(&s, state.clone());
     register_disconnect_handler(&s, state.clone());
-    register_kline_history_handler(&s, state);
+    register_kline_history_handler(&s, state.clone());
+    register_liquidity_history_handler(&s, state);
 }
 
 
@@ -259,6 +258,13 @@ fn register_kline_history_handler(socket: &SocketRef, state: ServerState) {
     socket.on("request_historical_kline", move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
         let state = state.clone();
         async move { kline_handler::handle_kline_request(s, payload, state).await; }
+    });
+}
+
+fn register_liquidity_history_handler(socket: &SocketRef, state: ServerState) {
+    socket.on("request_historical_liquidity", move |s: SocketRef, payload: Data<KlineSubscribePayload>| {
+        let state = state.clone();
+        async move { kline_handler::handle_liquidity_request(s, payload, state).await; }
     });
 }
 
