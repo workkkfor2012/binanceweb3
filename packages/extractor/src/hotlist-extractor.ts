@@ -67,6 +67,17 @@ async function setupPageForChain(
 ): Promise<void> {
     const { name: chainName, url, category } = target;
     const context = await browser.newContext({ viewport: null });
+
+    // ✨ 性能优化：拦截不必要的资源请求 (图片、字体、媒体) ✨
+    await context.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'font', 'media'].includes(type)) {
+            route.abort();
+        } else {
+            route.continue();
+        }
+    });
+
     const page = await context.newPage();
     logger.log(`[Setup][${chainName}] 初始化页面 (Category: ${category})...`, logger.LOG_LEVELS.INFO);
 
@@ -199,7 +210,19 @@ async function main(): Promise<void> {
             channel: hasChromePath ? undefined : 'msedge',
             headless: true,
             proxy: { server: 'socks5://127.0.0.1:1080' },
-            args: ['--start-maximized']
+            args: [
+                '--start-maximized',
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--disable-setuid-sandbox',
+                '--no-first-run',
+                '--no-sandbox',
+                '--no-zygote',
+                '--single-process', // 在云服务器单进程模式往往更省内存
+                '--disable-extensions',
+                '--disable-software-rasterizer',
+                '--js-flags="--max-old-space-size=512"'
+            ]
         });
 
         // 定义更新回调

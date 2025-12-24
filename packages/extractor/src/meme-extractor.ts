@@ -375,6 +375,17 @@ async function ensurePageReady(page: Page): Promise<boolean> {
 
 async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
     const context = await browser.newContext({ viewport: null });
+
+    // ✨ 性能优化：拦截不必要的资源请求 (图片、字体、媒体) ✨
+    await context.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'font', 'media'].includes(type)) {
+            route.abort();
+        } else {
+            route.continue();
+        }
+    });
+
     const page = await context.newPage();
 
     // ✨ 初始化数据清洗器
@@ -550,7 +561,12 @@ async function main() {
                 '--no-sandbox',
                 '--disable-blink-features=AutomationControlled',
                 `--proxy-server=${CAPTURE_CONFIG.proxy}`,
-                '--ignore-certificate-errors'
+                '--ignore-certificate-errors',
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--disable-software-rasterizer',
+                '--disable-extensions',
+                '--js-flags="--max-old-space-size=512"'
             ],
         });
 
