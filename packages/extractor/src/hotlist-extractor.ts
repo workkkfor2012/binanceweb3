@@ -19,8 +19,8 @@ chromium.use(stealth());
 // --- ⚙️ 配置区 ---
 // ==============================================================================
 const MY_CHROME_PATH = 'F:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const EXTRACTION_INTERVAL_MS = 500; // 抓取频率
-const EMIT_INTERVAL_MS = 500;       // 聚合发送频率
+const EXTRACTION_INTERVAL_MS = 2000; // 抓取频率
+const EMIT_INTERVAL_MS = 2000;       // 聚合发送频率
 const SERVER_URL = 'http://localhost:30002';
 
 // ✨ 配置分类：全是 hotlist
