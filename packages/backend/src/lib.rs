@@ -64,7 +64,15 @@ pub async fn setup_shared_state(config: Arc<Config>, io: SocketIo) -> ServerStat
         .expect("Invalid database URL")
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal);
+        .synchronous(SqliteSynchronous::Normal)
+        .on_before_connect(|conn| {
+            Box::pin(async move {
+                sqlx::query("PRAGMA cache_size = -50000;").execute(conn).await?;
+                sqlx::query("PRAGMA mmap_size = 104857600;").execute(conn).await?;
+                sqlx::query("PRAGMA busy_timeout = 5000;").execute(conn).await?;
+                Ok(())
+            })
+        });
 
     let db_pool = SqlitePoolOptions::new()
         .max_connections(10)
