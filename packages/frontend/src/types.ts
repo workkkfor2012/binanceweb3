@@ -31,6 +31,7 @@ export interface LightweightChartKline {
     close: number;
     volume: number;
 }
+export type KlineTick = LightweightChartKline;
 
 // --- 本地 IndexedDB 存储结构 ---
 export interface KlineData {

@@ -9,18 +9,22 @@ import {
     CandlestickSeries,
     Time,
     LineSeries,
-    PriceFormat,
     HistogramSeries,
     MouseEventParams,
-    HistogramData,
-    LineData
+    HistogramData
 } from 'lightweight-charts';
 import { coreSocket, marketSocket } from "./socket.js";
 import type { KlineUpdatePayload, KlineFetchErrorPayload, KlineTick } from './types.js';
 import type { MarketItem, HotlistItem } from 'shared-types';
 import { ViewportState } from './ChartPageLayout.jsx';
 import { chartThemes, ChartTheme } from './themes.js';
-import { getIntervalSeconds } from "./utils.js";
+import {
+    getIntervalSeconds,
+    formatTimeInChina,
+    formatBigNumber,
+    customPriceFormatter,
+    getAdaptivePriceFormat
+} from "./utils.js";
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -50,60 +54,6 @@ interface LegendData {
     changePercent: string;
     color: string;
 }
-
-const formatTimeInChina = (timeInSeconds: number): string => {
-    try {
-        const date = new Date(timeInSeconds * 1000);
-        return date.toLocaleString('zh-CN', {
-            timeZone: 'Asia/Shanghai',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-        });
-    } catch (e) {
-        return new Date(timeInSeconds * 1000).toLocaleTimeString();
-    }
-};
-
-const getAdaptivePriceFormat = (price: number): PriceFormat => {
-    if (!price || price <= 0) {
-        return { type: 'price', precision: 4, minMove: 0.0001 };
-    }
-    let precision: number;
-    if (price >= 1) {
-        precision = 2;
-    } else {
-        const firstSignificantDigitPosition = Math.ceil(-Math.log10(price));
-        precision = firstSignificantDigitPosition + 3;
-    }
-    const finalPrecision = Math.min(Math.max(precision, 2), 10);
-    const minMove = 1 / Math.pow(10, finalPrecision);
-    return {
-        type: 'price',
-        precision: finalPrecision,
-        minMove: minMove,
-    };
-};
-
-const customPriceFormatter = (price: number): string => {
-    const s = new Intl.NumberFormat('en-US', {
-        maximumFractionDigits: 10,
-        useGrouping: false
-    }).format(price);
-    if (s.includes('.')) {
-        return s.replace(/\.?0+$/, '');
-    }
-    return s;
-};
-
-const formatBigNumber = (num: number): string => {
-    if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + 'M';
-    if (num >= 1_000) return (num / 1_000).toFixed(2) + 'K';
-    return num.toFixed(2);
-};
 
 const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     let chartContainer: HTMLDivElement;
@@ -176,14 +126,14 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 const lastCandle = currentData[currentData.length - 1] as CandlestickData<Time>;
                 if (newCandle.time < (lastCandle.time as number)) return;
             }
-            candlestickSeries.update(newCandle as CandlestickData<Time>);
+            candlestickSeries.update(newCandle as unknown as CandlestickData<Time>);
 
             if (volumeSeries && newCandle.volume !== undefined) {
                 const isUp = newCandle.close >= newCandle.open;
                 const avgPrice = (newCandle.open + newCandle.high + newCandle.low + newCandle.close) / 4;
                 const amount = newCandle.volume * avgPrice;
                 volumeSeries.update({
-                    time: newCandle.time as Time,
+                    time: newCandle.time as unknown as Time,
                     value: amount,
                     color: isUp ? props.theme.candle.upColor : props.theme.candle.downColor
                 });
@@ -196,9 +146,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         const nowAligned = Math.floor(Date.now() / 1000 / intervalSec) * intervalSec;
         const data = [];
         for (let i = FORCE_GHOST_CANDLE_COUNT; i >= 0; i--) {
-            data.push({ time: (nowAligned - (i * intervalSec)) as Time, value: 0 });
+            data.push({ time: (nowAligned - (i * intervalSec)) as unknown as Time, value: 0 });
         }
-        return data;
+        return data as LineData<Time>[];
     };
 
     createEffect(() => {
@@ -225,6 +175,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         if (!info || !timeframe) { cleanupChart(); setStatus('No token selected.'); return; }
         cleanupChart(); setStatus(`Loading ${info.symbol}...`);
+
+        // Wait till container is available
         if (!chartContainer) return;
 
         try {
@@ -299,7 +251,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
         const processData = (data: any[], isInitial: boolean, response?: any, isNew?: boolean) => {
             try {
-                const sortedData = data.map(d => ({ ...d, time: Number(d.time) as Time })).sort((a, b) => (a.time as number) - (b.time as number));
+                const sortedData = data.map(d => ({ ...d, time: Number(d.time) as unknown as Time })).sort((a, b) => (a.time as unknown as number) - (b.time as unknown as number));
                 const volData = sortedData.map(d => {
                     const avgPrice = (d.open + d.high + d.low + d.close) / 4;
                     return { time: d.time, value: d.volume * avgPrice, color: (d.close >= d.open) ? t.candle.upColor : t.candle.downColor };
@@ -307,25 +259,25 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
                 if (isInitial) {
                     if (isNew) liquiditySeries?.setData([]);
-                    candlestickSeries?.setData(sortedData as CandlestickData<Time>[]);
+                    candlestickSeries?.setData(sortedData as unknown as CandlestickData<Time>[]);
                     volumeSeries?.setData(volData as HistogramData<Time>[]);
                     if (response?.liquidityHistory && liquiditySeries) {
-                        const liqData = (response.liquidityHistory as { time: number; value: number }[]).map(p => ({ time: p.time as Time, value: p.value })).sort((a, b) => (a.time as number) - (b.time as number));
+                        const liqData = (response.liquidityHistory as { time: number; value: number }[]).map(p => ({ time: p.time as unknown as Time, value: p.value })).sort((a, b) => (a.time as unknown as number) - (b.time as unknown as number));
                         liquiditySeries.setData(liqData);
                     }
-                    if (sortedData.length > 0) updateLegend(sortedData[sortedData.length - 1] as CandlestickData<Time>, volData[volData.length - 1] as HistogramData<Time>);
+                    if (sortedData.length > 0) updateLegend(sortedData[sortedData.length - 1] as unknown as CandlestickData<Time>, volData[volData.length - 1] as HistogramData<Time>);
                     if (props.viewportState) chart?.timeScale().setVisibleLogicalRange({ from: props.viewportState.from, to: props.viewportState.to });
                     else chart?.timeScale().scrollToRealTime();
                 } else {
                     const currentData = (candlestickSeries?.data() as CandlestickData<Time>[] || []);
-                    const newDataMap = new Map(currentData.map(d => [d.time, d]));
-                    sortedData.forEach(d => newDataMap.set(d.time, d as CandlestickData<Time>));
-                    candlestickSeries?.setData(Array.from(newDataMap.values()).sort((a, b) => (a.time as number) - (b.time as number)));
+                    const newDataMap = new Map(currentData.map(d => [d.time as unknown as number, d]));
+                    sortedData.forEach(d => newDataMap.set(d.time as unknown as number, d as unknown as CandlestickData<Time>));
+                    candlestickSeries?.setData(Array.from(newDataMap.values()).sort((a, b) => (a.time as unknown as number) - (b.time as unknown as number)) as unknown as CandlestickData<Time>[]);
 
                     const currentVolData = (volumeSeries?.data() as HistogramData<Time>[] || []);
-                    const newVolMap = new Map(currentVolData.map(d => [d.time, d]));
-                    volData.forEach(d => newVolMap.set(d.time, d));
-                    volumeSeries?.setData(Array.from(newVolMap.values()).sort((a, b) => (a.time as number) - (b.time as number)));
+                    const newVolMap = new Map(currentVolData.map(d => [d.time as unknown as number, d]));
+                    volData.forEach(d => newVolMap.set(d.time as unknown as number, d as unknown as HistogramData<Time>));
+                    volumeSeries?.setData(Array.from(newVolMap.values()).sort((a, b) => (a.time as unknown as number) - (b.time as unknown as number)) as unknown as HistogramData<Time>[]);
                 }
                 setStatus(`Live`);
             } catch (e) { console.error(`[Chart:${info.symbol}] Data Error:`, e); }
@@ -348,7 +300,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         };
         const handleLiquidityHistory = (response: any) => {
             if (response.address.toLowerCase() === info.contractAddress.toLowerCase() && response.liquidityHistory && liquiditySeries) {
-                const liqData = (response.liquidityHistory as { time: number; value: number }[]).map(p => ({ time: p.time as Time, value: p.value })).sort((a, b) => (a.time as number) - (b.time as number));
+                const liqData = (response.liquidityHistory as { time: number; value: number }[]).map(p => ({ time: p.time as unknown as Time, value: p.value })).sort((a, b) => (a.time as unknown as number) - (b.time as unknown as number));
                 liquiditySeries.setData(liqData);
             }
         };
@@ -374,9 +326,9 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             const item = (p.data as HotlistItem[]).find(d => d.contractAddress?.toLowerCase() === myAddr);
             if (item?.liquidity !== undefined && item.liquidity !== null && liquiditySeries) {
                 const intervalSec = getIntervalSeconds(props.timeframe);
-                const timeBucket = (Math.floor(Date.now() / 1000 / intervalSec) * intervalSec) as Time;
+                const timeBucket = (Math.floor(Date.now() / 1000 / intervalSec) * intervalSec) as unknown as Time;
                 const dataList = liquiditySeries.data();
-                if (dataList.length > 0 && timeBucket < (dataList[dataList.length - 1].time as number)) return;
+                if (dataList.length > 0 && (timeBucket as unknown as number) < (dataList[dataList.length - 1].time as unknown as number)) return;
                 liquiditySeries.update({ time: timeBucket, value: item.liquidity });
             }
         };
@@ -433,7 +385,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
 
             <div class="chart-legend" style={{ position: 'absolute', top: props.simpleMode ? '4px' : '38px', left: '12px', "z-index": 10, "font-family": "monospace", "font-size": "11px", "pointer-events": "none", color: props.theme.layout.textColor }}>
                 <Show when={legendData()}>
-                    <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '15px', "flex-wrap": 'wrap' }}>
                         <span style={{ "font-weight": "bold", opacity: 0.8 }}>{legendData()!.time}</span>
                         <span>O:<span style={{ color: legendData()!.color }}>{legendData()!.open}</span></span>
                         <span>H:<span style={{ color: legendData()!.color }}>{legendData()!.high}</span></span>
