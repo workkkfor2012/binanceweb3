@@ -1,7 +1,7 @@
 // packages/frontend/src/hooks/useMarketData.ts
 import { createSignal, onMount, onCleanup } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
-import { socket } from '../socket';
+import { coreSocket } from '../socket';
 // ✨ 引用路径统一：从 local types (其内部 re-export 了 shared-types)
 import type { MarketItem, MemeItem, LocalDataPayload, AlertLogEntry as ServerAlertEntry } from '../types';
 import { speak } from '../AlertManager';
@@ -32,18 +32,18 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
     onMount(() => {
         console.log(`[useMarketData] 🔌 Initializing hook for category: ${targetCategory}`);
 
-        if (!socket.connected) {
-            socket.connect();
+        if (!coreSocket.connected) {
+            coreSocket.connect();
         }
 
         const onConnect = () => {
-            console.log(`[useMarketData] ✅ Socket Connected. Subscribing to room: ${targetCategory}`);
+            console.log(`[useMarketData] ✅ CoreSocket Connected. Subscribing to room: ${targetCategory}`);
             setConnectionStatus('Connected');
-            socket.emit('subscribe_feed', targetCategory);
+            coreSocket.emit('subscribe_feed', targetCategory);
         };
 
         const onDisconnect = () => {
-            console.warn(`[useMarketData] ❌ Socket Disconnected (Scope: ${targetCategory})`);
+            console.warn(`[useMarketData] ❌ CoreSocket Disconnected (Scope: ${targetCategory})`);
             setConnectionStatus('Disconnected');
         };
 
@@ -118,26 +118,26 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
             }));
         };
 
-        socket.on('connect', onConnect);
-        socket.on('disconnect', onDisconnect);
-        socket.on('data-broadcast', onDataBroadcast as any);
-        socket.on('alert_history', onAlertHistory);
-        socket.on('alert_update', onAlertUpdate);
+        coreSocket.on('connect', onConnect);
+        coreSocket.on('disconnect', onDisconnect);
+        coreSocket.on('data-broadcast', onDataBroadcast as any);
+        coreSocket.on('alert_history', onAlertHistory);
+        coreSocket.on('alert_update', onAlertUpdate);
 
-        if (socket.connected) {
+        if (coreSocket.connected) {
             onConnect();
         }
 
         onCleanup(() => {
             console.log(`[useMarketData] 🧹 Cleanup: Unsubscribing from ${targetCategory}`);
-            if (socket.connected) {
-                socket.emit('unsubscribe_feed', targetCategory);
+            if (coreSocket.connected) {
+                coreSocket.emit('unsubscribe_feed', targetCategory);
             }
-            socket.off('connect', onConnect);
-            socket.off('disconnect', onDisconnect);
-            socket.off('data-broadcast', onDataBroadcast);
-            socket.off('alert_history', onAlertHistory);
-            socket.off('alert_update', onAlertUpdate);
+            coreSocket.off('connect', onConnect);
+            coreSocket.off('disconnect', onDisconnect);
+            coreSocket.off('data-broadcast', onDataBroadcast);
+            coreSocket.off('alert_history', onAlertHistory);
+            coreSocket.off('alert_update', onAlertUpdate);
         });
     });
 

@@ -43,3 +43,11 @@ ts-rs = { version = "11.1.0", features = ["format"] }
 [profile.dev]
 incremental = true
 split-debuginfo = "unpacked"
+
+[[bin]]
+name = "backend-core"
+path = "src/bin/core.rs"
+
+[[bin]]
+name = "backend-market"
+path = "src/bin/market.rs"

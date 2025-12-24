@@ -1,7 +1,7 @@
 // packages/frontend/src/kline-browser-manager.ts
 import * as dbManager from './db-manager';
 import type { KlineData, LightweightChartKline, KlineUpdatePayload } from './types';
-import { socket } from './socket';
+import { marketSocket } from './socket';
 
 const HISTORICAL_API_URL = 'https://dquery.sintral.io/u-kline/v1/k-line/candles?address={address}&interval={interval}&limit={limit}&platform={platform}';
 const API_MAX_LIMIT = 500;
@@ -9,7 +9,7 @@ const API_MAX_LIMIT = 500;
 const CHAIN_CONFIG: Record<string, { internalPoolId: number }> = {
     bsc: { internalPoolId: 14 },
     sol: { internalPoolId: 16 },
-    solana: { internalPoolId: 16 }, 
+    solana: { internalPoolId: 16 },
     base: { internalPoolId: 199 }
 };
 
@@ -47,7 +47,7 @@ class KlineBrowserManager {
         this.contractAddress = contractAddress;
         this.chain = chain.toLowerCase();
         this.interval = interval;
-        
+
         const poolId = CHAIN_CONFIG[this.chain]?.internalPoolId;
         if (!poolId) {
             console.error(`❌ [KlineManager] Unsupported chain: ${this.chain}. Cannot construct room name.`);
@@ -55,7 +55,7 @@ class KlineBrowserManager {
         } else {
             this.roomName = `kl@${poolId}@${this.contractAddress}@${this.interval}`;
         }
-        
+
         console.log(`📈 KlineManager for ${this.roomName} initialized.`);
     }
 
@@ -68,7 +68,7 @@ class KlineBrowserManager {
             close: kline.close,
         };
     }
-    
+
     private async fetchHistoricalData(limit: number): Promise<KlineData[]> {
         const platform = this.chain;
         const apiInterval = formatIntervalForApi(this.interval);
@@ -85,7 +85,7 @@ class KlineBrowserManager {
             const json: any = await response.json();
             if (json && Array.isArray(json.data)) {
                 const primaryKey = dbManager.getPrimaryKey(this.contractAddress, this.chain, this.interval);
-                const klines = json.data.map((d: (string|number)[]): KlineData => ({
+                const klines = json.data.map((d: (string | number)[]): KlineData => ({
                     primaryKey, address: this.contractAddress, chain: this.chain, interval: this.interval,
                     open: parseFloat(String(d[0])), high: parseFloat(String(d[1])),
                     low: parseFloat(String(d[2])), close: parseFloat(String(d[3])),
@@ -98,18 +98,18 @@ class KlineBrowserManager {
         } catch (error) { console.error(`❌ [HISTORICAL ${this.roomName}] Failed to fetch data:`, error); }
         return [];
     }
-    
+
     private startRealtimeUpdates(): void {
         if (this.isSubscribed) return;
-        socket.on('kline_update', this.handleKlineUpdate);
-        
+        marketSocket.on('kline_update', this.handleKlineUpdate);
+
         // <-- payload 恢复原状
-        const payload = { 
-            address: this.contractAddress, 
-            chain: this.chain, 
+        const payload = {
+            address: this.contractAddress,
+            chain: this.chain,
             interval: this.interval,
         };
-        socket.emit('subscribe_kline', payload);
+        marketSocket.emit('subscribe_kline', payload);
         this.isSubscribed = true;
         console.log(`🔼 [SUB] Sent subscribe request for ${this.roomName}`);
     }
@@ -140,11 +140,11 @@ class KlineBrowserManager {
             const timeDiff = Date.now() - lastKline.timestamp;
             const intervalMs = intervalToMs(this.interval);
             const missingCandles = Math.floor(timeDiff / intervalMs) + 1;
-            
+
             if (missingCandles > API_MAX_LIMIT) {
                 console.log(`[CACHE ${this.roomName}] Data is too old (${missingCandles} missing). Clearing cache and refetching full ${API_MAX_LIMIT}.`);
                 await dbManager.clearKlines(this.contractAddress, this.chain, this.interval);
-                cachedKlines = []; 
+                cachedKlines = [];
                 fetchLimit = API_MAX_LIMIT;
             } else if (missingCandles <= 1) {
                 console.log(`[CACHE ${this.roomName}] Data is up-to-date. No fetch needed.`);
@@ -173,19 +173,19 @@ class KlineBrowserManager {
                 console.log(`[Manager ${this.roomName}] 👉 Firing 'onDataLoaded' with ${allKlines.length} finalized candles.`);
                 this.onDataLoaded(allKlines.map(this.mapToLightweightChartKline));
             } else {
-                 console.log(`[Manager ${this.roomName}] No data to display.`);
-                 this.onDataLoaded([]);
+                console.log(`[Manager ${this.roomName}] No data to display.`);
+                this.onDataLoaded([]);
             }
         }
-        
+
         this.startRealtimeUpdates();
     }
 
     public stop(): void {
         if (this.isSubscribed) {
             const payload = { address: this.contractAddress, chain: this.chain, interval: this.interval }; // <-- unsubscribe 也恢复原状
-            socket.emit('unsubscribe_kline', payload);
-            socket.off('kline_update', this.handleKlineUpdate);
+            marketSocket.emit('unsubscribe_kline', payload);
+            marketSocket.off('kline_update', this.handleKlineUpdate);
             this.isSubscribed = false;
             console.log(`🔽 [UNSUB] Sent unsubscribe request for ${this.roomName}`);
         }

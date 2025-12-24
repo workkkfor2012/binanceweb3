@@ -13,7 +13,7 @@ import {
     ChartOptions,
     DeepPartial
 } from 'lightweight-charts';
-import { socket } from '../socket';
+import { marketSocket } from '../socket';
 import type { KlineUpdatePayload, KlineFetchErrorPayload, LightweightChartKline } from '../types';
 import type { MarketItem } from 'shared-types';
 import type { ChartTheme } from '../themes';
@@ -322,27 +322,27 @@ export class KlineChartController {
         const handleConnect = () => {
             if (!this.currentToken) return;
             console.log(`[KlineChartController] 🔄 Reconnected. Resubscribing & Fetching history for ${this.currentToken.symbol}...`);
-            socket.emit('request_historical_kline', payload);
-            socket.emit('subscribe_kline', payload);
+            marketSocket.emit('request_historical_kline', payload);
+            marketSocket.emit('subscribe_kline', payload);
         };
 
         // Listeners
-        socket.on('kline_update', handleKlineUpdate);
-        socket.on('historical_kline_initial', handleInitialData);
-        socket.on('historical_kline_completed', handleCompletedData);
-        socket.on('connect', handleConnect);
+        marketSocket.on('kline_update', handleKlineUpdate);
+        marketSocket.on('historical_kline_initial', handleInitialData);
+        marketSocket.on('historical_kline_completed', handleCompletedData);
+        marketSocket.on('connect', handleConnect);
 
         // Emit
-        socket.emit('request_historical_kline', payload);
-        socket.emit('subscribe_kline', payload);
+        marketSocket.emit('request_historical_kline', payload);
+        marketSocket.emit('subscribe_kline', payload);
 
         // Register cleanup
         this.cleanupHandlers.push(() => {
-            socket.off('kline_update', handleKlineUpdate);
-            socket.off('historical_kline_initial', handleInitialData);
-            socket.off('historical_kline_completed', handleCompletedData);
-            socket.off('connect', handleConnect);
-            socket.emit('unsubscribe_kline', payload);
+            marketSocket.off('kline_update', handleKlineUpdate);
+            marketSocket.off('historical_kline_initial', handleInitialData);
+            marketSocket.off('historical_kline_completed', handleCompletedData);
+            marketSocket.off('connect', handleConnect);
+            marketSocket.emit('unsubscribe_kline', payload);
         });
     }
 

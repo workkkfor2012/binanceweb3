@@ -3,9 +3,9 @@ import { KlineChartController } from '../controllers/KlineChartController';
 import type { MarketItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
 import type { ChartTheme } from './themes';
-import { socket } from './socket';
+// import { coreSocket, marketSocket } from './socket';
 
-const BACKEND_URL = 'https://localhost:3001';
+const BACKEND_URL = 'https://115.190.227.163:30001';
 
 interface MultiChartGridProps {
     tokens: MarketItem[];

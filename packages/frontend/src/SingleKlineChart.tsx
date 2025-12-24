@@ -13,7 +13,7 @@ import {
     HistogramSeries,
     MouseEventParams
 } from 'lightweight-charts';
-import { socket } from './socket';
+import { coreSocket, marketSocket } from './socket';
 import type { KlineUpdatePayload, KlineFetchErrorPayload, LightweightChartKline } from './types';
 import type { MarketItem, HotlistItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
@@ -158,11 +158,11 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
     };
 
     const unsubscribeRealtime = (payload: { address: string; chain: string; interval: string }) => {
-        socket.off('kline_update', handleKlineUpdate);
+        marketSocket.off('kline_update', handleKlineUpdate);
 
         // ✨ LOG: 打印取消订阅事件
-        console.log(`[Socket] 📤 EMIT: unsubscribe_kline`, JSON.stringify(payload));
-        socket.emit('unsubscribe_kline', payload);
+        console.log(`[MarketSocket] 📤 EMIT: unsubscribe_kline`, JSON.stringify(payload));
+        marketSocket.emit('unsubscribe_kline', payload);
     };
 
     // ✨ 辅助: 更新图例逻辑 (复用代码)
@@ -498,17 +498,17 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             console.log(`[SingleKlineChart] 🔄 Reconnected. Resubscribing & Fetching history for ${info.symbol}...`);
 
             // ✨ LOG: 打印重连时的发送事件
-            console.log(`[Socket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
-            socket.emit('request_historical_kline', payload);
-            console.log(`[Socket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
-            socket.emit('subscribe_kline', payload);
+            console.log(`[MarketSocket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
+            marketSocket.emit('request_historical_kline', payload);
+            console.log(`[MarketSocket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
+            marketSocket.emit('subscribe_kline', payload);
         };
 
-        socket.on('historical_kline_initial', handleInitialData);
-        socket.on('historical_kline_completed', handleCompletedData);
-        socket.on('kline_fetch_error', handleFetchError);
-        socket.on('kline_update', handleKlineUpdate);
-        socket.on('connect', handleConnect);
+        marketSocket.on('historical_kline_initial', handleInitialData);
+        marketSocket.on('historical_kline_completed', handleCompletedData);
+        marketSocket.on('kline_fetch_error', handleFetchError);
+        marketSocket.on('kline_update', handleKlineUpdate);
+        marketSocket.on('connect', handleConnect);
 
         // ✨ 实时监听 Hotlist，更新流动性曲线
         const handleDataBroadcast = (rawPayload: unknown) => {
@@ -561,21 +561,21 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 });
             }
         };
-        socket.on('data-broadcast', handleDataBroadcast);
+        coreSocket.on('data-broadcast', handleDataBroadcast);
 
         // ✨ LOG: 打印初始发送事件
-        console.log(`[Socket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
-        socket.emit('request_historical_kline', payload);
-        console.log(`[Socket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
-        socket.emit('subscribe_kline', payload);
+        console.log(`[MarketSocket] 📤 EMIT: request_historical_kline`, JSON.stringify(payload));
+        marketSocket.emit('request_historical_kline', payload);
+        console.log(`[MarketSocket] 📤 EMIT: subscribe_kline`, JSON.stringify(payload));
+        marketSocket.emit('subscribe_kline', payload);
 
         onCleanup(() => {
             unsubscribeRealtime(payload);
-            socket.off('historical_kline_initial', handleInitialData);
-            socket.off('historical_kline_completed', handleCompletedData);
-            socket.off('kline_fetch_error', handleFetchError);
-            socket.off('connect', handleConnect);
-            socket.off('data-broadcast', handleDataBroadcast);
+            marketSocket.off('historical_kline_initial', handleInitialData);
+            marketSocket.off('historical_kline_completed', handleCompletedData);
+            marketSocket.off('kline_fetch_error', handleFetchError);
+            marketSocket.off('connect', handleConnect);
+            coreSocket.off('data-broadcast', handleDataBroadcast);
             cleanupChart();
         });
     });
