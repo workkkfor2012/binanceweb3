@@ -49,8 +49,8 @@ async function gotoWithRetry(page: Page, url: string, criticalSelector: string, 
         try {
             logger.log(`[Navi][${chainName}] 尝试第 ${attempt}/${maxRetries} 次访问: ${url}`, logger.LOG_LEVELS.INFO);
             await page.goto(url, { waitUntil: 'load', timeout: 90000 });
-            // ✨ 如果是极致优化模式，不等待 visible，因为 DOM 可能被隐藏
-            await page.waitForSelector(criticalSelector, { state: IS_HEADLESS ? 'attached' : 'visible', timeout: 45000 });
+            // ✨ 初始化阶段必须可见，才能进行点击操作
+            await page.waitForSelector(criticalSelector, { state: 'visible', timeout: 45000 });
             logger.log(`[Navi][${chainName}] 页面就绪!`, logger.LOG_LEVELS.INFO);
             return;
         } catch (error: any) {
@@ -70,37 +70,15 @@ async function setupPageForChain(
     const { name: chainName, url, category } = target;
     const context = await browser.newContext({ viewport: null });
 
-    // ✨ 性能优化：根据 Headless 状态决定拦截粒度 ✨
+    // ✨ Phase 1 (初始化阶段)：仅拦截基础多媒体，不拦截 CSS 以保证 UI 交互
     await context.route('**/*', (route) => {
         const type = route.request().resourceType();
-        const url = route.request().url();
-
-        if (IS_HEADLESS) {
-            // 1. 极致模式：拦截 图片、字体、媒体、CSS (不需要渲染)
-            if (['image', 'font', 'media', 'stylesheet'].includes(type)) return route.abort();
-
-            // 2. 拦截 统计/日志/传感器 (降 CPU 关键)
-            const blockList = [/analytics/, /log-/, /sensors/, /monitor/, /telemetry/];
-            if (blockList.some(re => re.test(url))) return route.abort();
-        } else {
-            // 调试模式：仅拦截基础多媒体，保留 CSS
-            if (['image', 'font', 'media'].includes(type)) return route.abort();
-        }
-
+        if (['image', 'font', 'media'].includes(type)) return route.abort();
         route.continue();
     });
 
     const page = await context.newPage();
-
-    if (IS_HEADLESS) {
-        // ✨ UI 静默：彻底隐藏 HTML，让 Chromium 停止布局和绘制任务
-        await page.addInitScript(() => {
-            const style = document.createElement('style');
-            style.innerHTML = 'html { display: none !important; }';
-            document.documentElement.appendChild(style);
-        });
-    }
-
+    // 移除之前的全局 InitScript 隐藏逻辑，改由后面动态触发
     logger.log(`[Setup][${chainName}] 初始化页面 (Category: ${category})...`, logger.LOG_LEVELS.INFO);
 
     const options = {
@@ -121,11 +99,25 @@ async function setupPageForChain(
     await page.addInitScript({ content: 'window.originalConsoleLog = console.log;' });
 
     await gotoWithRetry(page, url, SELECTORS.stableContainer, chainName);
+
+    // --- 🏁 准备工作开始 ---
     await handleGuidePopup(page);
     await checkAndClickCookieBanner(page);
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(1000);
     // 热门榜按涨跌幅排序
     await applyPriceChangeSort(page);
+    // --- 🏁 准备工作结束 ---
+
+    // 🚀 Phase 2 (运行阶段)：初始化动作完成后，如果是无头模式，开启极致降噪
+    if (IS_HEADLESS) {
+        logger.log(`[Optimize][${chainName}] UI 初始化就绪，开启静默模式 (已排序)...`, logger.LOG_LEVELS.INFO);
+        // 1. 隐藏 DOM
+        await page.evaluate(() => {
+            document.documentElement.style.display = 'none';
+        });
+        // 2. 动态追加 CSS 拦截路由 (拦截后续样式加载)
+        await page.route('**/*.{css,scss,less}*', route => route.abort());
+    }
 
     // ✨ 数据处理回调：将 Raw Item (any) 转换为 HotlistItem
     const handleExtractedData = (result: ExtractedDataPayload): void => {

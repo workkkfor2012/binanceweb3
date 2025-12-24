@@ -377,34 +377,14 @@ async function ensurePageReady(page: Page): Promise<boolean> {
 async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
     const context = await browser.newContext({ viewport: null });
 
-    // ✨ 性能优化：根据 Headless 状态决定拦截粒度 ✨
+    // ✨ Phase 1 (初始化阶段)：仅常规拦截 (不拦截 CSS)
     await context.route('**/*', (route) => {
         const type = route.request().resourceType();
-        const url = route.request().url();
-
-        if (IS_HEADLESS) {
-            // 极致模式：拦截 图片、字体、媒体、CSS
-            if (['image', 'font', 'media', 'stylesheet'].includes(type)) return route.abort();
-            // 拦截 无关脚本
-            const blockList = [/analytics/, /log-/, /sensors/, /monitor/];
-            if (blockList.some(re => re.test(url))) return route.abort();
-        } else {
-            // 调试模式
-            if (['image', 'font', 'media'].includes(type)) return route.abort();
-        }
+        if (['image', 'font', 'media'].includes(type)) return route.abort();
         route.continue();
     });
 
     const page = await context.newPage();
-
-    if (IS_HEADLESS) {
-        // UI 静默：彻底隐藏 HTML
-        await page.addInitScript(() => {
-            const style = document.createElement('style');
-            style.innerHTML = 'html { display: none !important; }';
-            document.documentElement.appendChild(style);
-        });
-    }
 
     // ✨ 初始化数据清洗器
     const sanitizer = new AdvancedDataSanitizer();
@@ -435,6 +415,16 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
         await ensurePageReady(page);
         await handleGuidePopup(page);
         await checkAndClickCookieBanner(page);
+
+        // 🚀 Phase 2 (运行阶段)：初始化完成后开启静默模式
+        if (IS_HEADLESS) {
+            logger.log(`[Optimize] UI 准备就绪，开启极致静默模式...`, logger.LOG_LEVELS.INFO);
+            await page.evaluate(() => {
+                document.documentElement.style.display = 'none';
+            });
+            // 动态拦截 CSS
+            await page.route('**/*.{css,scss,less}*', route => route.abort());
+        }
 
         // 模拟鼠标激活页面
         const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
