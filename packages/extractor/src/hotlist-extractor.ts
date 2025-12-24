@@ -107,25 +107,23 @@ async function setupPageForChain(
     // 热门榜按涨跌幅排序
     await applyPriceChangeSort(page);
     // --- 🏁 准备工作结束 ---
-
-    // 🚀 Phase 2 (运行阶段)：初始化动作完成后，如果是无头模式，开启极致降噪
-    if (IS_HEADLESS) {
-        logger.log(`[Optimize][${chainName}] UI 初始化就绪，开启静默模式 (已排序)...`, logger.LOG_LEVELS.INFO);
-        // 1. 隐藏 DOM
-        await page.evaluate(() => {
-            document.documentElement.style.display = 'none';
-        });
-        // 2. 动态追加 CSS 拦截路由 (拦截后续样式加载)
-        await page.route('**/*.{css,scss,less}*', route => route.abort());
-    }
+    let hasOptimized = false;
 
     // ✨ 数据处理回调：将 Raw Item (any) 转换为 HotlistItem
-    const handleExtractedData = (result: ExtractedDataPayload): void => {
+    const handleExtractedData = async (result: ExtractedDataPayload): Promise<void> => {
         const { type, data } = result;
 
-        // 如果需要调试单链日志，可以使用 logger.log，这里为了避免未使用变量报错，移除了 perfString
-
         if (type !== 'no-change' && data && data.length > 0) {
+            // 🚀 [激进优化延迟触发]：成功获取首批数据后，开启静默模式
+            if (IS_HEADLESS && !hasOptimized) {
+                hasOptimized = true;
+                logger.log(`\n[Optimize][${chainName}] ✅ 成功抓取首批数据 (${data.length}条)，进入极致静默运行模式...`, logger.LOG_LEVELS.INFO);
+                await page.evaluate(() => {
+                    document.documentElement.style.display = 'none';
+                }).catch(() => { });
+                await page.route('**/*.{css,scss,less}*', route => route.abort()).catch(() => { });
+            }
+
             // 映射到 Shared Types 的 HotlistItem
             const enrichedData: HotlistItem[] = data.map((item: any) => ({
                 // --- BaseItem ---

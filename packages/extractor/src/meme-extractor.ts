@@ -416,15 +416,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
         await handleGuidePopup(page);
         await checkAndClickCookieBanner(page);
 
-        // 🚀 Phase 2 (运行阶段)：初始化完成后开启静默模式
-        if (IS_HEADLESS) {
-            logger.log(`[Optimize] UI 准备就绪，开启极致静默模式...`, logger.LOG_LEVELS.INFO);
-            await page.evaluate(() => {
-                document.documentElement.style.display = 'none';
-            });
-            // 动态拦截 CSS
-            await page.route('**/*.{css,scss,less}*', route => route.abort());
-        }
+        // 🚀 [移至循环内] 极致优化将延迟到成功获取第一批数据后触发
 
         // 模拟鼠标激活页面
         const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
@@ -439,6 +431,7 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
         let lastTopSymbol = '';
         let loopCount = 0;
         let noDataCount = 0;
+        let hasOptimized = false; // ✨ 是否已开启极致优化
 
         setInterval(async () => {
             loopCount++;
@@ -467,6 +460,16 @@ async function setupMemePage(browser: Browser, socket: Socket): Promise<void> {
                         const topData = bestList.data; // Raw Data Objects
 
                         if (topData && topData.length > 0) {
+                            // 🚀 [激进优化延迟触发]：成功获取到数据后，再开启极致模式
+                            if (IS_HEADLESS && !hasOptimized) {
+                                hasOptimized = true;
+                                logger.log(`\n[Optimize] 🎯 成功抓取首批数据 (${topData.length}条)，开启极致静默模式...`, logger.LOG_LEVELS.INFO);
+                                await page.evaluate(() => {
+                                    document.documentElement.style.display = 'none';
+                                }).catch(() => { });
+                                await page.route('**/*.{css,scss,less}*', route => route.abort()).catch(() => { });
+                            }
+
                             // 1. 强制按时间倒序 (MigrateTime > CreateTime)
                             topData.sort((a: any, b: any) => {
                                 const tA = parseInt(a.migrateTime || a.createTime || '0');
