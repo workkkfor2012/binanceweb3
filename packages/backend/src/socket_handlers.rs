@@ -17,8 +17,8 @@ use flate2::read::GzDecoder;
 use std::io::Read;
 
 const ENABLE_FILTERING: bool = true;
-const MIN_HOTLIST_AMOUNT: f64 = 1000.0;
-const MIN_HOTLIST_LIQUIDITY: f64 = 10000.0;
+const MIN_HOTLIST_AMOUNT: f64 = 2000.0;
+const MIN_HOTLIST_LIQUIDITY: f64 = 20000.0;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
 const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
 // Helper to normalize address based on chain/pool_id
