@@ -1,12 +1,12 @@
 // packages/frontend/src/MemePage.tsx
 import { Component, createMemo, For, Show, onMount, createSignal, onCleanup, createEffect } from 'solid-js';
-import { useMarketData } from './hooks/useMarketData';
-import type { MemeItem, MarketItem } from './types';
-import SingleKlineChart from './SingleKlineChart';
-import { PRESET_THEMES } from './themes';
+import { useMarketData } from './hooks/useMarketData.js';
+import type { MemeItem, MarketItem } from './types.js';
+import SingleKlineChart from './SingleKlineChart.jsx';
+import { PRESET_THEMES } from './themes.js';
 import { speak, initializeVoices } from './AlertManager.js';
 
-const BACKEND_URL = 'https://localhost:3001';
+import { MARKET_BACKEND_URL, marketSocket } from './socket.js';
 
 declare global {
     interface Window {
@@ -126,8 +126,8 @@ const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
                 "border": isLoaded() ? "none" : "1px dashed #e1e4e8"
             }}
         >
-            <div ref={containerRef} style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
-                <span style={{ color: '#aaa', fontSize: '11px' }}>Loading Tweet...</span>
+            <div ref={containerRef} style={{ width: '100%', display: 'flex', "justify-content": 'center' }}>
+                <span style={{ color: '#aaa', "font-size": '11px' }}>Loading Tweet...</span>
             </div>
         </div>
     );
@@ -136,9 +136,24 @@ const TweetEmbed: Component<{ tweetId: string; }> = (props) => {
 // --- 卡片组件 ---
 const MemeCard: Component<MemeCardProps> = (props) => {
     const { item } = props;
-    const cleanTwitterId = createMemo(() => extractTweetId(item.twitterId || item.twitter));
-    const iconUrl = item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}&symbol=${encodeURIComponent(item.symbol)}` : '';
+    const cleanTwitterId = createMemo(() => extractTweetId(item.twitter));
+    const iconUrl = item.icon ? `${MARKET_BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}&symbol=${encodeURIComponent(item.symbol)}` : '';
     const bondingSpeed = createMemo(() => getBondingDuration(item));
+
+    // ✨ 按需请求叙事逻辑
+    createEffect(() => {
+        if (!item.narrative && item.contractAddress && item.chain) {
+            marketSocket.emit('request_narrative', {
+                address: item.contractAddress,
+                chain: item.chain,
+                interval: '1m' // 随便传个 interval 适配结构体
+            });
+        }
+    });
+
+    onMount(() => {
+        // useMarketData 已经通过全局 marketSocket 监听 narrative_response 并更新 store 了
+    });
 
     const handleCardClick = () => {
         window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
@@ -149,11 +164,11 @@ const MemeCard: Component<MemeCardProps> = (props) => {
     // 转换类型以适配 SingleKlineChart
     const marketItem: MarketItem = {
         ...item,
-        price: item.price || 0,
-        priceChange24h: item.priceChange24h || 0,
-        volume24h: item.volume24h || 0,
+        price: (item as any).price || 0,
+        priceChange24h: (item as any).priceChange24h || 0,
+        volume24h: (item as any).volume24h || 0,
         source: 'meme_card'
-    } as unknown as MarketItem;
+    } as any;
 
     return (
         <div class="meme-card" onClick={handleCardClick} style={{ "min-height": "350px", "display": "flex", "flex-direction": "column" }}>
@@ -173,16 +188,16 @@ const MemeCard: Component<MemeCardProps> = (props) => {
 
                 <div class="card-info-col">
                     {/* Row 1: Symbol, Name, Flags | Speed, Time */}
-                    <div class="info-row-top" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', "justify-content": 'space-between', "align-items": 'center' }}>
 
                         {/* 左侧信息组：Symbol + AD + Name (截断) */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden', flex: '1', paddingRight: '8px' }}>
+                        <div style={{ display: 'flex', "align-items": 'center', gap: '6px', overflow: 'hidden', flex: '1', "padding-right": '8px' }}>
                             {/* Symbol */}
                             <span class="card-symbol" title={item.symbol} style={{ flexShrink: 0 }}>{item.symbol}</span>
 
                             {/* Paid AD Tag (放在名字前面，保证重要信息可见) */}
                             <Show when={item.paidOnDexScreener}>
-                                <span title="Paid AD on DexScreener" style={{ fontSize: '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', borderRadius: '3px', border: '1px solid #ffeeba', fontWeight: 'bold', flexShrink: 0 }}>
+                                <span title="Paid AD on DexScreener" style={{ "font-size": '0.6em', background: '#ffd700', color: '#856404', padding: '1px 3px', "border-radius": '3px', border: '1px solid #ffeeba', "font-weight": 'bold', "flex-shrink": 0 }}>
                                     AD
                                 </span>
                             </Show>
@@ -191,12 +206,12 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                             <span
                                 style={{
                                     color: '#999',
-                                    fontSize: '0.8em',
-                                    whiteSpace: 'nowrap',
+                                    "font-size": '0.8em',
+                                    "white-space": 'nowrap',
                                     overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    fontWeight: 'normal',
-                                    marginTop: '2px' // 视觉微调，对齐基线
+                                    "text-overflow": 'ellipsis',
+                                    "font-weight": 'normal',
+                                    "margin-top": '2px' // 视觉微调，对齐基线
                                 }}
                                 title={item.name}
                             >
@@ -205,18 +220,18 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                         </div>
 
                         {/* 右侧信息组：速度 + 时间 */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+                        <div style={{ display: 'flex', "align-items": 'center', gap: '5px', "flex-shrink": 0 }}>
                             {/* Bonding Speed Badge */}
                             <Show when={bondingSpeed()}>
                                 <span style={{
-                                    fontSize: '0.7em',
+                                    "font-size": '0.7em',
                                     color: bondingSpeed()!.color,
-                                    fontWeight: 'bold',
+                                    "font-weight": 'bold',
                                     display: 'flex',
-                                    alignItems: 'center',
+                                    "align-items": 'center',
                                     background: `${bondingSpeed()!.color}15`,
                                     padding: '1px 5px',
-                                    borderRadius: '4px'
+                                    "border-radius": '4px'
                                 }} title="从发币到迁移的耗时">
                                     {bondingSpeed()!.icon} {bondingSpeed()!.text}
                                 </span>
@@ -226,7 +241,7 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                     </div>
 
                     {/* Row 2: Stats (MC, Liq, Buys/Sells, Holders) */}
-                    <div class="info-row-bottom" style={{ gap: '4px', flexWrap: 'wrap' }}>
+                    <div class="info-row-bottom" style={{ gap: '4px', "flex-wrap": 'wrap' }}>
 
                         {/* 1. 市值 (MC) */}
                         <span class="stat-badge badge-cap" title={`Market Cap: $${item.marketCap}`}>
@@ -235,7 +250,7 @@ const MemeCard: Component<MemeCardProps> = (props) => {
 
                         {/* 2. 流动性 (Liq) */}
                         <Show when={item.liquidity}>
-                            <span class="stat-badge" style={{ background: '#e3fafc', color: '#0c8599', borderColor: '#99e9f2' }} title={`Liquidity: $${item.liquidity}`}>
+                            <span class="stat-badge" style={{ background: '#e3fafc', color: '#0c8599', "border-color": '#99e9f2' }} title={`Liquidity: $${item.liquidity}`}>
                                 💧 ${formatNumber(item.liquidity)}
                             </span>
                         </Show>
@@ -243,9 +258,9 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                         {/* 3. 买卖单数 */}
                         <Show when={item.countBuy !== undefined && item.countSell !== undefined}>
                             <span class="stat-badge" title={`Buys: ${item.countBuy} / Sells: ${item.countSell}`}>
-                                <span style={{ color: '#28a745', fontWeight: 'bold' }}>{item.countBuy}</span>
+                                <span style={{ color: '#28a745', "font-weight": 'bold' }}>{item.countBuy}</span>
                                 <span style={{ opacity: 0.3, margin: '0 2px' }}>/</span>
-                                <span style={{ color: '#dc3545', fontWeight: 'bold' }}>{item.countSell}</span>
+                                <span style={{ color: '#dc3545', "font-weight": 'bold' }}>{item.countSell}</span>
                             </span>
                         </Show>
 
@@ -254,7 +269,7 @@ const MemeCard: Component<MemeCardProps> = (props) => {
 
                         {/* 5. 狙击手警告 */}
                         <Show when={(item.holdersSniperPercent || 0) > 50}>
-                            <span class="stat-badge" style={{ background: '#fff5f5', color: '#e03131', borderColor: '#ffc9c9' }} title={`Sniper Holdings: ${item.holdersSniperPercent}%`}>
+                            <span class="stat-badge" style={{ background: '#fff5f5', color: '#e03131', "border-color": '#ffc9c9' }} title={`Sniper Holdings: ${item.holdersSniperPercent}%`}>
                                 🎯 {Math.round(item.holdersSniperPercent!)}%
                             </span>
                         </Show>
@@ -358,7 +373,7 @@ const MemeColumn: Component<ColumnProps> = (props) => {
         <div class="meme-column">
             <div class="column-header">
                 <span>{props.title}</span>
-                <span class="column-badge" style={{ background: '#dce4ea', padding: '2px 8px', borderRadius: '10px', fontSize: '0.85em' }}>
+                <span class="column-badge" style={{ background: '#dce4ea', padding: '2px 8px', "border-radius": '10px', "font-size": '0.85em' }}>
                     {props.count}
                 </span>
             </div>
@@ -367,7 +382,7 @@ const MemeColumn: Component<ColumnProps> = (props) => {
                     {(item) => <MemeCard item={item} />}
                 </For>
                 <Show when={props.items.length === 0}>
-                    <div style={{ textAlign: 'center', padding: '50px 0', color: '#999', fontSize: '0.9em', gridColumn: '1 / -1' }}>
+                    <div style={{ "text-align": 'center', padding: '50px 0', color: '#999', "font-size": '0.9em', "grid-column": '1 / -1' }}>
                         Waiting for data...
                     </div>
                 </Show>
@@ -378,15 +393,15 @@ const MemeColumn: Component<ColumnProps> = (props) => {
 
 // --- Main Page Component ---
 const MemePage: Component = () => {
-    const {
-        marketData: migratedMemeData,
-        connectionStatus: migratedStatus,
-        lastUpdate
-    } = useMarketData<MemeItem>('meme_migrated');
+    const [marketData, setMarketData] = createStore<T[]>([]);
+    const [alertLogs, setAlertLogs] = createStore<ServerAlertEntry[]>([]); // ✨ 升级为详细日志
+    const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
+    const [lastUpdate, setLastUpdate] = createSignal('N/A');
+    // const [blockList] = createSignal(loadBlockListFromStorage()); // Unused logic kept but commented out to fix lint
 
     // 1. 按 Liquidity 排序前 9 名 (High to Low)
     const topLiquidityTokens = createMemo(() => {
-        const sorted = migratedMemeData
+        const sorted = marketData
             .slice()
             .sort((a, b) => (b.liquidity || 0) - (a.liquidity || 0));
         return sorted.slice(0, 9);
@@ -456,24 +471,24 @@ const MemePage: Component = () => {
     return (
         <div class="meme-board-container">
             <header class="meme-header">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                    <h1>🐶 Meme Rush <span style={{ fontSize: '0.6em', color: '#999', fontWeight: 'normal' }}>KANBAN</span></h1>
+                <div style={{ display: 'flex', "align-items": 'center', gap: '15px' }}>
+                    <h1>🐶 Meme Rush <span style={{ "font-size": '0.6em', color: '#999', "font-weight": 'normal' }}>KANBAN</span></h1>
                     <nav class="nav-links" style={{ display: 'flex', gap: '10px' }}>
-                        <a href="/" class="nav-btn" style={{ textDecoration: 'none', color: '#666', fontSize: '0.9rem' }}>🔥 Hotlist</a>
-                        <span class="nav-btn active" style={{ fontWeight: 'bold', color: '#007bff', background: '#e7f1ff', padding: '4px 10px', borderRadius: '4px', fontSize: '0.9rem' }}>已发射看板</span>
+                        <a href="/" class="nav-btn" style={{ "text-decoration": 'none', color: '#666', "font-size": '0.9rem' }}>🔥 Hotlist</a>
+                        <span class="nav-btn active" style={{ "font-weight": 'bold', color: '#007bff', background: '#e7f1ff', padding: '4px 10px', "border-radius": '4px', "font-size": '0.9rem' }}>已发射看板</span>
                     </nav>
                 </div>
-                <div style={{ display: 'flex', gap: '15px', alignItems: 'center', fontSize: '0.85em', color: '#666' }}>
+                <div style={{ display: 'flex', gap: '15px', "align-items": 'center', "font-size": '0.85em', color: '#666' }}>
                     {/* ✨ 提示用户快捷键 */}
-                    <div style={{ background: '#eee', padding: '2px 6px', borderRadius: '4px', fontSize: '0.8em' }} title="Press 'H' to toggle charts">
+                    <div style={{ background: '#eee', padding: '2px 6px', "border-radius": '4px', "font-size": '0.8em' }} title="Press 'H' to toggle charts">
                         按 <b>H</b> 切换 K 线
                     </div>
                     <div>⏱ {lastUpdate()}</div>
                     <div class="status-indicator" title="Migrated Tokens Feed">
                         <span style={{
-                            display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%',
+                            display: 'inline-block', width: '8px', height: '8px', "border-radius": '50%',
                             background: migratedStatus().includes('Connected') ? '#28a745' : '#dc3545',
-                            marginRight: '4px'
+                            "margin-right": '4px'
                         }}></span>
                         {migratedStatus()}
                     </div>

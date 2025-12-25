@@ -51,7 +51,8 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
     register_kline_unsubscribe_handler(&s, state.clone());
     register_disconnect_handler(&s, state.clone());
     register_kline_history_handler(&s, state.clone());
-    register_liquidity_history_handler(&s, state);
+    register_liquidity_history_handler(&s, state.clone());
+    register_narrative_handler(&s, state);
 }
 
 
@@ -268,6 +269,59 @@ fn register_liquidity_history_handler(socket: &SocketRef, state: ServerState) {
     });
 }
 
+fn register_narrative_handler(socket: &SocketRef, state: ServerState) {
+    socket.on("request_narrative", move |s: SocketRef, Data(payload): Data<KlineSubscribePayload>| {
+        let state = state.clone();
+        async move {
+            let addr = payload.address.to_lowercase();
+            // 1. 检查缓存
+            if let Some(cached) = state.narrative_cache.get(&addr) {
+                if !cached.is_empty() && cached.as_str() != "__PENDING__" {
+                    s.emit("narrative_response", &serde_json::json!({
+                        "address": payload.address,
+                        "narrative": cached.clone()
+                    })).ok();
+                    return;
+                }
+            }
+
+            // 2. 缓存未击中，发起抓取
+            let proxy_pool = state.narrative_proxy_pool.clone();
+            let chain_lower = payload.chain.to_lowercase();
+            let cid_str = match chain_lower.as_str() {
+                "bsc" => Some("56".to_string()),
+                "sol" | "solana" => Some("CT_501".to_string()), // 假设 Solana 的叙事 ID 是这个，或者保留原始逻辑
+                "base" => Some("8453".to_string()),
+                _ => get_chain_id(&chain_lower).map(|id| id.to_string()),
+            };
+
+            if let Some(cid) = cid_str {
+                let cache = state.narrative_cache.clone();
+                let address_to_fetch = payload.address.clone();
+                
+                tokio::spawn(async move {
+                    let (_idx, client) = proxy_pool.get_client().await;
+                    match fetch_narrative(&client, &address_to_fetch, &cid).await {
+                        Ok(Some(t)) => {
+                            cache.insert(address_to_fetch.to_lowercase(), t.clone());
+                            s.emit("narrative_response", &serde_json::json!({
+                                "address": address_to_fetch,
+                                "narrative": t
+                            })).ok();
+                        }
+                        Ok(None) => {
+                            cache.insert(address_to_fetch.to_lowercase(), "".into());
+                        }
+                        Err(e) => {
+                            warn!("❌ [Narrative Request ERR] {}: {}", address_to_fetch, e);
+                        }
+                    }
+                });
+            }
+        }
+    });
+}
+
 // ✨✨✨ 核心更新：匹配新的 DataPayload 枚举 ✨✨✨
 fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
     socket.on("data-update", move |s: SocketRef, payload: Data<serde_json::Value>| {
@@ -355,7 +409,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             // }
 
                             // 🔥 调用泛型 Enrich 函数 (MemeScanItem 实现了 NarrativeEntity)
-                            enrich_any_data(data, &state).await;
+                            // enrich_any_data(data, &state).await;
                             
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🐶 [MEME RUSH] Act: {:?} | Count: {}", r#type, data.len());
@@ -391,7 +445,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             // }
 
                             // 🔥 调用泛型 Enrich 函数
-                            enrich_any_data(data, &state).await;
+                            // enrich_any_data(data, &state).await;
                             
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🚀 [MEME MIGRATED] Act: {:?} | Count: {}", r#type, data.len());

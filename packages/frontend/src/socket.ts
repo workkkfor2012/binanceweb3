@@ -1,8 +1,8 @@
 // packages/frontend/src/socket.ts
 import { io, Socket } from 'socket.io-client';
 
-const CORE_BACKEND_URL = 'https://115.190.227.163:30001';
-const MARKET_BACKEND_URL = 'http://localhost:30003';
+export const CORE_BACKEND_URL = 'https://115.190.227.163:30001';
+export const MARKET_BACKEND_URL = 'http://localhost:30003';
 
 // 云端核心 Socket (Hotlist, Meme, 报警)
 export const coreSocket: Socket = io(CORE_BACKEND_URL, {

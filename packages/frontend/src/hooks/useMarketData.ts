@@ -1,10 +1,10 @@
 // packages/frontend/src/hooks/useMarketData.ts
 import { createSignal, onMount, onCleanup } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
-import { coreSocket } from '../socket';
+import { coreSocket, marketSocket } from '../socket.js';
 // ✨ 引用路径统一：从 local types (其内部 re-export 了 shared-types)
-import type { MarketItem, MemeItem, LocalDataPayload, AlertLogEntry as ServerAlertEntry } from '../types';
-import { speak } from '../AlertManager';
+import type { MarketItem, MemeItem, LocalDataPayload, AlertLogEntry as ServerAlertEntry } from '../types.js';
+import { speak } from '../AlertManager.js';
 
 const loadBlockListFromStorage = (): Set<string> => {
     try {
@@ -118,11 +118,22 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
             }));
         };
 
+        // 🔥 新增：监听本地后端返回的叙事数据
+        const onNarrativeResponse = (data: { address: string; narrative: string }) => {
+            setMarketData(produce((currentData: T[]) => {
+                const index = currentData.findIndex(d => d.contractAddress === data.address);
+                if (index > -1) {
+                    (currentData[index] as any).narrative = data.narrative;
+                }
+            }));
+        };
+
         coreSocket.on('connect', onConnect);
         coreSocket.on('disconnect', onDisconnect);
         coreSocket.on('data-broadcast', onDataBroadcast as any);
         coreSocket.on('alert_history', onAlertHistory);
         coreSocket.on('alert_update', onAlertUpdate);
+        marketSocket.on('narrative_response', onNarrativeResponse);
 
         if (coreSocket.connected) {
             onConnect();
@@ -138,6 +149,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
             coreSocket.off('data-broadcast', onDataBroadcast);
             coreSocket.off('alert_history', onAlertHistory);
             coreSocket.off('alert_update', onAlertUpdate);
+            marketSocket.off('narrative_response', onNarrativeResponse);
         });
     });
 

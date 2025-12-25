@@ -1,6 +1,6 @@
 // packages/backend/src/bin/market.rs
-use backend::{init_tracing, setup_shared_state, socket_handlers};
-use axum::Router;
+use backend::{init_tracing, setup_shared_state, socket_handlers, http_handlers};
+use axum::{routing::get, Router};
 use socketioxide::SocketIo;
 use std::sync::Arc;
 use tracing::info;
@@ -25,6 +25,7 @@ async fn main() {
     });
 
     let app = Router::new()
+        .route("/image-proxy", get(http_handlers::image_proxy_handler))
         .with_state(server_state)
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .layer(layer);
