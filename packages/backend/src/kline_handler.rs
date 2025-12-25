@@ -51,6 +51,17 @@ pub async fn init_db(pool: &SqlitePool) -> Result<()> {
     .await?;
     info!("🗃️ 'liquidity_history_1m' table is ready.");
 
+    // ✨ 新增：黑名单表 (带时间戳以支持 TTL 清理)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS blacklist (
+            contract_address TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL
+        )"
+    )
+    .execute(pool)
+    .await?;
+    info!("🗃️ 'blacklist' table is ready.");
+
     Ok(())
 }
 
@@ -556,4 +567,41 @@ impl sqlx::FromRow<'_, SqliteRow> for KlineTick {
             open: row.try_get("open")?, high: row.try_get("high")?, low: row.try_get("low")?, close: row.try_get("close")?, volume: row.try_get("volume")?,
         })
     }
+}
+/// 获取全量黑名单
+pub async fn get_blacklist(pool: &SqlitePool) -> Result<Vec<String>> {
+    let rows = sqlx::query("SELECT contract_address FROM blacklist")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|r| r.get(0)).collect())
+}
+
+/// 添加到黑名单
+pub async fn add_to_blacklist(pool: &SqlitePool, address: &str) -> Result<()> {
+    let now = Utc::now().timestamp();
+    sqlx::query("INSERT OR REPLACE INTO blacklist (contract_address, created_at) VALUES (?, ?)")
+        .bind(address.to_lowercase())
+        .bind(now)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 从黑名单移除
+pub async fn remove_from_blacklist(pool: &SqlitePool, address: &str) -> Result<()> {
+    sqlx::query("DELETE FROM blacklist WHERE contract_address = ?")
+        .bind(address.to_lowercase())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 清理过期的黑名单记录
+pub async fn prune_blacklist(pool: &SqlitePool, max_age_secs: i64) -> Result<u64> {
+    let cutoff = Utc::now().timestamp() - max_age_secs;
+    let result = sqlx::query("DELETE FROM blacklist WHERE created_at < ?")
+        .bind(cutoff)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
 }

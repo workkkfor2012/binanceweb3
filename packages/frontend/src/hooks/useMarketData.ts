@@ -6,16 +6,7 @@ import { coreSocket, marketSocket } from '../socket.js';
 import type { MarketItem, MemeItem, LocalDataPayload, AlertLogEntry as ServerAlertEntry } from '../types.js';
 import { speak } from '../AlertManager.js';
 
-const loadBlockListFromStorage = (): Set<string> => {
-    try {
-        const storedList = localStorage.getItem('trading-dashboard-blocklist');
-        if (storedList) {
-            const parsedArray = JSON.parse(storedList);
-            if (Array.isArray(parsedArray)) return new Set(parsedArray);
-        }
-    } catch (error) { console.error('[Blocklist] Failed to load:', error); }
-    return new Set();
-};
+// ✨ 不再使用 localStorage，改由后端同步
 
 
 
@@ -27,7 +18,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
     const [alertLogs, setAlertLogs] = createStore<ServerAlertEntry[]>([]); // ✨ 升级为详细日志
     const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
     const [lastUpdate, setLastUpdate] = createSignal('N/A');
-    const [blockList] = createSignal(loadBlockListFromStorage());
+    const [blacklist, setBlacklist] = createSignal<Set<string>>(new Set());
 
     onMount(() => {
         console.log(`[useMarketData] 🔌 Initializing hook for category: ${targetCategory}`);
@@ -128,11 +119,32 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
             }));
         };
 
+        // ✨ 新增：监听服务器推送的黑名单
+        const onBlacklistInit = (list: string[]) => {
+            console.log(`[Blacklist] 🚫 Initialized with ${list.length} entries`);
+            setBlacklist(new Set(list));
+        };
+
+        const onBlacklistUpdate = (update: { action: 'add' | 'remove', address: string }) => {
+            console.log(`[Blacklist] 🔄 Update: ${update.action} ${update.address}`);
+            setBlacklist(prev => {
+                const next = new Set(prev);
+                if (update.action === 'add') {
+                    next.add(update.address);
+                } else {
+                    next.delete(update.address);
+                }
+                return next;
+            });
+        };
+
         coreSocket.on('connect', onConnect);
         coreSocket.on('disconnect', onDisconnect);
         coreSocket.on('data-broadcast', onDataBroadcast as any);
         coreSocket.on('alert_history', onAlertHistory);
         coreSocket.on('alert_update', onAlertUpdate);
+        coreSocket.on('blacklist_init', onBlacklistInit);
+        coreSocket.on('blacklist_update', onBlacklistUpdate);
         marketSocket.on('narrative_response', onNarrativeResponse);
 
         if (coreSocket.connected) {
@@ -149,6 +161,8 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
             coreSocket.off('data-broadcast', onDataBroadcast);
             coreSocket.off('alert_history', onAlertHistory);
             coreSocket.off('alert_update', onAlertUpdate);
+            coreSocket.off('blacklist_init', onBlacklistInit);
+            coreSocket.off('blacklist_update', onBlacklistUpdate);
             marketSocket.off('narrative_response', onNarrativeResponse);
         });
     });
@@ -156,6 +170,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
     return {
         marketData,
         alertLogs, // ✨ 返回详细日志
+        blacklist, // ✨ 返回同步后的黑名单
         connectionStatus,
         lastUpdate
     };

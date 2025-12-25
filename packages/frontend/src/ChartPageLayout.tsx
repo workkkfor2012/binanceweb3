@@ -1,49 +1,33 @@
 // packages/frontend/src/ChartPageLayout.tsx
 import { Component, createSignal, onMount, onCleanup, createMemo, Show } from 'solid-js';
 import type { MarketItem } from 'shared-types';
-import CompactRankingListsContainer from './CompactRankingListsContainer';
-import MultiChartGrid from './MultiChartGrid';
-import SingleTokenView from './SingleTokenView';
-import { initializeVoices } from './AlertManager';
-import { PRESET_THEMES } from './themes';
-import { useMarketData } from './hooks/useMarketData'; // ✨ 引入 Hook
+import CompactRankingListsContainer from './CompactRankingListsContainer.jsx';
+import MultiChartGrid from './MultiChartGrid.jsx';
+import SingleTokenView from './SingleTokenView.jsx';
+import { initializeVoices } from './AlertManager.js';
+import { PRESET_THEMES } from './themes.js';
+import { useMarketData } from './hooks/useMarketData.js'; // ✨ 引入 Hook
 
 export interface ViewportState {
   from: number;
   to: number;
 }
 
-const BLOCKLIST_STORAGE_KEY = 'trading-dashboard-blocklist';
+// ✨ 不再使用 localStorage，改由后端同步
 
 const TIMEFRAME_MAP: Record<string, string> = {
   '1': '1m', '2': '5m', '3': '1h', '4': '4h', '5': '1d',
 };
 export const ALL_TIMEFRAMES = Object.values(TIMEFRAME_MAP);
 
-const loadBlockListFromStorage = (): Set<string> => {
-  try {
-    const storedList = localStorage.getItem(BLOCKLIST_STORAGE_KEY);
-    if (storedList) {
-      const parsedArray = JSON.parse(storedList);
-      if (Array.isArray(parsedArray)) return new Set(parsedArray);
-    }
-  } catch (error) { console.error('[Blocklist] Failed to load blocklist:', error); }
-  return new Set();
-};
-
-const saveBlockListToStorage = (blockList: Set<string>): void => {
-  try {
-    localStorage.setItem(BLOCKLIST_STORAGE_KEY, JSON.stringify(Array.from(blockList)));
-  } catch (error) { console.error('[Blocklist] Failed to save blocklist:', error); }
-};
+// ✨ 已迁移至 useMarketData
 
 const ChartPageLayout: Component = () => {
-  // ✨ 修复：显式传入 'hotlist' 作为分类，并对接详细报警日志
-  const { marketData, alertLogs, connectionStatus, lastUpdate } = useMarketData('hotlist');
+  // ✨ 修复：显式传入 'hotlist' 作为分类，并对接详细报警日志和黑名单
+  const { marketData, alertLogs, blacklist, connectionStatus, lastUpdate } = useMarketData('hotlist');
 
   // UI 状态
-  const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('priceChange5m');
-  const [blockList, setBlockList] = createSignal(loadBlockListFromStorage());
+  const [activeRankBy, setActiveRankBy] = createSignal<keyof MarketItem | null>('priceChange5m' as keyof MarketItem);
   const [activeTimeframe, setActiveTimeframe] = createSignal(ALL_TIMEFRAMES[0]);
 
   // 视图与焦点状态
@@ -101,15 +85,15 @@ const ChartPageLayout: Component = () => {
   });
 
   const handleBlockToken = (contractAddress: string) => {
-    const newBlockList = new Set(blockList());
-    newBlockList.add(contractAddress);
-    setBlockList(newBlockList);
-    saveBlockListToStorage(newBlockList);
+    // ✨ 发送给后端处理，后端会广播给所有客户端同步
+    import('./socket').then(({ coreSocket }) => {
+      coreSocket.emit('block_token', contractAddress);
+    });
   };
 
   const rankedTokensForGrid = createMemo(() => {
     const rankBy = activeRankBy();
-    const blocked = blockList();
+    const blocked = blacklist();
     if (!rankBy) return [];
 
     const top9 = [...marketData]
@@ -197,7 +181,7 @@ const ChartPageLayout: Component = () => {
           alertLogs={alertLogs} // ✨ 传入报警日志
           lastUpdate={lastUpdate()}
           onHeaderClick={handleRankingHeaderClick}
-          blockList={blockList()}
+          blockList={blacklist()}
           onItemClick={handleRankingItemClick}
           theme={currentTheme()}
         />

@@ -158,7 +158,10 @@ const RawDataList: Component<RawDataListProps> = (props) => {
 }
 
 // ✨ 新增：报警日志列表组件
-const AlertLogList: Component<{ logs: AlertLogEntry[], theme: ChartTheme }> = (props) => {
+// ✨ 新增：报警日志列表组件
+const AlertLogList: Component<{ logs: AlertLogEntry[], blockList: Set<string>, theme: ChartTheme }> = (props) => {
+    const filteredLogs = createMemo(() => props.logs.filter(log => !props.blockList.has(log.contractAddress)));
+
     return (
         <div class="compact-ranking-list alert-log-section" style={{ "height": "100%", "display": "flex", "flex-direction": "column" }}>
             <h3 style={{
@@ -172,7 +175,7 @@ const AlertLogList: Component<{ logs: AlertLogEntry[], theme: ChartTheme }> = (p
                 <span style={{ "font-size": "0.7em", opacity: 0.5 }}>LIFO</span>
             </h3>
             <div style={{ "flex": "1", "overflow-y": "auto", "font-family": "monospace", "font-size": "11px" }}>
-                <For each={props.logs} fallback={<div style={{ padding: "10px", opacity: 0.3 }}>暂无报警...</div>}>
+                <For each={filteredLogs()} fallback={<div style={{ padding: "10px", opacity: 0.3 }}>暂无报警...</div>}>
                     {(log) => (
                         <div style={{
                             "padding": "4px 2px",
@@ -260,6 +263,7 @@ const CompactRankingListsContainer: Component<ContainerProps> = (props) => {
                     <div style={{ flex: '4', "margin-top": "15px", "border-top": `2px solid ${props.theme.grid.horzLines}`, "padding-top": "10px", overflow: 'hidden' }}>
                         <AlertLogList
                             logs={props.alertLogs}
+                            blockList={props.blockList}
                             theme={props.theme}
                         />
                     </div>

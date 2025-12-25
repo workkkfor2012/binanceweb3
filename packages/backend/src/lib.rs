@@ -40,6 +40,8 @@ pub struct ServerState {
     pub alert_history: Arc<Mutex<VecDeque<types::AlertLogEntry>>>,
     /// 报警冷却映射
     pub alert_cooldowns: Arc<DashMap<String, i64>>,
+    /// ✨ 全局黑名单 (合约地址)
+    pub blacklist: Arc<dashmap::DashSet<String>>,
 }
 
 pub fn init_tracing() {
@@ -87,8 +89,17 @@ pub async fn setup_shared_state(config: Arc<Config>, io: SocketIo) -> ServerStat
     let token_managers = state::new_token_manager_map();
     let alert_history = Arc::new(Mutex::new(VecDeque::with_capacity(50)));
     let alert_cooldowns = Arc::new(DashMap::new());
+    let blacklist = Arc::new(dashmap::DashSet::new());
 
-    ServerState {
+    // ✨ 加载初始黑名单
+    if let Ok(list) = kline_handler::get_blacklist(&db_pool).await {
+        for addr in list {
+            blacklist.insert(addr);
+        }
+        info!("🚫 [Blacklist] Loaded {} entries from DB", blacklist.len());
+    }
+
+    let state = ServerState {
         app_state,
         room_index,
         config,
@@ -102,5 +113,33 @@ pub async fn setup_shared_state(config: Arc<Config>, io: SocketIo) -> ServerStat
         token_managers,
         alert_history,
         alert_cooldowns,
-    }
+        blacklist: blacklist.clone(),
+    };
+
+    // ✨ 启动黑名单 TTL 清理任务 (每小时运行一次，24小时过期)
+    let db_pool_for_prune = state.db_pool.clone();
+    let blacklist_for_prune = state.blacklist.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            match kline_handler::prune_blacklist(&db_pool_for_prune, 24 * 3600).await {
+                Ok(count) => {
+                    if count > 0 {
+                        info!("🧹 [Blacklist Prune] Removed {} expired entries", count);
+                        // 同步刷新内存缓存
+                        if let Ok(list) = kline_handler::get_blacklist(&db_pool_for_prune).await {
+                            blacklist_for_prune.clear();
+                            for addr in list {
+                                blacklist_for_prune.insert(addr);
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("❌ [Blacklist Prune ERR] {}", e),
+            }
+        }
+    });
+
+    state
 }

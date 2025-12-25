@@ -26,6 +26,12 @@ pub async fn check_and_trigger_alerts(
     for item in items {
         let chain = &item.chain;
         let addr = &item.contract_address;
+        
+        // ✨ 新增：黑名单过滤 (不发送屏蔽品种的报警)
+        if state.blacklist.contains(&addr.to_lowercase()) {
+            continue;
+        }
+
         let symbol = &item.symbol;
         let price = item.price.unwrap_or(0.0);
         

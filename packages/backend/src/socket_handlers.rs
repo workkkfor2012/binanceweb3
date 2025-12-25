@@ -46,13 +46,55 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
         }
     }
 
+    // ✨ 新增：推送全量黑名单给新连接的客户端
+    {
+        let blacklist_vec: Vec<String> = state.blacklist.iter().map(|item| item.key().clone()).collect();
+        s.emit("blacklist_init", &blacklist_vec).ok();
+        info!("🚫 [Blacklist] Sent {} entries to {}", blacklist_vec.len(), s.id);
+    }
+
     register_data_update_handler(&s, state.clone());
     register_kline_subscribe_handler(&s, state.clone());
     register_kline_unsubscribe_handler(&s, state.clone());
     register_disconnect_handler(&s, state.clone());
     register_kline_history_handler(&s, state.clone());
     register_liquidity_history_handler(&s, state.clone());
-    register_narrative_handler(&s, state);
+    register_narrative_handler(&s, state.clone());
+    register_blacklist_handlers(&s, state);
+}
+
+fn register_blacklist_handlers(socket: &SocketRef, state: ServerState) {
+    // 屏蔽品种
+    socket.on("block_token", move |s: SocketRef, Data(address): Data<String>| {
+        let state = state.clone();
+        async move {
+            let addr_lower = address.to_lowercase();
+            info!("🚫 [Blacklist:ADD] Client {} blocked: {}", s.id, addr_lower);
+            if let Err(e) = crate::kline_handler::add_to_blacklist(&state.db_pool, &addr_lower).await {
+                error!("❌ [DB ERR] Failed to add to blacklist: {}", e);
+                return;
+            }
+            state.blacklist.insert(addr_lower.clone());
+            // 广播通知所有人同步
+            state.io.emit("blacklist_update", &serde_json::json!({ "action": "add", "address": addr_lower })).ok();
+        }
+    });
+
+    // 取消屏蔽品种
+    socket.on("unblock_token", move |s: SocketRef, Data(address): Data<String>| {
+        let state = state.clone();
+        async move {
+            let addr_lower = address.to_lowercase();
+            info!("♻️ [Blacklist:REMOVE] Client {} unblocked: {}", s.id, addr_lower);
+            if let Err(e) = crate::kline_handler::remove_from_blacklist(&state.db_pool, &addr_lower).await {
+                error!("❌ [DB ERR] Failed to remove from blacklist: {}", e);
+                return;
+            }
+            state.blacklist.remove(&addr_lower);
+            // 广播通知所有人同步
+            state.io.emit("blacklist_update", &serde_json::json!({ "action": "remove", "address": addr_lower })).ok();
+        }
+    });
 }
 
 
@@ -368,6 +410,10 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                     amount_ok && time_ok && liquidity_ok
                                 });
                             }
+
+                            // ✨ Stage 2: 黑名单过滤 (手动过滤)
+                            data.retain(|item| !state.blacklist.contains(&item.contract_address.to_lowercase()));
+
                             should_broadcast = !data.is_empty();
                             //log_summary = format!("🔥 [HOTLIST] Act: {:?} | Count: {}", r#type, data.len());
                             
@@ -400,7 +446,8 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                 });
                             }
 
-                            data.retain(|item| !item.symbol.is_empty());
+                            // ✨ Stage 2: 黑名单过滤
+                            data.retain(|item| !item.symbol.is_empty() && !state.blacklist.contains(&item.contract_address.to_lowercase()));
                             
                             
                             // 🔥 Debug Logic: 打印收到的 Meme 完整信息
@@ -436,7 +483,8 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                                 });
                             }
 
-                            data.retain(|item| !item.symbol.is_empty());
+                            // ✨ Stage 2: 黑名单过滤
+                            data.retain(|item| !item.symbol.is_empty() && !state.blacklist.contains(&item.contract_address.to_lowercase()));
                             
                             
                             // 🔥 Debug Logic: 打印收到的 MemeMigrated 完整信息
