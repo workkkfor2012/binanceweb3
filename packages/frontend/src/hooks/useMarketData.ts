@@ -131,6 +131,21 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
                 const next = new Set(prev);
                 if (update.action === 'add') {
                     next.add(update.address);
+
+                    // ✨ 响应式处理：立即从数据列表中剔除
+                    setMarketData(produce((currentData: T[]) => {
+                        const index = currentData.findIndex(d => d.contractAddress === update.address);
+                        if (index > -1) currentData.splice(index, 1);
+                    }));
+
+                    setAlertLogs(produce((logs) => {
+                        // 过滤掉该合约的所有报警
+                        const filtered = logs.filter(l => l.contractAddress !== update.address);
+                        if (filtered.length !== logs.length) {
+                            logs.length = 0;
+                            logs.push(...filtered);
+                        }
+                    }));
                 } else {
                     next.delete(update.address);
                 }
