@@ -70,13 +70,14 @@ fn register_blacklist_handlers(socket: &SocketRef, state: ServerState) {
         let state = s_add.clone();
         async move {
             let addr_lower = address.to_lowercase();
-            tracing::info!("🚫 [Blacklist:ADD] Client {} blocked: {}", s.id, addr_lower);
+            tracing::info!("🚫 [Blacklist:EVENT] Received block_token for {} from client {}", addr_lower, s.id);
             if let Err(e) = crate::kline_handler::add_to_blacklist(&state.db_pool, &addr_lower).await {
                 tracing::error!("❌ [DB ERR] Failed to add to blacklist: {}", e);
                 return;
             }
             state.blacklist.insert(addr_lower.clone());
             // 广播通知所有人同步
+            tracing::info!("📡 [Blacklist:BROADCAST] Notifying all clients about blocked token: {}", addr_lower);
             state.io.emit("blacklist_update", &serde_json::json!({ "action": "add", "address": addr_lower })).await.ok();
         }
     });
@@ -87,13 +88,14 @@ fn register_blacklist_handlers(socket: &SocketRef, state: ServerState) {
         let state = s_rem.clone();
         async move {
             let addr_lower = address.to_lowercase();
-            tracing::info!("♻️ [Blacklist:REMOVE] Client {} unblocked: {}", s.id, addr_lower);
+            tracing::info!("♻️ [Blacklist:EVENT] Received unblock_token for {} from client {}", addr_lower, s.id);
             if let Err(e) = crate::kline_handler::remove_from_blacklist(&state.db_pool, &addr_lower).await {
                 tracing::error!("❌ [DB ERR] Failed to remove from blacklist: {}", e);
                 return;
             }
             state.blacklist.remove(&addr_lower);
             // 广播通知所有人同步
+            tracing::info!("📡 [Blacklist:BROADCAST] Notifying all clients about unblocked token: {}", addr_lower);
             state.io.emit("blacklist_update", &serde_json::json!({ "action": "remove", "address": addr_lower })).await.ok();
         }
     });

@@ -85,8 +85,10 @@ const ChartPageLayout: Component = () => {
   });
 
   const handleBlockToken = (contractAddress: string) => {
+    console.log(`[Shield] 🛡️ Shield button clicked for: ${contractAddress}`);
     // ✨ 发送给后端处理，后端会广播给所有客户端同步
-    import('./socket').then(({ coreSocket }) => {
+    import('./socket.js').then(({ coreSocket }) => {
+      console.log(`[Shield] 📤 Emitting block_token to CoreSocket: ${contractAddress}`);
       coreSocket.emit('block_token', contractAddress);
     });
   };
