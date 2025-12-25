@@ -17,8 +17,8 @@ use flate2::read::GzDecoder;
 use std::io::Read;
 
 const ENABLE_FILTERING: bool = true;
-const MIN_HOTLIST_AMOUNT: f64 = 10000.0;
-const MIN_HOTLIST_LIQUIDITY: f64 = 30000.0;
+const MIN_HOTLIST_AMOUNT: f64 = 1000.0;
+const MIN_HOTLIST_LIQUIDITY: f64 = 10000.0;
 const NARRATIVE_API_URL: &str = "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/token/ai/narrative/query";
 const LAZY_UNSUBSCRIBE_DELAY: u64 = 60;
 // Helper to normalize address based on chain/pool_id
@@ -357,7 +357,7 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             if ENABLE_FILTERING {
                                 // 过滤逻辑
                                 let now = Utc::now().timestamp_millis();
-                                let thirty_mins_ms = 60 * 60 * 1000;
+                                let thirty_mins_ms = 30 * 60 * 1000;
                                 data.retain(|item| {
                                     let amount_ok = (item.volume24h.unwrap_or(0.0) * item.price.unwrap_or(0.0)) >= MIN_HOTLIST_AMOUNT;
                                     let time_ok = match item.create_time {

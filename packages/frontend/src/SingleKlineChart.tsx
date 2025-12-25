@@ -326,7 +326,8 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
             if (!myAddr) return;
             const item = (p.data as HotlistItem[]).find(d => d.contractAddress?.toLowerCase() === myAddr);
             if (item?.liquidity !== undefined && item.liquidity !== null && liquiditySeries) {
-                const intervalSec = getIntervalSeconds(props.timeframe);
+                // 始终对齐到 1 分钟，与后端存储粒度一致
+                const intervalSec = 60;
                 const timeBucket = (Math.floor(Date.now() / 1000 / intervalSec) * intervalSec) as unknown as Time;
                 const dataList = liquiditySeries.data();
                 if (dataList.length > 0 && (timeBucket as unknown as number) < (dataList[dataList.length - 1].time as unknown as number)) return;

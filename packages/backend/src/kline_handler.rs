@@ -108,7 +108,8 @@ pub async fn handle_liquidity_request(
     Data(payload): Data<KlineSubscribePayload>,
     state: ServerState,
 ) {
-    if let Ok(history) = query_liquidity_history(&state.db_pool, &payload.address).await {
+    // 使用聚合查询，根据前端请求的 interval 返回对应周期的流动性数据
+    if let Ok(history) = query_liquidity_history_aggregated(&state.db_pool, &payload.address, &payload.interval).await {
         let resp = KlineHistoryResponse {
             address: payload.address.clone(),
             chain: payload.chain.clone(),
@@ -390,6 +391,57 @@ pub async fn query_liquidity_history(
     .fetch_all(pool)
     .await
     .context("查询流动性历史失败")
+}
+
+/// 查询流动性历史并聚合到指定周期
+/// 取每个周期内最后一个 1 分钟桶的值（收盘值语义）
+pub async fn query_liquidity_history_aggregated(
+    pool: &SqlitePool,
+    address: &str,
+    interval: &str, // "1m", "5m", "15m", "1h"
+) -> Result<Vec<LiquidityPoint>> {
+    let interval_secs: i64 = match interval {
+        "5m" => 300,
+        "15m" => 900,
+        "1h" => 3600,
+        _ => 60, // 默认 1 分钟，无需聚合
+    };
+
+    let addr_lower = address.to_lowercase();
+    info!("📊 [LIQUIDITY QUERY] 地址={}, 周期={}, 聚合秒数={}", addr_lower, interval, interval_secs);
+
+    // 如果是 1 分钟，直接调用原函数
+    if interval_secs == 60 {
+        return query_liquidity_history(pool, address).await;
+    }
+
+    // 使用窗口函数取每个聚合桶内 time_bucket 最大的记录
+    // 先按聚合桶分组，取每组最后一条，然后外层升序排列
+    let rows = sqlx::query_as::<_, LiquidityPoint>(
+        r#"
+        SELECT 
+            (time_bucket / ?1) * ?1 AS time_bucket,
+            value
+        FROM liquidity_history_1m AS outer_t
+        WHERE address = ?2
+          AND time_bucket = (
+              SELECT MAX(inner_t.time_bucket)
+              FROM liquidity_history_1m AS inner_t
+              WHERE inner_t.address = outer_t.address
+                AND (inner_t.time_bucket / ?1) = (outer_t.time_bucket / ?1)
+          )
+        ORDER BY time_bucket ASC
+        LIMIT 500
+        "#
+    )
+    .bind(interval_secs)
+    .bind(&addr_lower)
+    .fetch_all(pool)
+    .await
+    .context("查询聚合流动性历史失败")?;
+
+    info!("📊 [LIQUIDITY QUERY] 返回 {} 条聚合记录", rows.len());
+    Ok(rows)
 }
 
 /// 清理 24 小时前的流动性历史数据
