@@ -11,13 +11,14 @@ import {
     LineSeries,
     HistogramSeries,
     MouseEventParams,
-    HistogramData
+    HistogramData,
+    LineData
 } from 'lightweight-charts';
-import { coreSocket, marketSocket } from "./socket.js";
+import { coreSocket, marketSocket, MARKET_BACKEND_URL } from "./socket.js";
 import type { KlineUpdatePayload, KlineFetchErrorPayload, KlineTick } from './types.js';
-import type { MarketItem, HotlistItem } from 'shared-types';
+import type { MarketItem, HotlistItem } from './types.js'; // 修正路径
 import { ViewportState } from './ChartPageLayout.jsx';
-import { chartThemes, ChartTheme } from './themes.js';
+import { ChartTheme } from './themes.js';
 import {
     getIntervalSeconds,
     formatTimeInChina,
@@ -26,7 +27,7 @@ import {
     getAdaptivePriceFormat
 } from "./utils.js";
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = MARKET_BACKEND_URL;
 
 // --- 配置区 ---
 const FORCE_GHOST_CANDLE_COUNT = 1000;
@@ -176,12 +177,12 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
         if (!info || !timeframe) { cleanupChart(); setStatus('No token selected.'); return; }
         cleanupChart(); setStatus(`Loading ${info.symbol}...`);
 
-        // Wait till container is available
         if (!chartContainer) return;
+        const container = chartContainer;
 
         try {
-            chart = createChart(chartContainer, {
-                width: chartContainer.clientWidth, height: chartContainer.clientHeight,
+            chart = createChart(container, {
+                width: container.clientWidth, height: container.clientHeight,
                 layout: { background: { type: ColorType.Solid, color: t.layout.background }, textColor: t.layout.textColor },
                 grid: { vertLines: { color: t.grid.vertLines }, horzLines: { color: t.grid.horzLines } },
                 localization: {
@@ -202,7 +203,7 @@ const SingleKlineChart: Component<SingleKlineChartProps> = (props) => {
                 crosshair: { mode: 1 },
             });
 
-            ghostSeries = chart.addSeries(LineSeries, { color: 'transparent', lineWidth: 0, priceScaleId: 'ghost', crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+            ghostSeries = chart.addSeries(LineSeries, { color: 'transparent', lineWidth: 0 as any, priceScaleId: 'ghost', crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
             chart.priceScale('ghost').applyOptions({ visible: false });
             ghostSeries.setData(generateGhostData(timeframe));
 

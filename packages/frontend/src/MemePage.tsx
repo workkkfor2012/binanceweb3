@@ -189,7 +189,6 @@ const MemeCard: Component<MemeCardProps> = (props) => {
                 <div class="card-info-col">
                     {/* Row 1: Symbol, Name, Flags | Speed, Time */}
                     <div style={{ display: 'flex', "justify-content": 'space-between', "align-items": 'center' }}>
-
                         {/* 左侧信息组：Symbol + AD + Name (截断) */}
                         <div style={{ display: 'flex', "align-items": 'center', gap: '6px', overflow: 'hidden', flex: '1', "padding-right": '8px' }}>
                             {/* Symbol */}
@@ -393,17 +392,19 @@ const MemeColumn: Component<ColumnProps> = (props) => {
 
 // --- Main Page Component ---
 const MemePage: Component = () => {
-    const [marketData, setMarketData] = createStore<T[]>([]);
-    const [alertLogs, setAlertLogs] = createStore<ServerAlertEntry[]>([]); // ✨ 升级为详细日志
-    const [connectionStatus, setConnectionStatus] = createSignal('Connecting...');
-    const [lastUpdate, setLastUpdate] = createSignal('N/A');
+    const {
+        marketData: migratedMemeData,
+        connectionStatus: migratedStatus,
+        lastUpdate
+    } = useMarketData<MemeItem>('meme_migrated');
+
     // const [blockList] = createSignal(loadBlockListFromStorage()); // Unused logic kept but commented out to fix lint
 
     // 1. 按 Liquidity 排序前 9 名 (High to Low)
     const topLiquidityTokens = createMemo(() => {
-        const sorted = marketData
+        const sorted = migratedMemeData
             .slice()
-            .sort((a, b) => (b.liquidity || 0) - (a.liquidity || 0));
+            .sort((a: any, b: any) => (b.liquidity || 0) - (a.liquidity || 0));
         return sorted.slice(0, 9);
     });
 
@@ -411,7 +412,7 @@ const MemePage: Component = () => {
     const recentTokens = createMemo(() => {
         const sorted = migratedMemeData
             .slice()
-            .sort((a, b) => (b.migrateTime || 0) - (a.migrateTime || 0));
+            .sort((a: any, b: any) => (b.migrateTime || 0) - (a.migrateTime || 0));
 
         if (sorted.length > 0) {
             console.log(`[MemePage] 🦋 Newest Token: ${sorted[0].symbol}, Migrated At: ${new Date(sorted[0].migrateTime!).toLocaleTimeString()}`);
