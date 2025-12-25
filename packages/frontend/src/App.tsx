@@ -1,9 +1,11 @@
+```
 // packages/frontend/src/App.tsx
 import { createSignal, onMount, For, Component, JSX, createMemo } from 'solid-js';
-import type { MarketItem, HotlistItem } from './types'; // 引入修正后的类型
-import { useMarketData } from './hooks/useMarketData';
+import type { MarketItem, HotlistItem } from './types.js';
+import { useMarketData } from './hooks/useMarketData.js';
 
-const BACKEND_URL = 'https://localhost:3001';
+import { MARKET_BACKEND_URL, CORE_BACKEND_URL } from './socket.js';
+const CONFIG_API_URL = CORE_BACKEND_URL.includes('115.') ? CORE_BACKEND_URL.replace(':30001', ':3001') : 'http://localhost:3001'; 
 const CHAINS = ['BSC', 'Base', 'Solana'];
 
 // --- 辅助函数区 ---
@@ -38,14 +40,14 @@ const formatPercentage = (change: string | number | null | undefined): JSX.Eleme
   if (change === null || change === undefined) return <span class="na">N/A</span>;
   const value = parseFloat(String(change));
   const changeClass = value >= 0 ? 'positive' : 'negative';
-  return <span class={changeClass}>{`${value.toFixed(2)}%`}</span>;
+  return <span class={changeClass}>{`${ value.toFixed(2) }% `}</span>;
 };
 
 const formatVolumeOrMarketCap = (num: number | null | undefined): string => {
   if (num === null || num === undefined) return 'N/A';
-  if (num > 1_000_000) return `$${(num / 1_000_000).toFixed(2)}M`;
-  if (num > 1_000) return `$${(num / 1_000).toFixed(2)}K`;
-  return `$${num.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  if (num > 1_000_000) return `$${ (num / 1_000_000).toFixed(2) } M`;
+  if (num > 1_000) return `$${ (num / 1_000).toFixed(2) } K`;
+  return `$${ num.toLocaleString('en-US', { maximumFractionDigits: 0 }) } `;
 };
 
 // --- 排行榜组件 ---
@@ -96,45 +98,45 @@ interface MarketRowProps {
 }
 const MarketRow: Component<MarketRowProps> = (props) => {
   const { item } = props;
-  const proxiedIconUrl = () => item.icon ? `${BACKEND_URL}/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
+  const proxiedIconUrl = () => item.icon ? `${ MARKET_BACKEND_URL }/image-proxy?url=${encodeURIComponent(item.icon)}` : '';
 
-  const handleRowClick = () => {
-    window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
-  };
+const handleRowClick = () => {
+  window.open(`/token.html?address=${item.contractAddress}&chain=${item.chain}`, '_blank');
+};
 
-  // 辅助函数：安全获取 HotlistItem 独有的可选字段
-  // 因为 MemeItem 没有这些字段，直接访问会报错
-  const getHotlistField = (field: keyof HotlistItem) => {
-    if (item.source === 'hotlist') {
-      return (item as HotlistItem)[field];
-    }
-    return undefined;
+// 辅助函数：安全获取 HotlistItem 独有的可选字段
+// 因为 MemeItem 没有这些字段，直接访问会报错
+const getHotlistField = (field: keyof HotlistItem) => {
+  if (item.source === 'hotlist') {
+    return (item as HotlistItem)[field];
   }
+  return undefined;
+}
 
-  return (
-    <tr onClick={handleRowClick} style={{ cursor: 'pointer' }}>
-      <td><img src={proxiedIconUrl()} alt={item.symbol} class="icon" onError={(e) => e.currentTarget.style.display = 'none'} /></td>
-      <td>{item.symbol}</td>
-      <td>{item.chain}</td>
-      <td>{formatPrice(item.price)}</td>
-      <td>{formatPercentage(item.priceChange24h)}</td>
-      <td>{formatVolumeOrMarketCap(item.volume24h)}</td>
-      <td>{formatVolumeOrMarketCap(item.marketCap)}</td>
-      {/* 某些字段可能不存在于 MemeItem，使用 optional access 或 helper */}
-      <td>{(item as any).chainId || '-'}</td>
-      <td title={item.contractAddress}>{`${String(item.contractAddress).substring(0, 6)}...`}</td>
+return (
+  <tr onClick={handleRowClick} style={{ cursor: 'pointer' }}>
+    <td><img src={proxiedIconUrl()} alt={item.symbol} class="icon" onError={(e) => e.currentTarget.style.display = 'none'} /></td>
+    <td>{item.symbol}</td>
+    <td>{item.chain}</td>
+    <td>{formatPrice((item as any).price)}</td>
+    <td>{formatPercentage((item as any).priceChange24h)}</td>
+    <td>{formatVolumeOrMarketCap((item as any).volume24h)}</td>
+    <td>{formatVolumeOrMarketCap((item as any).marketCap)}</td>
+    {/* 某些字段可能不存在于 MemeItem，使用 optional access 或 helper */}
+    <td>{(item as any).chainId || '-'}</td>
+    <td title={item.contractAddress}>{`${String(item.contractAddress).substring(0, 6)}...`}</td>
 
-      {/* ✨ 即使是可选字段，现在也能通过类型检查，不会报错 */}
-      <td>{formatPercentage(getHotlistField('priceChange1m'))}</td>
-      <td>{formatPercentage(getHotlistField('priceChange5m'))}</td>
-      <td>{formatPercentage(getHotlistField('priceChange1h'))}</td>
-      <td>{formatPercentage(getHotlistField('priceChange4h'))}</td>
-      <td>{formatVolumeOrMarketCap(getHotlistField('volume1m'))}</td>
-      <td>{formatVolumeOrMarketCap(getHotlistField('volume5m'))}</td>
-      <td>{formatVolumeOrMarketCap(getHotlistField('volume1h'))}</td>
-      <td>{formatVolumeOrMarketCap(getHotlistField('volume4h'))}</td>
-    </tr>
-  );
+    {/* ✨ 即使是可选字段，现在也能通过类型检查，不会报错 */}
+    <td>{formatPercentage(getHotlistField('priceChange1m'))}</td>
+    <td>{formatPercentage(getHotlistField('priceChange5m'))}</td>
+    <td>{formatPercentage(getHotlistField('priceChange1h'))}</td>
+    <td>{formatPercentage(getHotlistField('priceChange4h'))}</td>
+    <td>{formatVolumeOrMarketCap(getHotlistField('volume1m') as number)}</td>
+    <td>{formatVolumeOrMarketCap(getHotlistField('volume5m') as number)}</td>
+    <td>{formatVolumeOrMarketCap(getHotlistField('volume1h') as number)}</td>
+    <td>{formatVolumeOrMarketCap(getHotlistField('volume4h') as number)}</td>
+  </tr>
+);
 };
 
 // --- 排行榜配置 ---
@@ -168,7 +170,7 @@ const App: Component = () => {
     console.log('[App] 🚀 Mounting Main Dashboard (Table View)...');
     const fetchDesiredFields = async () => {
       try {
-        const response = await fetch(`${BACKEND_URL}/desired-fields`);
+        const response = await fetch(`${CONFIG_API_URL}/desired-fields`);
         if (!response.ok) throw new Error('Network response was not ok');
         const fields: string[] = await response.json();
         const preferredOrder = [
@@ -190,12 +192,12 @@ const App: Component = () => {
 
   return (
     <div class="page-wrapper">
-      <header class="app-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+      <header class="app-header" style={{ display: 'flex', 'justify-content': 'space-between', 'align-items': 'center', 'margin-bottom': '20px' }}>
         <div class="header-left">
           <h1>🔥 Market Hotlist</h1>
-          <nav class="nav-links" style={{ display: 'flex', gap: '15px', marginTop: '10px' }}>
-            <span class="nav-btn active" style={{ fontWeight: 'bold', textDecoration: 'underline' }}>🔥 Hotlist</span>
-            <a href="/meme.html" class="nav-btn" style={{ textDecoration: 'none', color: '#666' }}>🐶 Meme New</a>
+          <nav class="nav-links" style={{ display: 'flex', gap: '15px', 'margin-top': '10px' }}>
+            <span class="nav-btn active" style={{ 'font-weight': 'bold', 'text-decoration': 'underline' }}>🔥 Hotlist</span>
+            <a href="/meme.html" class="nav-btn" style={{ 'text-decoration': 'none', color: '#666' }}>🐶 Meme New</a>
           </nav>
         </div>
 

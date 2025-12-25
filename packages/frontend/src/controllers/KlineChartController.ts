@@ -19,7 +19,6 @@ import type { MarketItem } from 'shared-types';
 import type { ChartTheme } from '../themes';
 import { createSignal, Setter } from 'solid-js';
 
-const BACKEND_URL = 'https://localhost:3001';
 const FORCE_GHOST_CANDLE_COUNT = 1000;
 
 interface ControllerOptions {

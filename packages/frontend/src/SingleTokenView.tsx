@@ -1,14 +1,15 @@
 // packages/frontend/src/SingleTokenView.tsx
 import { Component } from 'solid-js';
-import type { MarketItem } from 'shared-types';
-import SingleKlineChart from './SingleKlineChart';
-import type { ChartTheme } from './themes';
+import type { MarketItem } from './types.js';
+import SingleKlineChart from "./SingleKlineChart.jsx";
+import { ChartTheme } from "./themes.js";
+import { MARKET_BACKEND_URL } from './socket.js';
 import './css/single-token-view.css';
 
 interface SingleTokenViewProps {
     token: MarketItem;
     activeTimeframe: string;
-    theme: ChartTheme; // ✨ Receive Theme
+    theme: ChartTheme;
 }
 
 const formatTimeframeLabel = (timeframe: string): string => {
@@ -19,7 +20,7 @@ const SingleTokenView: Component<SingleTokenViewProps> = (props) => {
     return (
         <div
             class="single-token-view-container"
-            style={{ "background-color": props.theme.grid.vertLines }} // 使用稍微深一点的网格颜色作为背景缝隙
+            style={{ "background-color": props.theme.grid.vertLines }}
         >
             <div
                 class="view-header"
@@ -31,11 +32,10 @@ const SingleTokenView: Component<SingleTokenViewProps> = (props) => {
             >
                 <div class="token-info">
                     <img
-                        src={`https://localhost:3001/image-proxy?url=${encodeURIComponent(props.token.icon!)}&symbol=${props.token.symbol}`}
+                        src={`${MARKET_BACKEND_URL}/image-proxy?url=${encodeURIComponent(props.token.icon!)}&symbol=${props.token.symbol}`}
                         class="icon"
                         alt={props.token.symbol}
                         onError={(e) => {
-                            // console.error(`[IconError] Symbol: ${props.token.symbol} | URL: ${e.currentTarget.src}`);
                             e.currentTarget.style.display = 'none';
                         }}
                     />
@@ -49,7 +49,7 @@ const SingleTokenView: Component<SingleTokenViewProps> = (props) => {
             <div
                 class="chart-panes"
                 style={{
-                    "background-color": props.theme.grid.vertLines, // 分割线颜色
+                    "background-color": props.theme.grid.vertLines,
                     gap: "1px"
                 }}
             >
@@ -61,7 +61,7 @@ const SingleTokenView: Component<SingleTokenViewProps> = (props) => {
                         viewportState={null}
                         activeChartId={null}
                         showAxes={true}
-                        theme={props.theme} // ✨ Pass
+                        theme={props.theme}
                     />
                 </div>
                 <div class="chart-pane">
@@ -72,7 +72,7 @@ const SingleTokenView: Component<SingleTokenViewProps> = (props) => {
                         viewportState={null}
                         activeChartId={null}
                         showAxes={true}
-                        theme={props.theme} // ✨ Pass
+                        theme={props.theme}
                     />
                 </div>
             </div>

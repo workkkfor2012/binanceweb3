@@ -5,7 +5,8 @@ import type { ChartTheme } from './themes';
 import type { AlertLogEntry } from './hooks/useMarketData';
 import TokenAvatar from './components/TokenAvatar';
 
-const BACKEND_URL = 'https://localhost:3001';
+import { MARKET_BACKEND_URL } from './socket.js';
+const BACKEND_URL = MARKET_BACKEND_URL;
 
 const formatPercentage = (change: string | number | null | undefined): JSX.Element => {
     if (change === null || change === undefined) return <span class="na">N/A</span>;

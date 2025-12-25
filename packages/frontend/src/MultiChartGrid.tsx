@@ -4,7 +4,8 @@ import type { MarketItem } from 'shared-types';
 import type { ViewportState } from './ChartPageLayout';
 import type { ChartTheme } from './themes';
 
-const BACKEND_URL = 'https://localhost:3001';
+import { MARKET_BACKEND_URL } from './socket.js';
+const BACKEND_URL = MARKET_BACKEND_URL;
 
 interface MultiChartGridProps {
   tokens: MarketItem[];

@@ -102,7 +102,10 @@ const TokenAvatar: Component<TokenAvatarProps> = (props) => {
                         height: "100%",
                         "object-fit": "cover"
                     }}
-                    onError={() => setImgError(true)}
+                    onError={(e) => {
+                        console.error(`[TokenAvatar Error] Symbol: ${props.symbol} | URL: ${props.src}`);
+                        setImgError(true);
+                    }}
                 />
             </Show>
         </div>
