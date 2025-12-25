@@ -241,7 +241,7 @@ async fn send_unsubscribe(write: &mut WsWrite, params: Vec<String>) -> Result<()
 }
 
 async fn handle_payload(
-    worker_id: &str,
+    _worker_id: &str,
     text: &str,
     io: &SocketIo,
     app_state: &AppState,

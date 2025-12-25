@@ -3,7 +3,7 @@ use super::{
     kline_handler,
     state::SubscriptionCommand,
     // ✨ 引入新的 Struct 和 Trait
-    types::{DataPayload, KlineSubscribePayload, NarrativeEntity, NarrativeResponse, Room, AlertLogEntry, AlertType, HotlistItem},
+    types::{DataPayload, KlineSubscribePayload, NarrativeEntity, NarrativeResponse, Room},
     ServerState,
 };
 use socketioxide::extract::{Data, SocketRef};
@@ -65,34 +65,36 @@ pub async fn on_socket_connect(s: SocketRef, state: ServerState) {
 
 fn register_blacklist_handlers(socket: &SocketRef, state: ServerState) {
     // 屏蔽品种
+    let s_add = state.clone();
     socket.on("block_token", move |s: SocketRef, Data(address): Data<String>| {
-        let state = state.clone();
+        let state = s_add.clone();
         async move {
             let addr_lower = address.to_lowercase();
-            info!("🚫 [Blacklist:ADD] Client {} blocked: {}", s.id, addr_lower);
+            tracing::info!("🚫 [Blacklist:ADD] Client {} blocked: {}", s.id, addr_lower);
             if let Err(e) = crate::kline_handler::add_to_blacklist(&state.db_pool, &addr_lower).await {
-                error!("❌ [DB ERR] Failed to add to blacklist: {}", e);
+                tracing::error!("❌ [DB ERR] Failed to add to blacklist: {}", e);
                 return;
             }
             state.blacklist.insert(addr_lower.clone());
             // 广播通知所有人同步
-            state.io.emit("blacklist_update", &serde_json::json!({ "action": "add", "address": addr_lower })).ok();
+            state.io.emit("blacklist_update", &serde_json::json!({ "action": "add", "address": addr_lower })).await.ok();
         }
     });
 
     // 取消屏蔽品种
+    let s_rem = state;
     socket.on("unblock_token", move |s: SocketRef, Data(address): Data<String>| {
-        let state = state.clone();
+        let state = s_rem.clone();
         async move {
             let addr_lower = address.to_lowercase();
-            info!("♻️ [Blacklist:REMOVE] Client {} unblocked: {}", s.id, addr_lower);
+            tracing::info!("♻️ [Blacklist:REMOVE] Client {} unblocked: {}", s.id, addr_lower);
             if let Err(e) = crate::kline_handler::remove_from_blacklist(&state.db_pool, &addr_lower).await {
-                error!("❌ [DB ERR] Failed to remove from blacklist: {}", e);
+                tracing::error!("❌ [DB ERR] Failed to remove from blacklist: {}", e);
                 return;
             }
             state.blacklist.remove(&addr_lower);
             // 广播通知所有人同步
-            state.io.emit("blacklist_update", &serde_json::json!({ "action": "remove", "address": addr_lower })).ok();
+            state.io.emit("blacklist_update", &serde_json::json!({ "action": "remove", "address": addr_lower })).await.ok();
         }
     });
 }
@@ -422,7 +424,6 @@ fn register_data_update_handler(socket: &SocketRef, state: ServerState) {
                             
                             // 🔥 新增：报警检测
                             crate::alert_handler::check_and_trigger_alerts(data, &state, &state.io).await;
-                            should_broadcast = !data.is_empty();
                         }
                         
                         // 2. 处理 New Meme (MemeScanItem 结构体)

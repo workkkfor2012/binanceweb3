@@ -9,22 +9,18 @@ use super::{
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use futures_util::{stream::SplitSink, SinkExt};
+use futures_util::stream::SplitSink;
 use socketioxide::SocketIo;
-use std::{collections::HashSet, sync::Arc, time::SystemTime};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::UnboundedReceiver,
-    time::{interval, sleep, Duration},
 };
 use tokio_native_tls::TlsConnector as TokioTlsConnector;
 use tokio_tungstenite::{
-    client_async_with_config,
-    tungstenite::{client::IntoClientRequest, Message},
+    tungstenite::Message,
     WebSocketStream,
 };
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use url::Url;
 
 type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;

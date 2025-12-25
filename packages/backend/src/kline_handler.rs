@@ -512,7 +512,7 @@ fn fill_kline_gaps(mut raw_data: Vec<KlineTick>, interval_str: &str, target_coun
     for _ in 0..target_count {
         let ts = curr.timestamp_millis();
         
-        if let Some(mut existing) = data_map.get(&ts).cloned() {
+        if let Some(existing) = data_map.get(&ts).cloned() {
             // Data exists
             last_close = existing.close;
             filled_data.push(existing);
