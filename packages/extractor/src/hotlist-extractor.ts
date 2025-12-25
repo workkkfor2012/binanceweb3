@@ -9,9 +9,14 @@ import { handleGuidePopup, checkAndClickCookieBanner } from './pageInitializer';
 import { applyPriceChangeSort } from './filterManager';
 import * as logger from './logger';
 import { io, Socket } from 'socket.io-client';
+import { EventEmitter } from 'events';
 // 引入类型
 import type { ExtractedDataPayload, HotlistItem } from 'shared-types';
 import { DESIRED_FIELDS } from 'shared-types';
+
+// ✨ 全局初始化状态
+const globalEvents = new EventEmitter();
+const initializedChains = new Set<string>();
 
 chromium.use(stealth());
 
@@ -109,22 +114,24 @@ async function setupPageForChain(
     // --- 🏁 准备工作结束 ---
     let hasOptimized = false;
 
+    // 监听性能模式触发信号
+    globalEvents.once('should-optimize', async () => {
+        if (IS_HEADLESS && !hasOptimized) {
+            hasOptimized = true;
+            logger.log(`\n[Optimize][${chainName}] ✅ 所有页面已就绪，进入极致静默运行模式...`, logger.LOG_LEVELS.INFO);
+            await page.evaluate(() => {
+                document.documentElement.style.display = 'none';
+            }).catch(() => { });
+            await page.route('**/*.{css,scss,less}*', route => route.abort()).catch(() => { });
+        }
+    });
+
     // ✨ 数据处理回调：将 Raw Item (any) 转换为 HotlistItem
     const handleExtractedData = async (result: ExtractedDataPayload): Promise<void> => {
         const { type, data } = result;
 
         if (type !== 'no-change' && data && data.length > 0) {
-            // 🚀 [激进优化延迟触发]：成功获取首批数据后，开启静默模式
-            if (IS_HEADLESS && !hasOptimized) {
-                hasOptimized = true;
-                logger.log(`\n[Optimize][${chainName}] ✅ 成功抓取首批数据 (${data.length}条)，进入极致静默运行模式...`, logger.LOG_LEVELS.INFO);
-                await page.evaluate(() => {
-                    document.documentElement.style.display = 'none';
-                }).catch(() => { });
-                await page.route('**/*.{css,scss,less}*', route => route.abort()).catch(() => { });
-            }
-
-            // 映射到 Shared Types 的 HotlistItem
+            // ⚡️ 更新全局状态，而不是直接发送
             const enrichedData: HotlistItem[] = data.map((item: any) => ({
                 // --- BaseItem ---
                 chain: chainName,
@@ -152,8 +159,15 @@ async function setupPageForChain(
                 source: 'hotlist'
             }));
 
-            // ⚡️ 更新全局状态，而不是直接发送
             updateState(chainName, enrichedData);
+
+            // 🚀 全局性能优化检查：只有所有链都至少获取过一次数据才触发
+            if (!initializedChains.has(chainName)) {
+                initializedChains.add(chainName);
+                if (initializedChains.size === TARGETS.length) {
+                    globalEvents.emit('should-optimize');
+                }
+            }
         }
     };
 
