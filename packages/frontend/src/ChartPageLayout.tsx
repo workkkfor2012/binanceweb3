@@ -99,7 +99,7 @@ const ChartPageLayout: Component = () => {
     if (!rankBy) return [];
 
     const top9 = [...marketData]
-      .filter(item => !blocked.has(item.contractAddress))
+      .filter(item => !blocked.has(item.contractAddress.toLowerCase()))
       .filter(item => item[rankBy] != null && String(item[rankBy]).trim() !== '')
       .sort((a, b) => {
         const valA = a[rankBy]!;

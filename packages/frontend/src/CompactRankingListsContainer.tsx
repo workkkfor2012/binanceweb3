@@ -31,7 +31,7 @@ const CompactRankingList: Component<CompactListProps> = (props) => {
         const blocked = props.blockList;
         const validData = props.data.filter(item => {
             // ✅ 规则 1: 过滤黑名单
-            if (blocked.has(item.contractAddress)) return false;
+            if (blocked.has(item.contractAddress.toLowerCase())) return false;
 
             const value = item[props.rankBy];
 
@@ -102,7 +102,7 @@ interface RawDataListProps {
 const RawDataList: Component<RawDataListProps> = (props) => {
     const displayData = createMemo(() => {
         const blocked = props.blockList;
-        const filtered = props.data.filter(item => !blocked.has(item.contractAddress));
+        const filtered = props.data.filter(item => !blocked.has(item.contractAddress.toLowerCase()));
 
         return filtered.sort((a, b) => {
             const valA = (a as any).priceChange1h ?? -Infinity;
@@ -160,7 +160,7 @@ const RawDataList: Component<RawDataListProps> = (props) => {
 // ✨ 新增：报警日志列表组件
 // ✨ 新增：报警日志列表组件
 const AlertLogList: Component<{ logs: AlertLogEntry[], blockList: Set<string>, theme: ChartTheme }> = (props) => {
-    const filteredLogs = createMemo(() => props.logs.filter(log => !props.blockList.has(log.contractAddress)));
+    const filteredLogs = createMemo(() => props.logs.filter(log => !props.blockList.has(log.contractAddress.toLowerCase())));
 
     return (
         <div class="compact-ranking-list alert-log-section" style={{ "height": "100%", "display": "flex", "flex-direction": "column" }}>

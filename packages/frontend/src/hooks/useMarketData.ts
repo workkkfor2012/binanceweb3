@@ -121,22 +121,30 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
 
         // ✨ 新增：监听服务器推送的黑名单
         const onBlacklistInit = (list: string[]) => {
-            console.log(`[Blacklist] 🚫 Initialized with ${list.length} entries`);
-            setBlacklist(new Set(list));
+            const lowerList = list.map(a => a.toLowerCase());
+            console.log(`[Blacklist] 🚫 Initialized with ${lowerList.length} entries (normalized)`);
+            setBlacklist(new Set(lowerList));
         };
 
         const onBlacklistUpdate = (update: { action: 'add' | 'remove', address: string }) => {
-            console.log(`[Blacklist] 🔄 Reactive Update Received: ${update.action} ${update.address}`);
+            const addrLower = update.address.toLowerCase();
+            console.log(`[Blacklist] 🔄 Reactive Update Received: ${update.action} ${addrLower}`);
             setBlacklist(prev => {
                 const next = new Set(prev);
                 if (update.action === 'add') {
-                    next.add(update.address);
+                    next.add(addrLower);
 
                     // ✨ 响应式处理：立即从数据列表中剔除
-                    console.log(`[Blacklist] 🧹 Removing ${update.address} from marketData and logs`);
+                    const targetAddr = update.address.toLowerCase();
+                    console.log(`[Blacklist] 🧹 Removing ${targetAddr} from marketData. Current data count: ${marketData.length}`);
                     setMarketData(produce((currentData: T[]) => {
-                        const index = currentData.findIndex(d => d.contractAddress === update.address);
-                        if (index > -1) currentData.splice(index, 1);
+                        const index = currentData.findIndex(d => d.contractAddress.toLowerCase() === targetAddr);
+                        if (index > -1) {
+                            console.log(`[Blacklist] ✅ Found and removing item at index ${index}: ${currentData[index].contractAddress}`);
+                            currentData.splice(index, 1);
+                        } else {
+                            console.warn(`[Blacklist] ⚠️ Failed to find ${targetAddr} in marketData!`);
+                        }
                     }));
 
                     setAlertLogs(produce((logs) => {
@@ -150,7 +158,7 @@ export const useMarketData = <T extends MarketItem | MemeItem = MarketItem>(
                         }
                     }));
                 } else {
-                    next.delete(update.address);
+                    next.delete(addrLower);
                 }
                 return next;
             });
